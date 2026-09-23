@@ -38,12 +38,13 @@ command -v curl >/dev/null || { echo "build.sh: need curl"; exit 1; }
 mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
   "$TGT"/{bin,sbin,usr/bin,usr/sbin,usr/share,etc,dev,proc,sys,run,tmp,home,root,var/log,mnt,boot}
 
-fetch() {                   # fetch url -> prints tarball path
-  local url="$1" f="$DL/${1##*/}"
+fetch() {                   # fetch url -> prints tarball path (stdout only)
+  local url="$1"
+  local f="$DL/${1##*/}"
   [ -s "$f" ] && { echo "$f"; return; }
-  echo "  < $url"
+  echo "  < $url" >&2
   curl -fL --retry 3 --retry-delay 2 -o "$f" "$url"
-  [ -s "$f" ] || { echo "fetch failed: $url"; exit 1; }
+  [ -s "$f" ] || { echo "fetch failed: $url" >&2; exit 1; }
   echo "$f"
 }
 
