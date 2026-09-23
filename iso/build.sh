@@ -48,7 +48,8 @@ fetch() {                   # fetch url -> prints tarball path
 }
 
 unpack() {                  # unpack tarball -> prints its dir
-  local f="$1" d="${f%.tar.*}"
+  local f="$1"
+  local d="${f%.tar.*}"
   [ -d "$d" ] || tar -xf "$f" -C "$DL"
   echo "$d"
 }
