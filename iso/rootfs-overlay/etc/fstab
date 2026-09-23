@@ -1,0 +1,4 @@
+# Copper live session. The rootfs is a read-only ISO with a tmpfs overlay,
+# so only /tmp (and the overlay) are writable. Real disk persistence is a
+# later phase.
+tmpfs        /tmp     tmpfs   defaults,size=25%   0 0

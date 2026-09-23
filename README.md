@@ -31,30 +31,42 @@ All work currently lives on the **`copper-os`** branch.
 
 ## What's been updated (copper-os branch)
 
-- **`iso/build.sh`** — the whole from-source pipeline: downloads the latest
-  stable kernel from kernel.org and builds it with Copper's config subset
-  (ISO9660, overlayfs, tmpfs, devtmpfs, virtio/e1000/vmxnet3 NICs, ATA/SATA,
-  ext4, ptys; `MODULES` off — drivers built in). Then builds musl 1.2.5,
-  busybox 1.36.1 (static, with adduser/chpasswd/mount applets), and
-  coreutils 9.5 + grep 3.11 + sed 4.9 + findutils 4.9.0 + diffutils 3.10 +
-  tar 1.35 + gzip 1.13 + xz 5.4.6 — **all compiled from source, static
-  against musl**. Finishes by compiling copper-sh/copper-init/
-  copper-firstboot into the rootfs, packing the live initramfs, and running
-  `grub-mkrescue` for a BIOS+UEFI bootable `copper.iso`.
+- **`iso/build.sh`** — the whole from-source pipeline, stage-able
+  (`kernel|base|tools|copper|rootfs|initramfs|iso|all`) with per-stage
+  skip-if-built so CI re-runs are cheap: builds Linux **6.12.10 LTS** from
+  kernel.org with Copper's config subset (ISO9660, overlayfs, tmpfs, devtmpfs,
+  virtio/e1000/vmxnet3 NICs, ATA/SATA, ext4, ptys; `MODULES` off — drivers
+  built in). Then builds musl 1.2.5, busybox 1.36.1 (static, with
+  adduser/chpasswd/mount/hostname applets), and coreutils 9.5 + grep 3.11 +
+  sed 4.9 + findutils 4.9.0 + diffutils 3.10 + tar 1.35 + gzip 1.13 +
+  xz 5.4.6 — **all compiled from source, static against musl**. Finishes by
+  compiling copper-sh/copper-init/copper-firstboot into the rootfs, packing
+  the live initramfs, and running `grub-mkrescue` for a BIOS+UEFI bootable
+  `copper.iso`.
+- **`iso/src-init/copper-init.c`** — **our PID 1** (no systemd): mounts the
+  basics, applies the hostname, runs the first-boot wizard once, then keeps
+  a copper-sh login shell alive on tty1. Lives at `/sbin/init`.
+- **`iso/firstboot/copper-firstboot.c`** — OOBE wizard: name, username,
+  hostname, timezone and passwords; creates the user with busybox adduser,
+  sets passwords with busybox chpasswd.
+- **`iso/rootfs-overlay/etc/…`** — hostname, hosts, profile, group, passwd,
+  shadow, fstab, skel.
 - **`iso/live/init`** — live initramfs script: mounts proc/sys/dev, finds
   the Copper medium, builds a **writable overlay** (read-only ISO root +
   tmpfs upper), then hands off to `/sbin/init`. This overlay is also how
-  session persistence will work later.
+  persistence will work later.
 - **`iso/boot/grub.cfg`** — GRUB menu ("Copper Linux" + verbose entry).
+- **`.github/workflows/build-iso.yml`** — from-source build deps only;
+  **one CI step per build stage** (a failure names itself via the job API)
+  plus an `actions/cache` on `iso/work/` for fast iterations.
 - **`src/builtins.c`** — musl compatibility: replaced `nftw` (not in musl)
   with a proper recursive `rmtree`; fixed feature-test macros so the shell
   builds clean against musl.
 - **`HANDOFF.md`** — full mission notes + next-person checklist.
 
-Not written yet: `iso/src-init/copper-init.c`, `iso/firstboot/copper-firstboot.c`,
-`iso/rootfs-overlay/etc/*`, and the CI workflow's package list still needs the
-source-build deps (`bison flex bc cpio texinfo ...`). All flagged in
-`HANDOFF.md` — the first Actions run will fail until those land.
+Build status: **CI still needs a green run** — the code is written but the
+from-source pipeline hasn't completed end-to-end yet. The first local run of
+the pipeline is `sudo bash iso/build.sh` (or watch the Actions logs).
 
 ---
 
@@ -143,8 +155,9 @@ src/builtins.h   the interface between them
 iso/build.sh     from-source distro build (kernel, musl, userland, ISO)
 iso/live/init    live initramfs (finds medium, sets up overlay)
 iso/boot/        GRUB config
-iso/src-init/    copper-init (our PID 1) — pending
-iso/firstboot/   copper-firstboot wizard — pending
+iso/src-init/    copper-init (our PID 1)
+iso/firstboot/   copper-firstboot wizard
+iso/rootfs-overlay/  default /etc config for the rootfs
 Makefile
 tests/smoke.sh   quick sanity battery
 ```

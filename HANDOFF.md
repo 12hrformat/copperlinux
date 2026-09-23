@@ -24,8 +24,7 @@ Reference material (NOT to be packaged as-is): torvalds/linux, Arch, Debian.
 ## What is DONE and verified ✅
 
 ### copper-sh shell — complete & verified
-- ~500 lines C, `src/` on the **`copper-sh` branch** (PR branch):
-  `12hrformat/copper:copper-sh`
+- ~500 lines C in `src/` (history preserved inside `copper-os`)
 - 36 builtins + pipes `|`, redirects `<` `>` `>>`, quoting, `#` comments,
   history, external PATH programs (fork+exec)
 - **Verified by real execution**: compiled with real GCC 12.2
@@ -42,58 +41,64 @@ Reference material (NOT to be packaged as-is): torvalds/linux, Arch, Debian.
   `%LOCALAPPDATA%\Temp\opencode\ce-compile.mjs` and `ce-run.mjs`
   (Compiler Explorer API, compiler `cg122` = x86-64 gcc 12.2 C mode)
 
-### Started for the OS (WIP, **NOT yet built/verified**)
+### Started for the OS (WIP — most pieces written, build not green yet)
 Branch **`copper-os`** (off `copper-sh`). From-source distro build:
-- `iso/build.sh` — builds kernel (dynamic stable version from kernel.org,
-  our .config subset: overlayfs, tmpfs, devtmpfs, virtio/e1000/vmxnet3,
-  ATA/SATA, ext4, pty), musl 1.2.5, busybox 1.36.1 (static, adduser/chpasswd/
-  mount applets), coreutils 9.5 + grep 3.11 + sed 4.9 + findutils 4.9.0 +
-  diffutils 3.10 + tar 1.35 + gzip 1.13 + xz 5.4.6 all **static against musl**,
-  then compiles copper-sh/copper-init/copper-firstboot, assembles initramfs +
-  GRUB ISO via grub-mkrescue (BIOS+UEFI)
+- `iso/build.sh` — stage-able pipeline (`kernel|base|tools|copper|rootfs|
+  initramfs|iso|all`), each stage skips work already done (CI-friendly):
+  pinned Linux kernel **6.12.10 LTS** (reproducible, no live version lookup)
+  built from kernel.org with our .config subset (overlayfs, tmpfs, devtmpfs,
+  virtio/e1000/vmxnet3, ATA/SATA, ext4, pty; `MODULES` off — drivers built in),
+  musl 1.2.5, busybox 1.36.1 (static, adduser/chpasswd/mount/hostname
+  applets), coreutils 9.5 + grep 3.11 + sed 4.9 + findutils 4.9.0 + diffutils
+  3.10 + tar 1.35 + gzip 1.13 + xz 5.4.6 all **static against musl**, then
+  copper's own binaries, initramfs, and a GRUB ISO (BIOS+UEFI)
+- `iso/src-init/copper-init.c` — **our PID 1**: console stdio, mounts proc/
+  sys/devtmpfs/run, applies /etc/hostname, runs the wizard once (marker file),
+  spawns + respawns copper-sh on tty1. Symlinked as `/sbin/init`.
+- `iso/firstboot/copper-firstboot.c` — OOBE wizard: name, username
+  (validated), hostname (default copper), timezone (default UTC, symlink
+  /etc/localtime), root + user passwords. Account via `busybox adduser -h
+  /home/U -s /usr/bin/copper-sh -G users,audio,video,dialout,cdrom U`;
+  passwords via `busybox chpasswd`; writes `/etc/copper-firstboot.done`.
+- `iso/rootfs-overlay/etc/…` — hostname, hosts, profile (full PATH + PS1),
+  group (root/users/dialout/cdrom/audio/video), passwd (root+nobody), shadow
+  (root locked until wizard), fstab (tmpfs /tmp), skel/.copperrc
 - `iso/live/init` — initramfs script: mounts proc/sys/dev, finds the Copper
   medium (iso9660), sets up a **writable overlay** on top of the read-only ISO
-  (read-only lowerdir + tmpfs upper — this is also how settings persist
+  (read-only lowerdir + tmpfs upper — this is also how persistence will work
   later), switch_root to `/sbin/init`
 - `iso/boot/grub.cfg` — GRUB menu, both "normal" and "verbose" entries
+- `.github/workflows/build-iso.yml` — rebuilds with from-source deps only,
+  **per-stage CI steps** (so the anonymous jobs API shows exactly which stage
+  failed) + `actions/cache` on `iso/work/` so iterations are fast
 - `src/builtins.c` — musl compat fixes (removed `nftw`, real recursive
   `rmtree`; `_GNU_SOURCE` + `_XOPEN_SOURCE 700`)
 - `.gitattributes` — force LF eol for .sh/.c/.h/.yml/.service
 
+## What's verified so far
+
+- copper-sh: **verified** (real GCC, ASan battery, see above). 
+- copper-init.c / copper-firstboot.c: **written, NOT yet compiled** — the CI
+  run is the compiler. First green build is the current goal.
+  Local alternative: Compiler Explorer harness (`ce-compile.mjs`) with
+  `cg122`, but CE is single-file; these two are single-file so they can be
+  checked that way if a quick sanity test is wanted.
+
 ## What is MISSING (next person's checklist) ⚠️
 
-1. **Write `iso/src-init/copper-init.c`** — our PID 1: open /dev/console,
-   mount proc/sys/devtmpfs/run (idempotent), read /etc/hostname + sethostname,
-   run `/usr/bin/copper-firstboot` once if `/etc/copper-firstboot.done`
-   missing, spawn copper-sh on /dev/tty1, respawn on exit, ignore SIGINT.
-   Symlink as `/sbin/init`.
-2. **Write `iso/firstboot/copper-firstboot.c`** — wizard: ask name, username
-   (validate `[a-z_][a-z0-9_-]*`), hostname (default copper), timezone
-   (default UTC, symlink /etc/localtime), root + user passwords. Create user
-   via `busybox adduser -h /home/U -s /usr/bin/copper-sh -G users,audio,
-   video,dialout U`; set passwords via `busybox chpasswd`; write
-   `/etc/copper-firstboot.done`.
-3. **Write `iso/rootfs-overlay/etc/…`** — hostname (`copper`), hosts,
-   profile (PATH incl. /usr/local/sbin…, PS1), group (root/users/dialout/
-   cdrom/audio/video), passwd (root only), shadow (root locked), fstab
-   (tmpfs /tmp).
-4. **Rewrite `.github/workflows/build-iso.yml`** — currently still has the old
-   Debian package list. Must install source-build deps instead:
-   `build-essential bison flex bc cpio rsync curl wget texinfo help2man
-   autoconf automake libtool pkg-config python3 perl gawk xorriso mtools
-   grub-pc-bin grub-efi-amd64-bin xz-utils`, then `sudo bash iso/build.sh`,
-   upload `iso/out/copper.iso`.
-5. **Write `iso/README.md`** — architecture + how to run in VMware
-   (new VM, Ubuntu 64-bit guest, attach ISO, power on).
-6. **Run the build on the fork's GitHub Actions** (branch `copper-os` push
-   triggers it; if Actions is disabled on the fork, enable it in the repo's
-   Actions tab). First run WILL hit errors — iterate. Kernel build is the
-   slowest step (~10–20 min).
-7. **Phase 3 after boots cleanly**: Bluetooth (BlueZ from source + BT kernel
-   config `CONFIG_BT=y`), NetworkManager from source (glib/dbus deps) for wifi
-   + internet, linux-firmware blobs, then GUI/desktop is the next frontier.
-   Persistence across reboots = mount a writable disk as the overlay upper
-   (currently tmpfs = session-only), i.e. real "install or always-save" mode.
+1. **Get the CI build green.** Push to `copper-os` triggers the workflow;
+   if fork Actions are disabled, enable them in the repo's Actions tab.
+   Each stage is its own step, so a failure names itself. Kernel build is
+   the slowest step (~10–20 min); the cache makes repeats cheap.
+   Known first-run risks: kernel config symbol names, busybox kconfig
+   tweaks, coreutils static cross-build details, grub-mkrescue invocation.
+2. **Write `iso/README.md`** — architecture + how to run in VMware (new VM,
+   Ubuntu 64-bit guest, attach ISO, power on).
+3. **Phase 3 after it boots cleanly**: Bluetooth (BlueZ from source + kernel
+   `CONFIG_BT=y` etc.), NetworkManager from source (glib/dbus deps) for wifi +
+   internet, linux-firmware blobs, then a GUI/desktop.
+4. **Persistence** = mount a writable disk as the overlay upper (currently
+   tmpfs = session-only), i.e. real "install or always-save" mode.
 
 ## Repo map (this machine)
 

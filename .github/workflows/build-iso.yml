@@ -1,5 +1,9 @@
 # Build Copper Linux as a bootable live ISO on GitHub Actions.
 # Produces iso/out/copper.iso as an artifact.
+#
+# The build is split into per-stage steps on purpose: if a stage fails,
+# the job API shows exactly which one, and the cached iso/work/ tree means
+# re-runs skip everything that already built.
 
 name: build-iso
 
@@ -12,18 +16,43 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install ISO build tools
+      - name: Install from-source build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap xorriso mtools \
-            grub-pc-bin grub-efi-amd64-bin
+          sudo apt-get install -y build-essential bison flex bc cpio rsync curl wget \
+            xz-utils texinfo help2man autoconf automake libtool pkg-config \
+            python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
 
-      - name: Build the ISO
-        run: |
-          sudo bash iso/build.sh
+      - name: Cache build tree
+        uses: actions/cache@v4
+        with:
+          path: iso/work
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**') }}
+          restore-keys: |
+            copper-work-
+
+      - name: Build the kernel
+        run: sudo bash iso/build.sh kernel
+
+      - name: Build musl + busybox
+        run: sudo bash iso/build.sh base
+
+      - name: Build the command line tools
+        run: sudo bash iso/build.sh tools
+
+      - name: Build Copper's own binaries
+        run: sudo bash iso/build.sh copper
+
+      - name: Rootfs config + timezone
+        run: sudo bash iso/build.sh rootfs
+
+      - name: Live initramfs
+        run: sudo bash iso/build.sh initramfs
+
+      - name: Make the ISO
+        run: sudo bash iso/build.sh iso
 
       - name: Upload copper.iso
         uses: actions/upload-artifact@v4

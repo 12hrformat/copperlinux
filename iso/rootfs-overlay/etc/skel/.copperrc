@@ -1,0 +1,3 @@
+# copper-sh startup file — sourced when the shell's history/rc support lands.
+# For now: a greeting.
+echo "Welcome to Copper Linux."
