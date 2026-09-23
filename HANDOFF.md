@@ -35,9 +35,9 @@ Reference material (NOT to be packaged as-is): torvalds/linux, Arch, Debian.
   `_exit()` skipping stdio flush, history storing tokenized (compact) lines,
   children reading stale buffered stdin, `ls -l file` error, `ls` one-per-line
   to non-TTY (so `ls | grep` filters like real ls)
-- PR link:
+- PR link (shell vs upstream, optional — re-openable anytime by pushing the
+  branch back, history lives inside `copper-os`):
   `https://github.com/Copper-linux/copper/compare/main...12hrformat:copper-sh`
-  (2 commits, 2 ahead / 0 behind, verify it resolves via the compare API)
 - Remote compile/run harness (no local compiler; WSL broken on this machine):
   `%LOCALAPPDATA%\Temp\opencode\ce-compile.mjs` and `ce-run.mjs`
   (Compiler Explorer API, compiler `cg122` = x86-64 gcc 12.2 C mode)
@@ -100,9 +100,9 @@ Branch **`copper-os`** (off `copper-sh`). From-source distro build:
 - Local repo: `C:\Users\jitendra rathore\desktop\copper-terminal`
 - Remotes: `origin` = Copper-linux/copper (read-only for us → 403 on push),
   `gh` = `https://github.com/12hrformat/copper.git` (our fork, push works)
-- Branches (pushed to fork):
-  - `copper-sh` — the shell, PR-ready vs Copper-linux/copper:main
-  - `copper-os` — this distro work (everything in this file + the tree above)
+- Branches (pushed to fork): **`copper-os` only** — old branches (`main`,
+  `copper-sh`, `patch-1`) were deleted; the shell history is preserved inside
+  `copper-os`.
 - No local compiler; verify C via the Compiler Explorer harness above.
 
 ## Rules to keep (user asked)
