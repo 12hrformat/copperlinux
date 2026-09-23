@@ -1,56 +1,71 @@
-Copper Linux
+# copper-sh
 
-Copper Linux is a Linux distribution built for everyday use.
+The Copper Linux shell — a tiny POSIX shell written in C.
 
-We're a small team of four working on making Copper Linux a practical daily-driver distro without trying to overcomplicate it. The goal is simple: build a Linux system that is comfortable to use, easy to work with, and worth coming back to every day.
+Right now it's mostly builtins so it can do useful things before a full
+coreutils is installed on the system. Everything else (`vi`, `top`, ...)
+falls through to `execvp` and runs from `$PATH`.
 
-«Copper Linux is currently in development.»
+Status: **v0.1.0-dev** — in development.
 
-What is Copper Linux?
+## Build & run
 
-Copper Linux is focused on:
+On a Linux box (or anywhere with a C compiler):
 
-- Everyday desktop use
-- A clean and practical Linux experience
-- Useful software without unnecessary clutter
-- A system that can grow with its users
-- Keeping things simple instead of adding features just for the sake of it
+```sh
+make
+./copper-sh
+```
 
-We're not trying to make the most complicated distro out there. We're building something we would actually want to use.
+To install it system-wide:
 
-Copper Linux Cyber
+```sh
+make install            # installs to /usr/local/bin/copper-sh
+```
 
-We're also working on a cybersecurity-focused edition of Copper Linux.
+## Builtin commands
 
-The Cyber edition will be aimed at security researchers, penetration testers, and people learning cybersecurity, with security tools and workflows integrated into the system.
+```
+help          show this list
+exit / quit   leave the shell (ctrl-d also works)
+pwd           print working directory
+cd            cd, cd ~, cd -, cd ..
+ls            ls [-a] [-l] [path]
+cat           cat [file...]
+echo          echo [-n] [text...]
+clear         clear the screen
+whoami        your username
+uname         system info
+date          date and time
+mkdir         make a directory
+rmdir         remove an empty directory
+touch         create or update a file
+rm            rm [-r] [file...]
+cp            cp SRC DST
+mv            mv SRC DST
+history       this session's commands
+type          builtin or external?
+which         where on PATH?
+env           print the environment
+```
 
-It will be developed alongside the main Copper Linux project rather than replacing it.
+Also understands `# comments`, single + double quotes, backslash escapes,
+and `Ctrl-C` won't kill the shell (only the current command).
 
-Development
+## What's next
 
-Copper Linux is being developed by a small team of four.
+- networking (`ping`-ish utilities, sockets) — the whole reason this
+  project exists is to get Copper online
+- `~/.bashrc`-style init file (`~/.copperrc`)
+- history persisted to `~/.copper_history`
+- real line editing (arrow keys, tab completion)
 
-Right now, our main focus is getting the core daily-driving experience into a solid state before expanding into bigger ideas.
+## Layout
 
-Things will change as development continues.
-
-Contributing
-
-Copper Linux is still growing, and contributions, testing, bug reports, ideas, and feedback are welcome.
-
-If you find something broken or have an idea for improving the distro, open an issue or contribute to the project.
-
-Status
-
-Development — not yet intended as a finished production distribution.
-
-Use it, test it, break it, report what broke.
-
-License
-
-See the repository's license file for licensing information.
-
----
-
-Copper Linux
-Built by four people. Built to be used.
+```
+src/main.c       shell loop, prompt, tokenizer, process launching
+src/builtins.c   builtin commands + the command table helpers
+src/builtins.h   the interface between them
+Makefile
+tests/smoke.sh   quick sanity battery
+```
