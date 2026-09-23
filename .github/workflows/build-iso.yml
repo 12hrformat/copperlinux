@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bison flex bc cpio rsync curl wget \
-            xz-utils texinfo help2man autoconf automake libtool pkg-config \
+            xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
             python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
 
       - name: Cache build tree
