@@ -103,6 +103,23 @@ build_musl() {
   export LDFLAGS="-static"
 }
 
+# busybox ships no scripts/config (that's a kernel tool), so enable the
+# symbols we need via the kernel tree's copy, which edits .config in
+# place. Appending CONFIG_* lines instead would duplicate the defaults
+# that make defconfig already wrote — conf rejects those as "reassign"
+# (first assignment wins, so CONFIG_STATIC=y got silently dropped) and a
+# redundant write into a kconfig choice corrupts its state.
+set_bb_config() {
+  local sym="$1"
+  local kcfg="$DL/linux-$KREL/scripts/config"
+  if [ -x "$kcfg" ]; then
+    "$kcfg" -e "$sym"
+  else
+    sed -i "s|^# CONFIG_$sym is not set$|CONFIG_$sym=y|" .config
+    grep -q "^CONFIG_$sym=y$" .config || echo "CONFIG_$sym=y" >> .config
+  fi
+}
+
 # ---------------------------------------------------------------
 # 3. busybox — base utilities, ash, adduser, chpasswd, mount, ...
 # ---------------------------------------------------------------
@@ -114,25 +131,23 @@ build_busybox() {
   BD=$(unpack "$BT")
   pushd "$BD" >/dev/null
     make defconfig
-    # busybox has no scripts/config (that's a kernel tool), so set our
-    # symbols straight in .config and let oldconfig settle them
-    {
-      echo 'CONFIG_STATIC=y'
-      echo 'CONFIG_ADDUSER=y'
-      echo 'CONFIG_CHPASSWD=y'
-      echo 'CONFIG_PASSWD=y'
-      echo 'CONFIG_LOGIN=y'
-      echo 'CONFIG_SU=y'
-      echo 'CONFIG_MOUNT=y'
-      echo 'CONFIG_UMOUNT=y'
-      echo 'CONFIG_HOSTNAME=y'
-      echo 'CONFIG_FEATURE_ADDUSER_TO_GROUP=y'
-      echo 'CONFIG_FEATURE_SHADOWPASSWDS=y'
-      echo 'CONFIG_FEATURE_INSTALLER=y'
-      echo 'CONFIG_INSTALL_APPLETS=y'
-      echo 'CONFIG_INSTALL_APPLET_SYMLINKS=y'
-    } >> .config
-    make oldconfig
+    # static, plus the applets the first-boot wizard and init rely on.
+    # Applet links stay at the defconfig default (soft links).
+    set_bb_config STATIC
+    set_bb_config ADDUSER
+    set_bb_config CHPASSWD
+    set_bb_config PASSWD
+    set_bb_config LOGIN
+    set_bb_config SU
+    set_bb_config MOUNT
+    set_bb_config UMOUNT
+    set_bb_config HOSTNAME
+    set_bb_config FEATURE_ADDUSER_TO_GROUP
+    set_bb_config FEATURE_SHADOWPASSWDS
+    set_bb_config FEATURE_INSTALLER
+    # settle every remaining symbol to its default silently; unlike
+    # oldconfig, olddefconfig never prompts, even for kconfig choices
+    make olddefconfig
     make -j"$JOBS"
     make CONFIG_PREFIX="$TGT" install
   popd >/dev/null
