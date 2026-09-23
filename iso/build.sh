@@ -114,11 +114,24 @@ build_busybox() {
   BD=$(unpack "$BT")
   pushd "$BD" >/dev/null
     make defconfig
-    # static, plus the applets the first-boot wizard and init rely on
-    scripts/config -e STATIC -e ADDUSER -e CHPASSWD -e PASSWD -e LOGIN -e SU \
-      -e MOUNT -e UMOUNT -e HOSTNAME -e FEATURE_ADDUSER_TO_GROUP \
-      -e FEATURE_SHADOWPASSWDS -e FEATURE_INSTALLER \
-      -e INSTALL_APPLETS -e INSTALL_APPLET_SYMLINKS
+    # busybox has no scripts/config (that's a kernel tool), so set our
+    # symbols straight in .config and let oldconfig settle them
+    {
+      echo 'CONFIG_STATIC=y'
+      echo 'CONFIG_ADDUSER=y'
+      echo 'CONFIG_CHPASSWD=y'
+      echo 'CONFIG_PASSWD=y'
+      echo 'CONFIG_LOGIN=y'
+      echo 'CONFIG_SU=y'
+      echo 'CONFIG_MOUNT=y'
+      echo 'CONFIG_UMOUNT=y'
+      echo 'CONFIG_HOSTNAME=y'
+      echo 'CONFIG_FEATURE_ADDUSER_TO_GROUP=y'
+      echo 'CONFIG_FEATURE_SHADOWPASSWDS=y'
+      echo 'CONFIG_FEATURE_INSTALLER=y'
+      echo 'CONFIG_INSTALL_APPLETS=y'
+      echo 'CONFIG_INSTALL_APPLET_SYMLINKS=y'
+    } >> .config
     make oldconfig
     make -j"$JOBS"
     make CONFIG_PREFIX="$TGT" install

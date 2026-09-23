@@ -25,8 +25,8 @@ jobs:
             xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
             python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
 
-      - name: Cache build tree
-        uses: actions/cache@v4
+      - name: Cache build tree (restore)
+        uses: actions/cache/restore@v4
         with:
           path: iso/work
           key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**') }}
@@ -60,3 +60,12 @@ jobs:
           name: copper-iso
           path: iso/out/copper.iso
           retention-days: 14
+
+      # Save the work tree even on failure so the next run resumes the
+      # stages that already finished (kernel build is ~7 min).
+      - name: Cache build tree (save)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: iso/work
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**') }}
