@@ -3,7 +3,8 @@
  * Nothing fancy, just the stuff a first boot really needs.
  */
 
-#define _XOPEN_SOURCE 700   /* nftw / S_ISLNK / S_ISSOCK / environ are XSI */
+#define _GNU_SOURCE         /* environ on musl */
+#define _XOPEN_SOURCE 700   /* S_ISLNK / S_ISSOCK are XSI */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,6 @@
 #include <pwd.h>
 #include <grp.h>
 #include <utime.h>
-#include <ftw.h>
 #include <limits.h>
 #include <regex.h>
 #include <sys/stat.h>
@@ -250,9 +250,24 @@ int b_touch(int argc, char **argv) {
     return rc;
 }
 
-static int rm_cb(const char *path, const struct stat *st, int flag, struct FTW *ftw) {
-    (void)st; (void)flag; (void)ftw;
-    return remove(path);
+/* recursive delete without ftw/nftw (those aren't in musl) */
+static int rmtree(const char *path) {
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(path);
+        if (!d) return -1;
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char full[PATH_MAX];
+            snprintf(full, sizeof full, "%s/%s", path, e->d_name);
+            if (rmtree(full) != 0) { closedir(d); return -1; }
+        }
+        closedir(d);
+        return rmdir(path);
+    }
+    return unlink(path);
 }
 
 int b_rm(int argc, char **argv) {
@@ -268,7 +283,7 @@ int b_rm(int argc, char **argv) {
     int rc = 0;
     for (; i < argc; i++) {
         if (recursive) {
-            if (nftw(argv[i], rm_cb, 16, FTW_DEPTH | FTW_PHYS)) { perror(argv[i]); rc = 1; }
+            if (rmtree(argv[i])) { perror(argv[i]); rc = 1; }
         } else if (unlink(argv[i])) {
             perror(argv[i]);
             rc = 1;

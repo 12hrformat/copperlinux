@@ -1,2 +1,4 @@
 *.o
 copper-sh
+iso/work/
+iso/out/

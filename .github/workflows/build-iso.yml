@@ -1,0 +1,33 @@
+# Build Copper Linux as a bootable live ISO on GitHub Actions.
+# Produces iso/out/copper.iso as an artifact.
+
+name: build-iso
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ISO build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap xorriso mtools \
+            grub-pc-bin grub-efi-amd64-bin
+
+      - name: Build the ISO
+        run: |
+          sudo bash iso/build.sh
+
+      - name: Upload copper.iso
+        uses: actions/upload-artifact@v4
+        with:
+          name: copper-iso
+          path: iso/out/copper.iso
+          retention-days: 14
