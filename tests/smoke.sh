@@ -30,8 +30,24 @@ ls coppersmoke.txt
 whoami
 uname -s
 date
-mkdir copper-dir && rmdir copper-dir
-rm coppersmoke.txt
+mkdir copper-dir
+rmdir copper-dir
+echo redirection works > coppersmoke.txt
+cat coppersmoke.txt
+wc -w < coppersmoke.txt
+head -n 1 coppersmoke.txt
+tail -n 1 coppersmoke.txt
+grep redirection coppersmoke.txt
+echo piped thing | wc -w
+echo multi line one > multi.txt
+echo multi line two >> multi.txt
+wc -l multi.txt
+tee multi2.txt < multi.txt
+grep line multi.txt
+basename /usr/bin/copper
+dirname /usr/bin/copper
+chmod 600 coppersmoke.txt
+rm coppersmoke.txt multi.txt multi2.txt
 exit
 EOF
 )
@@ -44,7 +60,17 @@ check "touch+ls"     "coppersmoke.txt" "$out"
 check "whoami"       "$(id -un 2>/dev/null || echo .)" "$out"
 check "uname"        "Linux"        "$out"
 check "date"         "20"           "$out"
-check "rm"           ""             "$out"
+check "redirect+cat" "redirection works" "$out"
+check "wc stdin"     "2"            "$out"
+check "head"         "redirection works" "$out"
+check "tail"         "redirection works" "$out"
+check "grep"         "redirection works" "$out"
+check "pipe+wc"      "2"            "$out"
+check "append+wcl"   "2"            "$out"
+check "tee"          "multi line one" "$out"
+check "grep"         "multi line two" "$out"
+check "basename"     "copper"       "$out"
+check "dirname"      "/usr/bin"     "$out"
 
 if [ "$fails" -gt 0 ]; then
     echo "$fails check(s) failed"

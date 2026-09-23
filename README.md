@@ -33,16 +33,29 @@ cd            cd, cd ~, cd -, cd ..
 ls            ls [-a] [-l] [path]
 cat           cat [file...]
 echo          echo [-n] [text...]
+head          head [-n N] [file...]
+tail          tail [-n N] [file...]
+wc            wc [-lwc] [file...]
+grep          grep [-inv] PATTERN [file...]
+tee           tee [-a] FILE...
+sleep         sleep SECONDS
+true/false    do nothing, exit 0 / exit 1
 clear         clear the screen
 whoami        your username
+id            uid/gid info
+hostname      the machine's hostname
 uname         system info
 date          date and time
+basename      strip dirs/suffix from a path
+dirname       the directory part of a path
 mkdir         make a directory
 rmdir         remove an empty directory
 touch         create or update a file
 rm            rm [-r] [file...]
 cp            cp SRC DST
 mv            mv SRC DST
+ln            ln [-s] TARGET LINK
+chmod         chmod OCTAL FILE
 history       this session's commands
 type          builtin or external?
 which         where on PATH?
@@ -50,7 +63,8 @@ env           print the environment
 ```
 
 Also understands `# comments`, single + double quotes, backslash escapes,
-and `Ctrl-C` won't kill the shell (only the current command).
+pipes (`|`) and redirects (`<`, `>`, `>>`), and `Ctrl-C` won't kill the
+shell (only the current command).
 
 ## What's next
 

@@ -18,7 +18,9 @@
 #include <utime.h>
 #include <ftw.h>
 #include <limits.h>
+#include <regex.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/utsname.h>
 
 #include "builtins.h"
@@ -89,8 +91,33 @@ int b_ls(int argc, char **argv) {
         }
     }
 
+    /* a plain file argument: print it, not its contents */
+    struct stat st0;
+    if (stat(path, &st0) == 0 && !S_ISDIR(st0.st_mode)) {
+        if (longfmt) {
+            char m[11];
+            modestr(st0.st_mode, m);
+            struct passwd *pw = getpwuid(st0.st_uid);
+            struct group *gr = getgrgid(st0.st_gid);
+            char tbuf[32] = "";
+            struct tm *tm = localtime(&st0.st_mtime);
+            if (tm) strftime(tbuf, sizeof tbuf, "%b %d %H:%M", tm);
+            const char *base = strrchr(path, '/');
+            printf("%s %3lu %-8s %-8s %8ld %s %s\n",
+                   m, (unsigned long)st0.st_nlink,
+                   pw ? pw->pw_name : "?", gr ? gr->gr_name : "?",
+                   (long)st0.st_size, tbuf, base ? base + 1 : path);
+        } else {
+            printf("%s\n", path);
+        }
+        return 0;
+    }
+
     DIR *d = opendir(path);
     if (!d) { perror("ls"); return 1; }
+
+    /* to a pipe or file, list one per line like the real thing */
+    int one_line = !isatty(fileno(stdout));
 
     struct dirent *e;
     int first = 1;
@@ -114,6 +141,8 @@ int b_ls(int argc, char **argv) {
                    m, (unsigned long)st.st_nlink,
                    pw ? pw->pw_name : "?", gr ? gr->gr_name : "?",
                    (long)st.st_size, tbuf, e->d_name);
+        } else if (one_line) {
+            puts(e->d_name);
         } else {
             if (!first) printf("  ");
             printf("%s", e->d_name);
@@ -121,7 +150,7 @@ int b_ls(int argc, char **argv) {
         }
     }
     closedir(d);
-    if (!longfmt) printf("\n");
+    if (!longfmt && !one_line) printf("\n");
     return 0;
 }
 
@@ -324,6 +353,301 @@ int b_which(int argc, char **argv) {
     if (!p) { fprintf(stderr, "which: %s: not found in PATH\n", argv[1]); return 1; }
     puts(p);
     free(p);
+    return 0;
+}
+
+/* ---------------------------------------------------------------- */
+/*  head / tail / wc / grep / tee                                     */
+
+static void print_head(FILE *in, int n) {
+    char *line = NULL;
+    size_t cap = 0;
+    while (n-- > 0) {
+        ssize_t len = getline(&line, &cap, in);
+        if (len < 0) break;
+        fwrite(line, 1, (size_t)len, stdout);
+    }
+    free(line);
+}
+
+int b_head(int argc, char **argv) {
+    int n = 10, i = 1;
+    if (i < argc && !strcmp(argv[i], "-n")) {
+        i++;
+        if (i >= argc) { fprintf(stderr, "head: -n needs a number\n"); return 1; }
+        n = atoi(argv[i++]);
+    }
+    if (n < 0) n = 0;
+    if (i >= argc) { print_head(stdin, n); return 0; }
+    int rc = 0;
+    for (; i < argc; i++) {
+        FILE *f = fopen(argv[i], "r");
+        if (!f) { perror(argv[i]); rc = 1; continue; }
+        print_head(f, n);
+        fclose(f);
+    }
+    return rc;
+}
+
+/* rolling buffer holding the last n lines */
+static void print_tail(FILE *in, int n) {
+    if (n <= 0) return;
+    char **ring = calloc((size_t)n, sizeof(char *));
+    if (!ring) { perror("tail"); return; }
+    int idx = 0, total = 0;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while ((len = getline(&line, &cap, in)) >= 0) {
+        char *copy = strdup(line);
+        if (!copy) break;
+        free(ring[idx]);
+        ring[idx] = copy;
+        idx = (idx + 1) % n;
+        total++;
+    }
+    free(line);
+    int shown = total < n ? total : n;
+    int start = total < n ? 0 : idx;
+    for (int k = 0; k < shown; k++)
+        fputs(ring[(start + k) % n], stdout);
+    for (int k = 0; k < n; k++) free(ring[k]);
+    free(ring);
+}
+
+int b_tail(int argc, char **argv) {
+    int n = 10, i = 1;
+    if (i < argc && !strcmp(argv[i], "-n")) {
+        i++;
+        if (i >= argc) { fprintf(stderr, "tail: -n needs a number\n"); return 1; }
+        n = atoi(argv[i++]);
+    }
+    if (n < 0) n = 0;
+    if (i >= argc) { print_tail(stdin, n); return 0; }
+    int rc = 0;
+    for (; i < argc; i++) {
+        FILE *f = fopen(argv[i], "r");
+        if (!f) { perror(argv[i]); rc = 1; continue; }
+        print_tail(f, n);
+        fclose(f);
+    }
+    return rc;
+}
+
+static void wc_count(FILE *in, long *lines, long *words, long *bytes) {
+    int prevws = 1, c;
+    while ((c = fgetc(in)) != EOF) {
+        (*bytes)++;
+        if (c == '\n') (*lines)++;
+        int ws = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f');
+        if (ws) prevws = 1;
+        else { if (prevws) (*words)++; prevws = 0; }
+    }
+}
+
+static void wc_print(long l, long w, long b, int lf, int wf, int cf, const char *name) {
+    if (lf) printf("%7ld ", l);
+    if (wf) printf("%7ld ", w);
+    if (cf) printf("%7ld ", b);
+    if (name) printf("%s", name);
+    printf("\n");
+}
+
+int b_wc(int argc, char **argv) {
+    int lf = 0, wf = 0, cf = 0, i = 1;
+    while (i < argc && argv[i][0] == '-' && argv[i][1]) {
+        for (const char *f = argv[i] + 1; *f; f++) {
+            if (*f == 'l') lf = 1;
+            else if (*f == 'w') wf = 1;
+            else if (*f == 'c') cf = 1;
+            else { fprintf(stderr, "wc: unknown option -%c\n", *f); return 1; }
+        }
+        i++;
+    }
+    if (!lf && !wf && !cf) lf = wf = cf = 1;
+
+    if (i >= argc) {
+        long l = 0, w = 0, b = 0;
+        wc_count(stdin, &l, &w, &b);
+        wc_print(l, w, b, lf, wf, cf, NULL);
+        return 0;
+    }
+    int rc = 0, multi = argc - i > 1;
+    long tl = 0, tw = 0, tb = 0;
+    for (; i < argc; i++) {
+        FILE *f = fopen(argv[i], "r");
+        if (!f) { perror(argv[i]); rc = 1; continue; }
+        long l = 0, w = 0, b = 0;
+        wc_count(f, &l, &w, &b);
+        fclose(f);
+        wc_print(l, w, b, lf, wf, cf, argv[i]);
+        tl += l; tw += w; tb += b;
+    }
+    if (multi && !rc) wc_print(tl, tw, tb, lf, wf, cf, "total");
+    return rc;
+}
+
+static int grep_feed(FILE *in, regex_t *re, int invert, int with_line, const char *name, int show_name) {
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    int ln = 0, hits = 0;
+    while ((len = getline(&line, &cap, in)) >= 0) {
+        ln++;
+        int m = regexec(re, line, 0, NULL, 0) == 0;
+        if (m != invert) {
+            if (show_name) printf("%s:", name);
+            if (with_line) printf("%d:", ln);
+            fwrite(line, 1, (size_t)len, stdout);
+            hits++;
+        }
+    }
+    free(line);
+    return hits;
+}
+
+int b_grep(int argc, char **argv) {
+    int invert = 0, with_line = 0, icase = 0, i = 1;
+    while (i < argc && argv[i][0] == '-' && argv[i][1]) {
+        for (const char *f = argv[i] + 1; *f; f++) {
+            if (*f == 'i') icase = 1;
+            else if (*f == 'n') with_line = 1;
+            else if (*f == 'v') invert = 1;
+            else { fprintf(stderr, "grep: unknown option -%c\n", *f); return 2; }
+        }
+        i++;
+    }
+    if (i >= argc) { fprintf(stderr, "grep: usage: grep [-inv] PATTERN [FILE...]\n"); return 2; }
+    const char *pat = argv[i++];
+    regex_t re;
+    int flags = REG_EXTENDED | (icase ? REG_ICASE : 0);
+    if (regcomp(&re, pat, flags)) { fprintf(stderr, "grep: bad pattern\n"); return 2; }
+
+    int rc = 0, hits = 0;
+    if (i >= argc) {
+        hits = grep_feed(stdin, &re, invert, with_line, "-", 0);
+    } else {
+        int multi = argc - i > 1;
+        for (; i < argc; i++) {
+            FILE *f = fopen(argv[i], "r");
+            if (!f) { perror(argv[i]); rc = 1; continue; }
+            hits += grep_feed(f, &re, invert, with_line, argv[i], multi);
+            fclose(f);
+        }
+    }
+    regfree(&re);
+    return rc ? rc : (hits ? 0 : 1);
+}
+
+int b_tee(int argc, char **argv) {
+    int append = 0, i = 1;
+    if (i < argc && !strcmp(argv[i], "-a")) { append = 1; i++; }
+    int nf = argc - i;
+    FILE **outs = NULL;
+    if (nf > 0) {
+        outs = calloc((size_t)nf, sizeof(FILE *));
+        if (!outs) { perror("tee"); return 1; }
+    }
+    int rc = 0;
+    for (int k = 0; k < nf; k++) {
+        outs[k] = fopen(argv[i + k], append ? "a" : "w");
+        if (!outs[k]) { perror(argv[i + k]); rc = 1; }
+    }
+    char buf[4096];
+    size_t nr;
+    while ((nr = fread(buf, 1, sizeof buf, stdin)) > 0) {
+        fwrite(buf, 1, nr, stdout);
+        for (int k = 0; k < nf; k++)
+            if (outs[k]) fwrite(buf, 1, nr, outs[k]);
+    }
+    for (int k = 0; k < nf; k++) if (outs[k]) fclose(outs[k]);
+    free(outs);
+    return rc;
+}
+
+/* ---------------------------------------------------------------- */
+/*  misc utils: sleep, true, false, id, hostname, path helpers        */
+
+int b_sleep(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "sleep: usage: sleep SECONDS\n"); return 1; }
+    unsigned sec = (unsigned)strtoul(argv[1], NULL, 10);
+    (void)sleep(sec);
+    return 0;
+}
+
+int b_true(int argc, char **argv)  { (void)argc; (void)argv; return 0; }
+int b_false(int argc, char **argv) { (void)argc; (void)argv; return 1; }
+
+int b_id(int argc, char **argv) {
+    (void)argc; (void)argv;
+    struct passwd *pw = getpwuid(getuid());
+    struct group *gr = getgrgid(getgid());
+    printf("uid=%lu(%s) gid=%lu(%s)",
+           (unsigned long)getuid(), pw ? pw->pw_name : "?",
+           (unsigned long)getgid(), gr ? gr->gr_name : "?");
+    gid_t grps[32];
+    int ng = getgroups(32, grps);
+    if (ng > 0) {
+        printf(" groups=");
+        for (int k = 0; k < ng; k++) {
+            struct group *g2 = getgrgid(grps[k]);
+            printf("%s%s", k ? "," : "", g2 ? g2->gr_name : "?");
+        }
+    }
+    printf("\n");
+    return 0;
+}
+
+int b_hostname(int argc, char **argv) {
+    (void)argc; (void)argv;
+    char hn[256];
+    if (gethostname(hn, sizeof hn)) { perror("hostname"); return 1; }
+    hn[sizeof hn - 1] = '\0';
+    puts(hn);
+    return 0;
+}
+
+int b_basename(int argc, char **argv) {
+    if (argc < 2 || argc > 3) { fprintf(stderr, "basename: usage: basename PATH [SUFFIX]\n"); return 1; }
+    const char *slash = strrchr(argv[1], '/');
+    const char *base = slash ? slash + 1 : argv[1];
+    char out[PATH_MAX];
+    snprintf(out, sizeof out, "%s", base);
+    if (argc == 3) {
+        size_t bl = strlen(out), sl = strlen(argv[2]);
+        if (sl && bl > sl && !strcmp(out + bl - sl, argv[2]))
+            out[bl - sl] = '\0';
+    }
+    puts(out);
+    return 0;
+}
+
+int b_dirname(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "dirname: usage: dirname PATH\n"); return 1; }
+    char copy[PATH_MAX];
+    snprintf(copy, sizeof copy, "%s", argv[1]);
+    if (!strcmp(copy, "/")) { puts("/"); return 0; }
+    char *slash = strrchr(copy, '/');
+    if (!slash) { puts("."); return 0; }
+    if (slash == copy) { puts("/"); return 0; }
+    *slash = '\0';
+    puts(copy);
+    return 0;
+}
+
+int b_ln(int argc, char **argv) {
+    int sym = 0, i = 1;
+    if (i < argc && !strcmp(argv[i], "-s")) { sym = 1; i++; }
+    if (argc - i != 2) { fprintf(stderr, "ln: usage: ln [-s] TARGET LINK\n"); return 1; }
+    int rc = sym ? symlink(argv[i], argv[i + 1]) : link(argv[i], argv[i + 1]);
+    if (rc) { perror("ln"); return 1; }
+    return 0;
+}
+
+int b_chmod(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "chmod: usage: chmod MODE FILE\n"); return 1; }
+    long mode = strtol(argv[1], NULL, 8);
+    if (chmod(argv[2], (mode_t)mode)) { perror(argv[2]); return 1; }
     return 0;
 }
 
