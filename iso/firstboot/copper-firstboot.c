@@ -1,5 +1,6 @@
 /*
  * copper-firstboot — first-boot personalization, in the spirit of the OOBE
+ * handcrafted by 12hrformat
  * on real distros / Windows. copper-init runs this once (until the marker
  * /etc/copper-firstboot.done exists).
  *

@@ -1,5 +1,6 @@
 /*
  * copper-sh — the Copper Linux shell, v0.1.0-dev
+ * handcrafted by 12hrformat
  *
  * A tiny POSIX shell. Mostly builtins so it works even before a
  * full coreutils exists on the system.

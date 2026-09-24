@@ -1,4 +1,5 @@
 #!/bin/busybox sh
+# Copper Linux — handcrafted by 12hrformat
 # copper live initramfs — find the Copper medium, build a writable overlay
 # on top of the read-only ISO, then hand over to copper-init (our PID 1).
 

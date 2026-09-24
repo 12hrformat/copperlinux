@@ -1,5 +1,6 @@
 /*
  * copper-init — Copper Linux PID 1.
+ * handcrafted by 12hrformat
  *
  * No systemd, no init scripts: this IS the init. It mounts the basics
  * (the initramfs already did most of it), applies the hostname, runs the

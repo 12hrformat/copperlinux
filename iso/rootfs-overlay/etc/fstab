@@ -1,3 +1,4 @@
+# Copper Linux — handcrafted by 12hrformat
 # Copper live session. The rootfs is a read-only ISO with a tmpfs overlay,
 # so only /tmp (and the overlay) are writable. Real disk persistence is a
 # later phase.

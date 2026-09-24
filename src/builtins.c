@@ -1,5 +1,6 @@
 /*
  * copper-sh — builtins: ls, pwd, cd, cat, echo and friends.
+ * handcrafted by 12hrformat
  * Nothing fancy, just the stuff a first boot really needs.
  */
 
