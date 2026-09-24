@@ -120,6 +120,16 @@ set_bb_config() {
   fi
 }
 
+set_bb_config_off() {
+  local sym="$1"
+  local kcfg="$DL/linux-$KREL/scripts/config"
+  if [ -x "$kcfg" ]; then
+    "$kcfg" -d "$sym"
+  else
+    sed -i "s|^CONFIG_$sym=y$|# CONFIG_$sym is not set|" .config
+  fi
+}
+
 # ---------------------------------------------------------------
 # 3. busybox — base utilities, ash, adduser, chpasswd, mount, ...
 # ---------------------------------------------------------------
@@ -145,6 +155,11 @@ build_busybox() {
     set_bb_config FEATURE_ADDUSER_TO_GROUP
     set_bb_config FEATURE_SHADOWPASSWDS
     set_bb_config FEATURE_INSTALLER
+    # the tc applet needs CBQ traffic-class kernel UAPI (TCA_CBQ_* and
+    # struct tc_cbq_*) that newer kernel headers removed, so it fails to
+    # compile against the runner's headers. Copper ships no traffic
+    # control, so drop it.
+    set_bb_config_off TC
     # settle remaining symbols to their defaults. busybox's kconfig has
     # no olddefconfig target; oldconfig works because the kconfig choices
     # stay in the consistent state defconfig wrote (scripts/config only
