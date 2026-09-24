@@ -145,9 +145,12 @@ build_busybox() {
     set_bb_config FEATURE_ADDUSER_TO_GROUP
     set_bb_config FEATURE_SHADOWPASSWDS
     set_bb_config FEATURE_INSTALLER
-    # settle every remaining symbol to its default silently; unlike
-    # oldconfig, olddefconfig never prompts, even for kconfig choices
-    make olddefconfig
+    # settle remaining symbols to their defaults. busybox's kconfig has
+    # no olddefconfig target; oldconfig works because the kconfig choices
+    # stay in the consistent state defconfig wrote (scripts/config only
+    # edits single symbols), so oldconfig never prompts and NEW symbols
+    # take their defaults on a closed stdin
+    make oldconfig
     make -j"$JOBS"
     make CONFIG_PREFIX="$TGT" install
   popd >/dev/null
