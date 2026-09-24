@@ -23,6 +23,9 @@ SYS="$WORK/sys"            # our toolchain prefix (musl + musl-gcc)
 TGT="$WORK/rootfs"         # copper rootfs staging tree
 JOBS=${JOBS:-$(nproc)}
 export MAKEFLAGS="-j$JOBS"
+# coreutils' configure refuses to run as root; CI builds via sudo, so
+# pass its documented bypass (cross checks have no runtime step anyway).
+export FORCE_UNSAFE_CONFIGURE=1
 
 # Kernel version to build. Pinned LTS on purpose — distro builds should be
 # reproducible, not "latest at build time". Bump this when we want a newer
