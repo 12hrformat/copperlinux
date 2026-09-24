@@ -41,8 +41,10 @@ Reference material (NOT to be packaged as-is): torvalds/linux, Arch, Debian.
   `%LOCALAPPDATA%\Temp\opencode\ce-compile.mjs` and `ce-run.mjs`
   (Compiler Explorer API, compiler `cg122` = x86-64 gcc 12.2 C mode)
 
-### Started for the OS (WIP — most pieces written, build not green yet)
-Branch **`copper-os`** (off `copper-sh`). From-source distro build:
+### The OS build — GREEN ✅ (finalized 2026-09-24, run #11)
+Branch **`copper-os`** (off `copper-sh`). From-source distro build — every stage
+passed on CI and `copper.iso` was uploaded as an artifact (~29 MiB,
+`actions/runs/35937198186/artifacts`):
 - `iso/build.sh` — stage-able pipeline (`kernel|base|tools|copper|rootfs|
   initramfs|iso|all`), each stage skips work already done (CI-friendly):
   pinned Linux kernel **6.12.10 LTS** (reproducible, no live version lookup)
@@ -77,27 +79,32 @@ Branch **`copper-os`** (off `copper-sh`). From-source distro build:
 
 ## What's verified so far
 
-- copper-sh: **verified** (real GCC, ASan battery, see above). 
-- copper-init.c / copper-firstboot.c: **written, NOT yet compiled** — the CI
-  run is the compiler. First green build is the current goal.
-  Local alternative: Compiler Explorer harness (`ce-compile.mjs`) with
-  `cg122`, but CE is single-file; these two are single-file so they can be
-  checked that way if a quick sanity test is wanted.
+- copper-sh: **verified** (real GCC, ASan battery, see above).
+- copper-init.c / copper-firstboot.c: **compiled and installed in the green
+  CI build** (`build_copper` stage, static musl, symlinked as `/sbin/init`).
+- The **whole pipeline builds green**: kernel 6.12.10, musl 1.2.5, busybox
+  1.36.1 (static), all eight GNU tools (static musl), Copper's three
+  binaries, rootfs, initramfs, and the GRUB ISO — artifact `copper.iso`
+  (~29 MiB, sha256 `cc00fe05…86ace2`) from run #11.
 
 ## What is MISSING (next person's checklist) ⚠️
 
-1. **Get the CI build green.** Push to `copper-os` triggers the workflow;
-   if fork Actions are disabled, enable them in the repo's Actions tab.
-   Each stage is its own step, so a failure names itself. Kernel build is
-   the slowest step (~10–20 min); the cache makes repeats cheap.
-   Known first-run risks: kernel config symbol names, busybox kconfig
-   tweaks, coreutils static cross-build details, grub-mkrescue invocation.
-2. **Write `iso/README.md`** — architecture + how to run in VMware (new VM,
-   Ubuntu 64-bit guest, attach ISO, power on).
-3. **Phase 3 after it boots cleanly**: Bluetooth (BlueZ from source + kernel
+1. **Boot the ISO** in VMware (new VM, Ubuntu 64-bit guest, attach
+   `copper.iso`, power on) and walk the first-boot wizard. The kernel+init
+   boot path and overlay rootfs are the big untested surface; initramfs
+   `/init` and grub.cfg were written blind, so expect first-wave fixes
+   (kernel cmdline, overlay mount points, tty).
+2. **Ship the byline**: `7a3e877` adds the `handcrafted by 12hrformat`
+   header across the authored files but is **committed locally, not pushed**
+   (the active build was using the pre-byline commit; pushing invalidates
+   the cache key and costs a full rebuild). Push it when the next build is
+   wanted.
+3. **PR**: PR #2 (`copper-os` → `main`) is open on the fork; title +
+   description drafted, deliverable is `PR.md`.
+4. **Phase 3 after it boots cleanly**: Bluetooth (BlueZ from source + kernel
    `CONFIG_BT=y` etc.), NetworkManager from source (glib/dbus deps) for wifi +
    internet, linux-firmware blobs, then a GUI/desktop.
-4. **Persistence** = mount a writable disk as the overlay upper (currently
+5. **Persistence** = mount a writable disk as the overlay upper (currently
    tmpfs = session-only), i.e. real "install or always-save" mode.
 
 ## Repo map (this machine)
