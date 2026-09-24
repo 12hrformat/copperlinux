@@ -101,10 +101,34 @@ passed on CI and `copper.iso` was uploaded as an artifact (~29 MiB,
    wanted.
 3. **PR**: PR #2 (`copper-os` → `main`) is open on the fork; title +
    description drafted, deliverable is `PR.md`.
-4. **Phase 3 after it boots cleanly**: Bluetooth (BlueZ from source + kernel
-   `CONFIG_BT=y` etc.), NetworkManager from source (glib/dbus deps) for wifi +
-   internet, linux-firmware blobs, then a GUI/desktop.
-5. **Persistence** = mount a writable disk as the overlay upper (currently
+4. **Get Copper online — ethernet first, then wifi.** Kernel networking is
+   already covered (INET/TCP/UDP, PACKET, UNIX, e1000/e1000e, vmxnet3,
+   virtio_net all built in, `MODULES=off`) and the busybox we ship compiled
+   with `ip`, `ifconfig`, `udhcpc`, `ping`, `wget` (internal TLS), `nslookup`,
+   `nc`, `route`. Concretely:
+   - **Step 1 — Ethernet + DHCP (makes the VMware VM reach the internet,
+     zero new source builds):**
+     1. put busybox's `examples/udhcp/simple.script` at
+        `iso/rootfs-overlay/usr/share/udhcpc/default.script` (mode 0755) —
+        it assigns `$ip`/`$mask`/`$router` and writes `/etc/resolv.conf`
+        from `$dns`;
+     2. bring the NIC up at boot — in `copper-init.c` (or a tiny rc script it
+        spawns), run `ip link set eth0 up` then `udhcpc -i eth0 -b`;
+     3. add a fallback `nameserver 1.1.1.1` line to the overlay
+        `/etc/resolv.conf` so DNS exists even before DHCP;
+     4. verify in the VM: `ip a`, `ping 1.1.1.1`, `wget https://example.com`.
+   - **Step 2 — static-config escape hatch:** later, a `/etc/network`-style
+     file (interface/ip/gw/dns) that copper-init reads instead of DHCP.
+   - **Step 3 — WiFi (bigger lift):** because `MODULES=off`, the wireless
+     driver and `CONFIG_CFG80211` must be built into the kernel `.config`
+     directly. Build **wpa_supplicant** from source (static musl) for
+     association, keep busybox udhcpc for the IP, and drop the card's
+     firmware blobs (linux-firmware subset) into the rootfs. Full
+     NetworkManager (glib + dbus from source) is the heavy end-state for
+     wifi roaming and a GUI later.
+5. **Phase 3 after Copper has internet**: Bluetooth (BlueZ from source + kernel
+   `CONFIG_BT=y`), remaining linux-firmware blobs, then a GUI/desktop.
+6. **Persistence** = mount a writable disk as the overlay upper (currently
    tmpfs = session-only), i.e. real "install or always-save" mode.
 
 ## Repo map (this machine)
