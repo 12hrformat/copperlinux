@@ -66,9 +66,11 @@ All work currently lives on the **`copper-os`** branch.
   builds clean against musl.
 - **`HANDOFF.md`** — full mission notes + next-person checklist.
 
-Build status: **CI still needs a green run** — the code is written but the
-from-source pipeline hasn't completed end-to-end yet. The first local run of
-the pipeline is `sudo bash iso/build.sh` (or watch the Actions logs).
+Build status: **green.** Every stage — kernel → musl/busybox → the eight GNU
+tools → Copper's binaries → rootfs → initramfs → GRUB ISO — completes on CI
+and uploads `copper.iso` (~29 MB) as an Actions artifact. Run the pipeline
+locally with `sudo bash iso/build.sh` (or watch the Actions logs). Next
+milestone: a clean boot in VMware.
 
 ---
 
