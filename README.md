@@ -159,4 +159,25 @@ Issues and pull requests welcome.
 
 ## License
 
-Not yet specified.
+Copper's own code — `copper-sh`, `copper-init`, `copper-firstboot`, and the
+build scripts — is MIT licensed. See `LICENSE`.
+
+The rest of the system is source-built from other projects, each under its
+own license:
+
+| Component | License |
+|---|---|
+| Linux kernel | GPLv2 |
+| busybox | GPLv2 |
+| coreutils, findutils, tar, gzip, sed, grep | GPLv3 |
+| musl | MIT |
+| Copper source files (`copper-sh`, `copper-init`, `copper-firstboot`, build scripts) | MIT |
+
+Building or distributing the full ISO means complying with all of the
+above, not just Copper's own MIT terms.
+
+## Contact
+
+- Email: [12hrformat@proton.me](mailto:12hrformat@proton.me)
+- Instagram: [@mommy_said_im_special](https://instagram.com/mommy_said_im_special)
+- Or simply tag us in [Discussions](https://github.com/Copper-linux/copper/discussions)
