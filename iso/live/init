@@ -1,0 +1,40 @@
+#!/bin/busybox sh
+# Copper Linux — handcrafted by 12hrformat
+# copper live initramfs — find the Copper medium, build a writable overlay
+# on top of the read-only ISO, then hand over to copper-init (our PID 1).
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
+/bin/busybox mkdir -p /mnt/root /mnt/upper/upper /mnt/upper/work /mnt/merged /run
+
+find_media() {
+    for dev in /dev/sr[0-9]* /dev/sd[a-z] /dev/sd[a-z][0-9]* \
+               /dev/hd[a-z] /dev/hd[a-z][0-9]* /dev/vd[a-z] /dev/vd[a-z][0-9]* \
+               /dev/nvme0n1p[0-9]*; do
+        [ -b "$dev" ] || continue
+        /bin/busybox mount -t iso9660 -o ro "$dev" /mnt/root 2>/dev/null || continue
+        [ -f /mnt/root/boot/grub/grub.cfg ] && return 0
+        /bin/busybox umount /mnt/root 2>/dev/null
+    done
+    return 1
+}
+
+find_media || { echo "copper: boot medium not found"; exec /bin/busybox sh; }
+
+/bin/busybox mount -t tmpfs -o size=25% tmpfs /mnt/upper
+
+# writable top layer over the read-only ISO root
+/bin/busybox mount -t overlay overlay \
+    -o lowerdir=/mnt/root,upperdir=/mnt/upper/upper,workdir=/mnt/upper/work \
+    /mnt/merged || { echo "copper: overlay setup failed"; exec /bin/busybox sh; }
+
+/bin/busybox mount -t proc proc /mnt/merged/proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /mnt/merged/sys 2>/dev/null
+/bin/busybox mount -t devtmpfs devtmpfs /mnt/merged/dev 2>/dev/null
+/bin/busybox mkdir -p /mnt/merged/run
+/bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null
+
+exec /bin/busybox switch_root /mnt/merged /sbin/init
