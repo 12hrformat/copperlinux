@@ -355,6 +355,29 @@ build_copper() {
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
+
+  # switch_root is going to need all of these, and a staged tree missing one
+  # of them is a black screen on a machine with no shell to debug it from.
+  # Say it here, where it costs a second. (The udhcpc lease script is checked
+  # in build_rootfs instead — this stage runs before the overlay is copied.)
+  local f
+  for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot; do
+    if [ ! -x "$TGT/$f" ]; then
+      echo "copper: $f is missing from the staged rootfs" >&2
+      exit 1
+    fi
+  done
+  # sbin/init is a symlink, so -e is the wrong test for it: -e follows the
+  # link, the target is absolute, and it therefore gets looked up on the build
+  # host, where there is no /usr/bin/copper-init — the link reads as dangling
+  # and a perfectly good staged tree gets reported as broken. That is the same
+  # trap that stopped /init handing over, one file over. readlink does not
+  # follow, which is exactly what is wanted here.
+  if [ "$(readlink "$TGT/sbin/init")" != "/usr/bin/copper-init" ]; then
+    echo "copper: sbin/init should be a symlink to /usr/bin/copper-init" >&2
+    exit 1
+  fi
+
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
 }
@@ -373,6 +396,37 @@ build_rootfs() {
   chmod 0755 "$TGT/usr/share/udhcpc/default.script"
   [ -x "$TGT/usr/share/udhcpc/default.script" ] || {
     echo "rootfs: udhcpc lease script is not executable"; exit 1; }
+
+  # A CR anywhere in this file makes busybox ash fail every line of it, and
+  # the machine has no shell to fix that with. Cheap to prove here.
+  if LC_ALL=C grep -q $'\r' "$TGT/usr/share/udhcpc/default.script"; then
+    echo "rootfs: udhcpc lease script has CRLF line endings" >&2
+    exit 1
+  fi
+
+  # The overlay is copied onto a $TGT that may have come straight out of the
+  # build cache, still holding files from an earlier revision. mkdir -p and cp
+  # only ever add, so a file deleted from iso/rootfs-overlay/ would survive
+  # forever and be baked into the next ISO. Record what the overlay contained
+  # last time and drop whatever it no longer claims.
+  #
+  # The list has to come from iso/rootfs-overlay/, not from $TGT: $TGT is the
+  # cached directory that still has the stale file in it, so diffing $TGT
+  # against itself would never notice.
+  local old="$WORK/overlay.manifest" new="$WORK/overlay.manifest.new" rel
+  ( cd "$ROOT/rootfs-overlay" && find . \( -type f -o -type l \) | sed 's|^\./||' ) \
+    | LC_ALL=C sort > "$new"
+  if [ -s "$old" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      # Paths other stages own. Deleting one of these would break the build
+      # in a much more confusing way than the bug this fixes.
+      case "$rel" in usr/bin/*|usr/sbin/*|bin/*|sbin/*|usr/lib/*|lib/*|boot/*) continue ;; esac
+      rm -f "$TGT/$rel"
+      rmdir -p "$TGT/$(dirname "$rel")" 2>/dev/null || true
+    done < <(comm -23 "$old" "$new")
+  fi
+  mv -f "$new" "$old"
 }
 
 # ---------------------------------------------------------------
@@ -385,6 +439,11 @@ build_initramfs() {
     echo "initramfs: already built, skipping"; return
   fi
   echo "==> initramfs"
+  # Start from nothing every time. $INITRD lives in the cached work tree, and
+  # mkdir -p only ever adds: a staging directory left over from an earlier
+  # version of the init script gets packed into the cpio again, which is how a
+  # removed mnt/upper/upper kept turning up in the image.
+  rm -rf "$INITRD"
   # Only the mount points themselves. upper/ and work/ are deliberately NOT
   # created here: /init has to make them after it mounts the tmpfs on
   # /mnt/upper, because a tmpfs mounted over a directory hides what was
