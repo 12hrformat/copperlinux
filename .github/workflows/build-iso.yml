@@ -11,6 +11,17 @@ name: build-iso
 on:
   push:
     branches: ['**']
+  # A pull request is how work reaches this repo from a fork, and without this
+  # line a PR gets no build at all: the workflow only ever ran on pushes to
+  # branches in the repo itself, so a contributor with push rights got a green
+  # tick on their fork and a redacted "no checks" on the PR. Half the bugs
+  # fixed in this round were invisible to the build, so an unbuilt PR is not
+  # obviously safe to merge.
+  #
+  # Cost: every PR now runs the full pipeline. From a warm cache that is a
+  # couple of minutes; cold it is about fifteen, and the kernel is the bulk of
+  # it. Worth it to know the thing builds before anyone reviews the diff.
+  pull_request:
   workflow_dispatch:
 
 jobs:
