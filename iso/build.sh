@@ -314,7 +314,11 @@ build_initramfs() {
   [ -s "$TGT/boot/initrd.img" ] && { echo "initramfs: already built, skipping"; return; }
   echo "==> initramfs"
   local INITRD="$WORK/initramfs"
-  mkdir -p "$INITRD"/{bin,sbin,proc,sys,dev,mnt/root,mnt/upper/upper,mnt/upper/work,mnt/merged,run}
+  # Only the mount points themselves. upper/ and work/ are deliberately NOT
+  # created here: /init has to make them after it mounts the tmpfs on
+  # /mnt/upper, because a tmpfs mounted over a directory hides what was
+  # already in it, and the overlay then fails on a missing upperdir.
+  mkdir -p "$INITRD"/{bin,sbin,proc,sys,dev,mnt/root,mnt/upper,mnt/merged,run}
   cp "$TGT/bin/busybox" "$INITRD/bin/busybox"
   install -m 0755 "$ROOT/live/init" "$INITRD/init"
   ( cd "$INITRD" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -9 ) \
