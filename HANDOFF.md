@@ -213,6 +213,17 @@ about it.
   and its stage-by-stage logs can.
 - Neither VMware, VirtualBox nor QEMU is installed, so no boot test is
   possible from here. That is checklist item 1 and it needs a person.
+- **`core.autocrlf` was `true` on this box.** That, not git, is what filled
+  the working tree with CRLF, and it survived a `git checkout-index -f -a`
+  because git hashes the two the same. It is set to `false` now, so the local
+  tree matches the index. Leave it that way; `.gitattributes` asks for LF and
+  the config was quietly overriding it.
+- **Pushing needs a credential this machine does not have.** Git Credential
+  Manager offers only `farcrowx`, and GitHub answers
+  `Permission to 12hrformat/copper.git denied to farcrowx` — 403. There is no
+  `gh` CLI and no SSH key either, so the only route is a token the owner
+  supplies, or pushing from an account that can already write. The five
+  networking commits were sitting on disk waiting on this.
 
 ## What is MISSING (next person's checklist) ⚠️
 
