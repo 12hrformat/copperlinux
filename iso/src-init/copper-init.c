@@ -3,21 +3,25 @@
  * handcrafted by 12hrformat
  *
  * No systemd, no init scripts: this IS the init. It mounts the basics
- * (the initramfs already did most of it), applies the hostname, runs the
- * first-boot wizard once, then parks a copper-sh login shell on tty1 and
- * keeps it alive.
+ * (the initramfs already did most of it), applies the hostname, brings the
+ * network up, runs the first-boot wizard once, then parks a copper-sh login
+ * shell on tty1 and keeps it alive.
  */
 
 #define _GNU_SOURCE
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -56,6 +60,112 @@ static void apply_hostname(void) {
     sethostname(host, strlen(host));
 }
 
+/* Boot chatter, on the console everyone is already looking at. */
+static void say(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fputs("copper: ", stdout);
+    vprintf(fmt, ap);
+    va_end(ap);
+    fputc('\n', stdout);
+    fflush(stdout);
+}
+
+/* First interface that isn't loopback, or NULL. Note this is the first
+   interface *of any kind*, in whatever order the directory happens to read:
+   it isn't necessarily a wired NIC. There's no wireless support in this
+   build yet so it can't come up, but once wifi lands this needs to prefer
+   the wired one (skipping anything with a phy80211 directory would do it). */
+static const char *first_nonloop_iface(void) {
+    static char name[IFNAMSIZ];
+    struct dirent *ent;
+    DIR *dir = opendir("/sys/class/net");
+
+    if (!dir)
+        return NULL;
+    while ((ent = readdir(dir)) != NULL) {
+        size_t len = strlen(ent->d_name);
+        /* d_name is far wider than an interface name, so anything that
+           long is not one. */
+        if (len == 0 || len >= sizeof name || ent->d_name[0] == '.')
+            continue;
+        if (!strcmp(ent->d_name, "lo"))
+            continue;
+        memcpy(name, ent->d_name, len + 1);
+        closedir(dir);
+        return name;
+    }
+    closedir(dir);
+    return NULL;
+}
+
+/* IFF_UP through ioctl: no subprocess, and no guessing where the build
+   happened to install busybox's applet links. */
+static int link_up(const char *ifname) {
+    struct ifreq ifr;
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    int rc = 0;
+
+    if (sock < 0)
+        return -1;
+    memset(&ifr, 0, sizeof ifr);
+    snprintf(ifr.ifr_name, sizeof ifr.ifr_name, "%s", ifname);
+    if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0)
+        rc = -1;
+    else {
+        ifr.ifr_flags |= IFF_UP | IFF_BROADCAST;
+        if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0)
+            rc = -1;
+    }
+    close(sock);
+    return rc;
+}
+
+static void start_dhcp(const char *ifname) {
+    char pidfile[64];
+    pid_t pid = fork();
+
+    if (pid != 0)
+        return;
+    /* udhcpc passes its own environment to the lease script and never sets
+       PATH itself, so the script needs one to find ip(8). */
+    setenv("PATH", "/sbin:/usr/sbin:/bin:/usr/bin", 1);
+    snprintf(pidfile, sizeof pidfile, "/run/udhcpc.%s.pid", ifname);
+    execl("/sbin/udhcpc", "udhcpc", "-i", ifname, "-b", "-p", pidfile,
+          (char *)NULL);
+    _exit(127);
+}
+
+/* Nobody has logged in yet, but the box should already be online: raise the
+   interface and let DHCP sort out the address, the default route and the
+   resolver. Runs in the background, so a slow or absent DHCP server never
+   holds up the first-boot wizard. */
+static void bring_up_network(void) {
+    char ifname[IFNAMSIZ] = "";
+    int tries;
+
+    /* The kernel is done probing before it runs us, but a freshly attached
+       VMware NIC can land a moment later. Give the bus a couple of seconds
+       before deciding this machine has no network. */
+    for (tries = 0; tries < 20 && !ifname[0]; tries++) {
+        const char *found = first_nonloop_iface();
+        if (found)
+            snprintf(ifname, sizeof ifname, "%s", found);
+        else
+            usleep(100 * 1000);
+    }
+    if (!ifname[0]) {
+        say("no network interface, skipping DHCP");
+        return;
+    }
+    if (link_up(ifname) != 0) {
+        say("could not bring up %s, skipping DHCP", ifname);
+        return;
+    }
+    say("%s is up, asking DHCP for an address", ifname);
+    start_dhcp(ifname);
+}
+
 static void spawn_tty(int tty) {
     pid_t pid = fork();
     if (pid != 0) return;
@@ -90,6 +200,10 @@ int main(void) {
     mount_if_needed("tmpfs", "/run", "tmpfs");
 
     apply_hostname();
+
+    /* Started before the wizard on purpose: DHCP gets to negotiate while
+       the user is still typing their name. */
+    bring_up_network();
 
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
