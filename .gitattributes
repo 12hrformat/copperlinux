@@ -1,6 +1,18 @@
-# Force LF so the build scripts behave on Linux runners.
-*.sh text eol=lf
-*.c text eol=lf
-*.h text eol=lf
-*.yml text eol=lf
-*.service text eol=lf
+# Normalise on commit. Everything in this tree is source or a config we ship,
+# so a CRLF in the index is always wrong. ("auto" still leaves real binaries
+# alone, should any turn up.)
+* text=auto
+
+# Force LF in the working tree as well, for everything that ends up inside the
+# ISO. This matters more than it looks: a CR is invisible in a diff, and it
+# breaks things silently. `/etc/profile` with CRLF puts a CR at the end of
+# $PATH and every command comes up "not found"; `/etc/passwd` and `/etc/hosts`
+# fail their lookups; and the scripts we hand to busybox ash turn each line
+# into "command not found" at boot — on a machine with no shell to log into
+# and fix it with.
+* text eol=lf
+
+# The scripts busybox ash runs don't end in .sh at all: the initramfs init has
+# no extension, and the DHCP lease script is *.script.
+init text eol=lf
+*.script text eol=lf
