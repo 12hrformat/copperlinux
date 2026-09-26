@@ -5,6 +5,19 @@
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
+# /dev/console is whichever console= was last on the kernel command line, and
+# it is the only place userspace output goes. On a box with no serial port that
+# is the screen, which is right; on a VM whose serial port is pointed at a file
+# it means the file gets the kernel's opinion of the boot and none of ours,
+# which is the half nobody wants. So say it in both places. The screen stays
+# authoritative and the log becomes worth having.
+say() {
+    echo "copper: $*"
+    if [ -c /dev/ttyS0 ]; then
+        echo "copper: $*" > /dev/ttyS0 2>/dev/null || true
+    fi
+}
+
 /bin/busybox mount -t proc proc /proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
@@ -14,9 +27,9 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 # to come back to, so "it didn't boot" is all the report anyone gets. Say
 # which step broke instead.
 rescue() {
-    echo ""
-    echo "copper: $1"
-    echo "copper: dropping to a shell on /dev/console so you can look around"
+    say ""
+    say "$1"
+    say "dropping to a shell on /dev/console so you can look around"
     exec /bin/busybox sh < /dev/console > /dev/console 2>&1
 }
 
@@ -37,7 +50,7 @@ find_media() {
 }
 
 find_media || rescue "no Copper medium: looked for an iso9660 filesystem with /boot/grub/grub.cfg on it"
-echo "copper: initramfs up, medium is $MEDIA"
+say "initramfs up, medium is $MEDIA"
 
 # Writable top layer over the read-only ISO root.
 #
@@ -75,5 +88,5 @@ fi
 [ -x /mnt/merged/usr/bin/copper-init ] \
     || rescue "no copper-init in the merged root (it did not get built into the ISO)"
 
-echo "copper: handing over to copper-init"
+say "handing over to copper-init"
 exec /bin/busybox switch_root /mnt/merged /sbin/init

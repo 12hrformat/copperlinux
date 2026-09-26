@@ -60,15 +60,29 @@ static void apply_hostname(void) {
     sethostname(host, strlen(host));
 }
 
-/* Boot chatter, on the console everyone is already looking at. */
+/* Boot chatter. Goes to the console everyone is already looking at, and to
+   the serial port when the machine has one. Both, not either: /dev/console
+   only ever points at one of them — whichever console= was last on the kernel
+   command line — so writing to stdout alone means a quiet boot leaves a serial
+   log completely empty, which is precisely when a log is most wanted. */
 static void say(const char *fmt, ...) {
+    char line[512];
     va_list ap;
+    int n;
+    FILE *tty;
+
     va_start(ap, fmt);
-    fputs("copper: ", stdout);
-    vprintf(fmt, ap);
+    n = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
-    fputc('\n', stdout);
+    if (n < 0)
+        return;
+    printf("copper: %s\n", line);
     fflush(stdout);
+    tty = fopen("/dev/ttyS0", "w");
+    if (tty) {
+        fprintf(tty, "copper: %s\n", line);
+        fclose(tty);
+    }
 }
 
 /* ARPHRD_* link-layer types, from linux/if_arp.h. Spelled out rather than
