@@ -1,20 +1,20 @@
 # Copper OS — Handoff
 
 > Read this first, then `iso/README.md` for the build internals.
-> Written by whoever had the machine last. Everything in it is either
-> verified or explicitly marked as unverified — there is no third category.
+> Written by whoever had the machine last. Everything in it is either verified
+> or explicitly marked as unverified — there is no third category.
 
 ## What Copper is
 
-Our own Linux distro, built from source. Not a rebrand of Debian or Arch,
-and not a respin of them: the kernel is upstream but the `.config` is ours,
-the userland is compiled in our own pipeline against musl, and the pieces
-that make it *Copper* are written by hand.
+Our own Linux distro, built from source. Not a rebrand of Debian or Arch, and
+not a respin of them: the kernel is upstream but the `.config` is ours, the
+userland is compiled in our own pipeline against musl, and the pieces that
+make it *Copper* are written by hand.
 
 - real **Linux kernel** (6.12.10 LTS, from kernel.org) with **our `.config`**
 - userland **built from source**: musl, busybox, coreutils and friends
-- **our own** shell (`copper-sh`), **our own** PID 1 (`copper-init`), **our
-  own** first-boot wizard
+- **our own** shell (`copper-sh`), **our own** PID 1 (`copper-init`), **our own**
+  first-boot wizard
 - **all the standard Linux commands**, real tools — no stubs, no placeholders
 - boots as an **ISO** in VMware / VirtualBox / QEMU
 - first boot personalizes like a real distro OOBE
@@ -22,93 +22,263 @@ that make it *Copper* are written by hand.
 
 Upstream projects are reference material. Nothing gets packaged as-is.
 
-## Where things actually stand
+---
 
-The build pipeline is green end to end and produces a bootable-looking ISO
-of about 29 MiB. The shell is finished and tested. Ethernet + DHCP is
-written, unit-tested, and waiting on hardware.
+# Read this part: the branch, and why it isn't on upstream
 
-**None of the boot path has ever been executed.** `grub.cfg`, the initramfs
-`/init`, the overlay mount, `copper-init` itself and the wizard were all
-written without a VM in front of anyone. That is the whole story of this
-project right now: a lot of well-built parts and no proof they meet.
+**Both previous PRs are merged.** Upstream `main` is now `7b4e5fd`
+("Merge pull request #3 from farcrowx/copper-os"), so everything through
+`d639326` is on `Copper-linux/copper`.
 
-Read that as the first thing to fix, not as a footnote.
-
-## Before you start: check which branch you have
-
-As of this writing the local checkout was **6 commits ahead of
-`origin/copper-os`**:
+The new work is on a branch called **`patch-1`**, and it is **on the fork, not
+on upstream**:
 
 ```
-3080a84 note down the push blocker and the autocrlf that was fighting us [skip ci]
-3432f4e write down how the network actually gets configured
-5a9f57b force LF for everything that ends up in the ISO
-d5171ac iso: fail the build when a kernel or busybox option goes missing
-01ce3aa iso: ship a udhcpc lease script and a fallback resolver
-18298f7 iso: get the box online before the wizard runs
+origin    https://github.com/12hrformat/copper.git      (read-only here)
+fork      https://github.com/farcrowx/copper.git        (push target)
+upstream  https://github.com/Copper-linux/copper.git    (read-only here)
 ```
 
-If your branch tip is `77f2e6d`, **you do not have the networking work** —
-it was never pushed, because the only credential on that machine belonged to
-an account without write access to the fork. Find whoever has those commits
-before you start, or you will rebuild the DHCP path from scratch for no
-reason.
+`patch-1` lives on **`farcrowx/copper`** and is **9 commits ahead of upstream
+`main`**, touching 6 files, +345/-48:
 
-Confirm with `git log --oneline -7` and `git status -sb`.
+```
+9750dac say it in both places: the screen and the serial log
+2601222 init: ask sysfs what an interface is before handing it to DHCP
+971b6e5 boot: put tty0 last so the screen is /dev/console again
+0cf3fd9 iso: make the build fail on the things it used to ship silently
+b7facc7 init: test for copper-init, not for the symlink pointing at it
+a225b17 boot: send the console somewhere we can actually read it
+307d6b9 iso: pin the script path before the cd, and fail safe in the stamps
+d9b1ce1 iso: stamp stage outputs so a warm cache can't ship a stale one
+3ae61c1 iso: create the overlay dirs after the tmpfs goes over them
+```
+
+**It needs a PR to land.** The only credential on this machine belongs to
+`farcrowx`, and GitHub answers `push=False` for that account on
+`Copper-linux/copper` (`admin=false, pull=true`). Somebody with write access
+has to open `farcrowx:patch-1 → Copper-linux/copper:main`, or take the branch
+and push it up directly.
+
+To get it:
+
+```sh
+git fetch upstream fork
+git log --oneline upstream/main..fork/patch-1     # should show the 9 above
+git checkout -b patch-1 fork/patch-1
+```
+
+---
+
+# Where things actually stand
+
+**The box boots and gets onto the network.** This is not a projection. A
+VMware guest, 2 GB, NAT, booting the ISO, produces this and nothing after it
+is broken:
+
+```
+copper: initramfs up, medium is /dev/sr0
+copper: handing over to copper-init
+copper: eth0 is up, asking DHCP for an address
+copper-net: dropping the address on eth0
+copper-net: eth0 leased 192.168.179.129/24
+copper-net: default route via 192.168.179.2
+copper-net: nameserver 192.168.179.2
+```
+
+That is the whole boot path — kernel, initramfs, overlay, `switch_root`, our
+PID 1, DHCP, netmask conversion, default route, resolver — verified on
+hardware, from an artifact that was taken apart and read before it was
+trusted.
+
+**Last known-good ISO:** `copper4.iso`, sha256
+`2355a64008c2aa48554510bc14e790e349191e38c031bab1dffa99cba09b338d`, 57.2 MB,
+from CI run `36242735281` (sha `9750dac`).
+
+## What has never run
+
+Two things, and they are the whole remaining risk:
+
+1. **The first-boot wizard.** `iso/firstboot/copper-firstboot.c` has never been
+   executed on any machine. It compiles clean, and that is all anyone can say.
+   The last thing on the screen during the successful boot was
+   `copper-net: nameserver 192.168.179.2`; nobody has confirmed whether a
+   wizard appeared after it or whether PID 1 dropped straight to a shell. This
+   is the first thing to check, and it is central to the "personalizes like a
+   real distro OOBE" requirement.
+2. **Real internet traffic.** We have an address, a prefix, a default route
+   and a nameserver. Nothing has yet proved that a name resolves or that a TCP
+   connection completes. `ping 1.1.1.1` and a `wget` are still unrun.
+
+---
+
+# What was messed up, and what fixed it
+
+Nine commits, and most of them exist because something was quietly wrong in a
+way that looked like something else. Worth reading in order — several of these
+cost a boot cycle each, and the reasons generalise.
+
+## 1. The overlay directories were created before the tmpfs went over them
+
+`iso/live/init` did `mkdir -p /mnt/upper/upper` and then
+`mount -t tmpfs … /mnt/upper`. Mounting hides what was underneath, so the
+overlay came up with no `upperdir` and died:
+
+```
+overlays: failed to resolve '/mnt/upper/upper': -2
+```
+
+Fix: mount the tmpfs **first**, then `mkdir` inside it. The whole staging
+order is that one trick. `3ae61c1`.
+
+## 2. CI shipped an ISO built from the *previous* commit
+
+The nastiest one, because **the run was fully green**. `restore-keys:
+copper-work-` deliberately restores the previous tree — that is what saves a
+7-minute kernel build — but the stage guards were existence-only
+(`[ -s "$TGT/boot/initrd.img" ] && skip`). Key changed, old tree restored, file
+present, stage skipped. An ISO went out with an initrd packed from the old
+`init`.
+
+Fix: `stamped_skip` / `stamp_set` / `tree_hash` in `build.sh`. Every stage
+stamps its output with a hash of its own inputs. `d9b1ce1`.
+
+**Do not "fix" this by deleting `restore-keys`.** The fallback is not the bug;
+it is what makes a warm cache survive an unrelated change. The stamps are what
+make it sound.
+
+## 3. `$0` is not a path you can hash after a `cd`
+
+`SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")` is pinned before the
+script `cd`s, because CI runs `sudo bash iso/build.sh kernel` — so `$0` is the
+*relative* `iso/build.sh`, and line 20 `cd`s out from under it. `cat "$0"` then
+had nothing to open, and under `set -euo pipefail` that killed the script 14
+lines after a successful 7-minute kernel build. `307d6b9`.
+
+## 4. My own rescue check was a false negative
+
+Added in fix #1, to turn "switch_root on a root with no init" into something
+readable. It read:
+
+```sh
+[ -x /mnt/merged/sbin/init ] || rescue "no /sbin/init in the merged root"
+```
+
+`/sbin/init` is a symlink to the **absolute** path `/usr/bin/copper-init`.
+Before `switch_root` does its chroot, an absolute symlink resolves against the
+initramfs root — where there is no `/usr/bin` at all. So the test followed the
+link into the initramfs, found nothing, and reported a perfectly good ISO as
+broken. It cost a boot cycle to find.
+
+Fix: test the binary, not the link. `switch_root` still gets handed
+`/sbin/init`, which resolves correctly after the chroot. `b7facc7`.
+
+## 5. …and the build gate I added to catch #4 made the same mistake
+
+`[ -e "$TGT/sbin/init" ]` — which also *follows* the link, this time to the
+**build host's** `/usr/bin/copper-init`, which does not exist. Dangling, so
+"missing", so the first CI run of the new gate failed on a staged tree that was
+fine. It uses `readlink` now. `0cf3fd9`.
+
+Worth internalising: **`-e` and `-x` follow symlinks. Any check on a
+Copper-created link must use `readlink`, or it is testing the build machine.**
+
+## 6. Stale files survived in two staging trees
+
+`build_initramfs` and `build_rootfs` both copy into a `$TGT` that may have come
+straight out of the cache, and `cp` only ever adds. A file or directory deleted
+from the source came back in the next ISO — and because the ISO stage stamps
+the whole tree, it did that while *looking* like a clean rebuild. `rm -rf` the
+initramfs staging dir; keep a manifest of what the overlay contained last time
+and drop whatever it no longer claims. `0cf3fd9`.
+
+**The manifest has to be built from `iso/rootfs-overlay/`, not from `$TGT`.**
+My first version diffed `$TGT` against itself, which is the cached directory
+that still holds the stale file, so it could never fire. A test now pins that:
+it runs the old logic against the scenario and asserts the file survives, so
+the test cannot pass on the broken version.
+
+## 7. The serial console addition made the screen lie
+
+`console=tty0 console=ttyS0,115200` looked obviously right. It is not. **The
+last `console=` on the command line is what `/dev/console` points at**, and that
+is the only place userspace output goes. On a VM with no serial port, `ttyS0`
+never registers, `/dev/console` has no working target, and the screen sits on
+GRUB's "Booting up kernel" while the system boots perfectly out of sight. It
+looks exactly like a hang. Cost hours. `971b6e5`.
+
+Correct order is `console=ttyS0,115200 console=tty0` — register both, screen
+last.
+
+## 8. …which then made the serial log useless
+
+Fixing #7 correctly left the file getting the kernel's half of the boot and
+none of ours, and under `quiet` — the entry anyone actually boots — **0 bytes**.
+Measured, not assumed.
+
+So `say()` in all three places (initramfs, PID 1, lease script) now writes to
+stdout *and* to `/dev/ttyS0`, guarded by `[ -c /dev/ttyS0 ]` so a machine with
+no serial port does nothing. `9750dac`.
+
+Practical upshot: **you never have to photograph or transcribe a screen
+again.** Point the VM's serial port at a file and paste that.
+
+## 9. DHCP was broadcasting into a tunnel
+
+This is the one that mattered most, and it was hiding in plain sight:
+
+```
+copper-net: no lease on sit0 yet, still asking
+udhcpc: no lease, forking to background
+```
+
+`sit0` is not a network card. It is the IPv6-in-IPv4 tunnel the `sit` module
+creates at boot, and with `MODULES=n` every driver is built in, so it exists
+before the real NIC finishes probing. `first_nonloop_iface()` took the first
+name in `/sys/class/net` that wasn't `lo`, so it got `sit0`, brought it up with
+`SIOCSIFFLAGS`, and broadcast DHCP discovers into an interface that cannot
+carry them. `eth0` sat there untouched and never even reported link up,
+because nothing had asked it to.
+
+Fix: read `/sys/class/net/<if>/type` (the `ARPHRD_*` value) and only accept
+`ARPHRD_ETHER`, or `ARPHRD_IEEE80211_RADIOTAP` when there is no wired one.
+That skips `sit0`, `gre0`, `ip6tnl0`, `ipip0`, `teql0`, `tun0` and `ifb0`
+without naming any of them, and it no longer depends on directory order.
+`2601222`.
+
+The old code carried a comment predicting this exact failure. It was right, and
+it was still worth doing properly.
 
 ---
 
 # Goals
 
-Ordered by what unblocks the most. Do them in this order.
+Ordered by what unblocks the most.
 
-## G1 — Boot the ISO ⚠️ blocks everything else
+## G1 — Confirm the first-boot wizard ⚠️ blocks the identity claim
 
-**Done looks like:** VMware (new VM, Ubuntu 64-bit guest, 2 GB, NAT
-networking, `copper.iso` attached to the CD drive) powers on, GRUB shows the
-menu, the kernel boots, the wizard asks for your name, and you land at a
-`copper-sh` prompt.
+**Done looks like:** the screen after `copper-net: nameserver …` shows the
+wizard asking for a name, and a `copper-sh` prompt afterwards.
 
-There is no hypervisor on the build machine, so this needs a person at a
-keyboard. Everything else in this document is guesswork until it happens.
+Boot `copper4.iso`, screenshot the window. That is the whole task. Nothing
+downstream — persistence especially — is testable until it is answered, and it
+has never been executed, so expect it to be the next thing to break.
 
-The first-wave suspects, in rough order of likelihood:
+## G2 — Prove the internet, not just DHCP
 
-1. **Kernel cmdline** in `iso/boot/grub.cfg` — `root=`, `console=`, `init=`
-   are guesses. There is a "verbose" GRUB entry; use it to see how far it
-   gets.
-2. **The initramfs `init`** (`iso/live/init`) — finding the Copper medium,
-   and the overlay `mount` options. The lowerdir is read-only ISO and the
-   upper is tmpfs; a wrong `lowerdir` path fails here silently-ish.
-3. **The console device** — if the kernel can't find `console=ttyS0` or
-   `tty0` you get a black screen and no way to type anything.
-4. **`switch_root`** — the args and the cwd it expects.
-
-When it does boot, `cat /proc/cmdline` and the verbose boot log are the first
-two things to read. Fix the boot path before touching anything else; nothing
-downstream is testable until it works.
-
-## G2 — Prove the network
-
-**Done looks like,** in the `copper-sh` prompt after a boot:
+**Done looks like:**
 
 ```sh
-ip a                      # an address from DHCP, on the wired NIC
-ping 1.1.1.1              # raw IP, no DNS involved
-wget https://example.com  # DNS and TLS together
+ping -c 1 1.1.1.1          # raw IP, no DNS
+nslookup example.com       # resolver works
+wget -O - http://example.com   # HTTP end to end
 ```
 
-The code for all of this exists — `bring_up_network()` in
-`iso/src-init/copper-init.c` and our own lease script at
-`iso/rootfs-overlay/usr/share/udhcpc/default.script` — and the lease script
-is unit-tested (see below). What has never happened is a real DHCP server
-answering.
-
-If it doesn't come up, the suspects in order: the interface name (init picks
-the first non-`lo` in `/sys/class/net` — confirm it isn't grabbing something
-odd), VMware's NIC model (try e1000e, then vmxnet3), and whether the
-gateway is on the same subnet as the lease.
+We have a lease, a route and a resolver. None of the three above has run. The
+cheap version is to add a reachability probe to the lease script's `bound`
+handler so the next log answers it without anyone typing commands; the honest
+version is to run the three commands at a `copper-sh` prompt and paste the
+output.
 
 ## G3 — Static-IP escape hatch
 
@@ -126,18 +296,19 @@ Bigger than ethernet, because `MODULES=off` means the wireless driver and
 `CONFIG_CFG80211` have to be compiled into the kernel `.config` directly.
 
 **Done looks like:** the box associates with an access point and gets a lease
-without any manual fiddling.
+without manual fiddling.
 
 Roughly: enable `CFG80211` plus the driver in `build.sh`; build
 **wpa_supplicant** from source (static musl) for association; keep busybox
-`udhcpc` for the IP afterwards, since it already works; and drop the card's
-firmware blobs (a `linux-firmware` subset) into the rootfs. Full
+`udhcpc` for the IP afterwards, since it now demonstrably works; and drop the
+card's firmware blobs (a `linux-firmware` subset) into the rootfs.
 NetworkManager — glib and dbus from source — is the heavy end state for
 roaming and a GUI, and is not required to get onto a network.
 
-Note that `bring_up_network()` currently takes the first non-loopback
-interface of *any* kind, in whatever order the directory reads. With wifi
-present that is a coin flip. Skip anything with a `phy80211` directory.
+The interface-selection bug that broke wired DHCP is already handled for wifi:
+`first_nonloop_iface()` now asks sysfs for the `ARPHRD_*` type and prefers
+`ARPHRD_ETHER` over `ARPHRD_IEEE80211_RADIOTAP`, so a wireless NIC no longer
+turns it into a coin flip.
 
 ## G5 — Bluetooth
 
@@ -152,15 +323,14 @@ drivers. BlueZ wants a D-Bus daemon; that's the part to budget time for.
 
 The overlay's upper layer is currently tmpfs, so the session is throwaway by
 design. Move the upper onto a real disk partition the user picks on the
-wizard's last page — the same overlay mechanism, just a different `upperdir`.
-`iso/live/init` already lays the overlay down, so this is a matter of
-mounting a disk where the tmpfs goes and telling the wizard to offer it.
+wizard's last page — same overlay mechanism, different `upperdir`.
+`iso/live/init` already lays the overlay down, so this is a matter of mounting
+a disk where the tmpfs goes and telling the wizard to offer it.
 
-## G7 — Ship the PR
+## G7 — Land `patch-1`
 
-`PR.md` at the repo root is drafted and current, including the networking
-work. PR #2 targets `copper-os` → `main`. Push the branch and open it, or
-update the body if the status has moved on.
+See the top of this document. It needs a PR from an account with write access
+to `Copper-linux/copper`, or someone with that access pushing it.
 
 ## G8 — A desktop
 
@@ -171,59 +341,72 @@ blocked on it.
 
 # What is verified, and what is not
 
-Being precise here matters, because a lot of this tree has never run and it
-is easy to mistake "it compiles" for "it works".
+Being precise here matters, because it is easy to mistake "it compiles" for
+"it works".
 
 ## Has actually been executed
 
+- **The boot path, end to end, on a real machine.** Kernel → initramfs →
+  overlay → `switch_root` → `copper-init`. The log at the top of this document
+  is the evidence.
+- **DHCP against a real server.** A lease, `/24` derived from a
+  `255.255.255.0` netmask, a default route, and a resolver. `mask_to_prefix`
+  had only ever been unit-tested before this; it is now correct in production.
 - **`copper-sh`** — compiled with real GCC 12.2
   (`-std=c11 -O2 -Wall -Wextra`, zero warnings) and run through a 44-command
-  battery under **AddressSanitizer**: exit 0, no leaks, no overruns. Bugs
-  that found and fixed: an argv heap off-by-one, output lost because `_exit()`
+  battery under **AddressSanitizer**: exit 0, no leaks, no overruns. Bugs that
+  found and fixed: an argv heap off-by-one, output lost because `_exit()`
   skipped the stdio flush, history storing tokenized instead of the line you
   typed, children reading stale buffered stdin, `ls -l` on a single file, and
   `ls` going one-per-line on a non-TTY so `ls | grep` filters like real `ls`.
-- **`tests/smoke.sh`** — 19 assertions over the shell's core behaviours. Run
-  it before you touch the shell: `make && ./tests/smoke.sh`. Needs a local
-  compiler; there isn't one on the build machine, so it runs wherever you're
-  developing.
+- **`tests/smoke.sh`** — 19 assertions over the shell's core behaviours. Run it
+  before you touch the shell.
 - **The DHCP lease script** — 58 assertions on `mask_to_prefix` (all 33 valid
   netmasks, generated rather than typed, plus non-contiguous and malformed
-  input) and 25 more driving the whole script against a stub `ip`: every
-  lease state, renew replacing the default route, a missing netmask falling
-  back to /24, several routers, a nameserver-less lease keeping the fallback
-  resolver, and an empty `$1` being refused.
+  input) and 25 more driving the whole script against a stub `ip`.
+- **The stage-stamp logic** — 11 assertions including the exact regression
+  (output present *and* input moved on must rebuild), and a separate harness
+  proving the helpers survive `set -euo pipefail`.
+- **The build gates** — overlay-manifest pruning against a simulated warm
+  cache, the CRLF gate, and the `readlink` comparison, with a check that the
+  *old* manifest logic fails the same scenario.
+- **The logging paths** — all three `say()` implementations reach both the
+  screen and `ttyS0`, with the `-c` guard proven to skip a non-character
+  device.
 - **The whole CI build**, green end to end — kernel, musl, busybox, all eight
   GNU tools, Copper's three binaries, rootfs, initramfs, GRUB ISO.
-- **`sh -n`** on all three shipped shell scripts.
+- **`sh -n`** on all three shipped shell scripts, plus at build time via
+  `lint_scripts`.
 - **`copper-init.c` and `copper-firstboot.c`** compile clean under GCC 12.2
-  with `-Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings`.
-
-Writing those lease-script tests found two real bugs: a non-contiguous mask
-like `255.0.255.0` was accepted as a valid netmask, and a truncated
-`255.255.255` was read as /32. The file had also carried a confident comment
-claiming `$subnet` was a prefix length, which was simply false. Read the
-busybox source rather than reasoning about it.
+  with `-Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings`, and in CI against
+  musl.
 
 ## Has never run
 
-**Everything on the boot path.** `grub.cfg`, the initramfs `/init`, the
-overlay mount, `copper-init`, the wizard, and DHCP against a real server.
-No hypervisor on the build machine can run any of it. This is G1.
+- **The first-boot wizard.** Compiles; never executed. G1.
+- **Any real internet traffic.** No `ping`, no `nslookup`, no `wget`. G2.
 
-## The build gate
+## A note on green CI runs
 
-Two functions in `iso/build.sh` exist because a kernel that boots to a black
-screen, or comes up with no NIC able to speak DHCP, is miserable to debug
-from inside a VM — you get a dead machine and no error message, because from
-the build's point of view nothing went wrong.
+**A green run does not mean the artifact is correct.** Run `36220249701` was
+fully green and shipped an ISO built from the previous commit's `init`. Always
+take the artifact apart: mount it, `gzip -dc` the initrd, decode the cpio, read
+`/init` back out, and parse the ISO's Rock Ridge records if you need to know
+what a symlink points at. Windows shows 8.3 names because the image has Rock
+Ridge and **no Joliet** — `COPPER_I` is `copper-init`, and that is cosmetic,
+not a bug.
 
-- `lint_scripts` — `sh -n` over the initramfs `init` and the lease script.
-  Both are read by busybox ash on a machine with no shell to log into and fix
-  them with.
-- `require_kernel_config` / `require_bb_config` — read the `.config` files
-  back after kconfig has had its say and refuse to continue, listing what
-  went missing, if an option Copper leans on isn't set.
+## The build gates
+
+- `lint_scripts` — `sh -n` over the initramfs `init` and the lease script. Both
+  are read by busybox ash on a machine with no shell to log into and fix them
+  with.
+- `require_kernel_config` / `require_bb_config` — read the `.config` files back
+  after kconfig has had its say and refuse to continue, listing what went
+  missing.
+- `build_copper` — checks the staged tree actually contains the binaries and
+  lease script `switch_root` needs, and that `sbin/init` is a symlink to
+  `/usr/bin/copper-init`. Uses `readlink`, not `-e`; see bug #5.
 
 ---
 
@@ -231,28 +414,41 @@ the build's point of view nothing went wrong.
 
 **Any change to a cache-key file is a full kernel rebuild.** The CI cache key
 hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
-`iso/rootfs-overlay/**`, `iso/src-init/**`, `iso/firstboot/**` and `src/**`.
-A change to *any one* of those throws away the whole `iso/work/` cache. And
-the cache is only saved on job success, so a spurious assertion failure costs
-a full rebuild too. Batch changes; don't dribble.
+`iso/rootfs-overlay/**`, `iso/src-init/**`, `iso/firstboot/**` and `src/**`. A
+change to *any one* of those throws away the whole `iso/work/` cache. The cache
+is saved even on failure (`if: always()`), so a red run still warms the next
+one. Batch changes; don't dribble.
+
+**The kernel command line's last `console=` is `/dev/console`.** See bug #7.
+This is the single most counter-intuitive thing in the whole boot, it produces
+a fake hang, and it cost the most time.
+
+**`console=ttyS0,115200` on a VM with no serial port is not a no-op.** It
+takes `/dev/console` away from `tty0`. Add the serial port *and* put `tty0`
+last.
 
 **Only add symbols to `require_kernel_config` that you have checked exist.**
-That list is the reason a broken kernel config fails loudly instead of
-booting mute, but a symbol that doesn't exist in 6.12 fails the build
-immediately and expensively. `ETHERNET` is the cautionary tale: it was in the
-list, and 6.12 removed it.
+A symbol that doesn't exist in 6.12 fails the build immediately and
+expensively. `ETHERNET` is the cautionary tale: it was in the list, and 6.12
+removed it.
 
 **`MODULES=n` means every `tristate` resolves to `y` or `n`,** never `m`. So a
-`--enable`d tristate really is `=y` in the final `.config`, which is what
-makes those assertions safe to write.
+`--enable`d tristate really is `=y` in the final `.config`.
 
 **`core.autocrlf` was `true` on the build machine** and quietly filled the
 working tree with CRLF. A CR is invisible in a diff and it breaks things
-quietly: a CR at the end of `PATH` in `/etc/profile` makes every command come
-up "not found", CRLF in `passwd`/`hosts` breaks the lookups, and CRLF in a
-script busybox ash runs turns every line into "command not found" during
-boot. It is set to `false` now, and `.gitattributes` asks for LF everywhere.
-Leave both alone.
+quietly: a CR at the end of `PATH` in `/etc/profile` makes every command come up
+"not found", CRLF in `passwd`/`hosts` breaks the lookups, and CRLF in a script
+busybox ash runs turns every line into "command not found" during boot. It is
+`false` now and `.gitattributes` asks for LF everywhere. Leave both alone.
+
+**`git commit -- <paths>` commits the working tree, not the index**, which
+leaks `update-index --chmod=+x` changes into a later commit. Use index-only:
+`git reset -q; git add -- <files>; git update-index --chmod=+x -- <f>; git commit`.
+
+**`core.fileMode` is off on Windows**, so exec bits need
+`git update-index --chmod=+x`. `iso/live/init` and the lease script are mode
+100755 and must stay that way.
 
 ---
 
@@ -260,55 +456,44 @@ Leave both alone.
 
 Each of these cost a wrong turn once. All were checked against real sources.
 
-- **busybox's `make defconfig` is not a stock config.** busybox patches
-  kconfig with `const char conf_defname[] = "/dev/null"`
+- **busybox's `make defconfig` is not a stock config.** busybox patches kconfig
+  with `const char conf_defname[] = "/dev/null"`
   (`scripts/kconfig/confdata.c:25`), so "defconfig" means *the Kconfig
-  defaults*. There is no `configs/defconfig` in 1.36.1. Per-applet symbols
-  live in `//config:config SYMBOL` comments inside the `.c` files and in the
-  directory `Config.src` files. Don't go looking for a defconfig to patch.
+  defaults*. There is no `configs/defconfig` in 1.36.1. Per-applet symbols live
+  in `//config:config SYMBOL` comments inside the `.c` files and in the
+  directory `Config.src` files.
 - `CONFIG_STATIC` is `default n`, so it must be set explicitly — and **after**
   `make defconfig`, because reassigning a symbol defconfig already answered is
   silently dropped (first assignment wins). That's what `set_bb_config` is for.
 - **6.12 has no `CONFIG_ETHERNET`.** The driver menu is unconditional under
-  `NET`/`NETDEVICES`. `NET` and `NETDEVICES` are the real gates.
+  `NET`/`NETDEVICES`. Those are the real gates.
 - In 6.12, `config INET` moved to `net/Kconfig` and `net/ipv4/Makefile` builds
   `tcp.o`/`udp.o` in `obj-y` unconditionally under `INET`. So `CONFIG_INET=y`
-  (which `x86_64_defconfig` sets) is enough for IPv4; there is no separate
-  TCP/UDP symbol to chase.
-- `BLK_DEV_NVME` lives in `drivers/nvme/host/Kconfig` in 6.12, not
-  `drivers/block/`. It's `tristate` with **no default**, so the explicit
-  `--enable` in `build.sh` is what turns it on.
+  (which `x86_64_defconfig` sets) is enough for IPv4.
+- `BLK_DEV_NVME` lives in `drivers/nvme/host/Kconfig` in 6.12. It's `tristate`
+  with **no default**, so the explicit `--enable` in `build.sh` turns it on.
 - `CONFIG_OVERLAY_FS` is also `tristate` with no default. The entire live-root
   design rests on `build.sh` passing `--enable OVERLAY_FS`.
 - vmxnet3's Kconfig path isn't `drivers/net/ethernet/vmware/Kconfig` in 6.12
-  (404) and the symbol name couldn't be pinned down. `build.sh` passes **both**
+  and the symbol name couldn't be pinned down. `build.sh` passes **both**
   `--enable VMXNET3` and `--enable VMWARE_VMXNET3`; kconfig drops
-  whichever doesn't exist, which costs nothing. Deliberately not asserted.
-- The whole assertion list was cross-checked against the real
-  `x86_64_defconfig`: every symbol is either explicitly `=y` there or
-  explicitly `--enable`d. Nothing depends on an unverified Kconfig default.
+  whichever doesn't exist. Deliberately not asserted.
 - **In busybox 1.36.1 udhcpc's source is `networking/udhcp/dhcpc.c`,** not
-  `networking/udhcp.c` — the client was split into a directory, so grepping
-  the old path finds nothing and makes the applet look missing. `ip` is split
-  too: the address parsing is in `networking/libiproute/`, not `ip.c`.
-- The environment udhcpc exports comes from the DHCP **option** names
-  (`common.c:dhcp_optflags`). The consequence that matters: **`$subnet` is the
-  netmask as a dotted quad** (option 1 is `OPTION_IP`), and `$mask` is the same
-  mask as a decimal uint32. Neither is a prefix length.
+  `networking/udhcp.c` — the client was split into a directory. `ip` is split
+  too: address parsing is in `networking/libiproute/`.
+- The environment udhcpc exports comes from the DHCP **option** names. The
+  consequence that matters: **`$subnet` is the netmask as a dotted quad**, and
+  `$mask` is the same mask as a decimal uint32. Neither is a prefix length.
 - busybox `ip` *does* accept a dotted mask after the slash: `get_prefix_1`
-  (`networking/libiproute/utils.c`) tries `bb_strtou` on the text after `/` and
-  falls back to parsing it as a netmask when the number comes out wider than
-  the address. That's how upstream's own `examples/udhcp/simple.script` gets
-  away with `ip addr add $ip/$subnet`. We convert to a prefix length
-  ourselves anyway rather than depending on that fallback.
+  (`networking/libiproute/utils.c`) falls back to parsing it as a netmask. We
+  convert to a prefix length ourselves rather than depending on that.
 - `udhcpc -b` does not exit — after its retries it forks into the background
   and keeps trying forever. So init can fire it and move on; no `-n` needed.
-- udhcpc does **not** put `PATH` in the lease script's environment, so init
-  has to set it before the exec.
+- udhcpc does **not** put `PATH` in the lease script's environment, so init has
+  to set it before the exec.
 - busybox installs udhcpc at `/sbin/udhcpc`, `ip`/`ifconfig`/`route` in
-  `/sbin`, `ping` in `/bin`, `wget`/`nslookup` in `/usr/bin`, `switch_root`
-  in `/sbin`. It does **not** install a lease script, which is why we ship
-  our own.
+  `/sbin`, `ping` in `/bin`, `wget`/`nslookup` in `/usr/bin`, `switch_root` in
+  `/sbin`. It does **not** install a lease script, which is why we ship one.
 - `wget`'s `https://` is busybox's internal TLS. It encrypts but does **not**
   verify certificates. Fine for pulling a tarball, not for a login.
 
@@ -318,10 +503,10 @@ Each of these cost a wrong turn once. All were checked against real sources.
 
 ```
 iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|initramfs|iso|all
-iso/live/init             initramfs script: find the ISO, lay a writable overlay, switch_root
-iso/boot/grub.cfg         GRUB menu, normal and verbose entries
+iso/live/init             initramfs: find the ISO, lay a writable overlay, switch_root
+iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1
-iso/firstboot/copper-firstboot.c   the OOBE wizard
+iso/firstboot/copper-firstboot.c   the OOBE wizard  (never executed)
 iso/rootfs-overlay/       /etc and friends that land in the rootfs
 iso/rootfs-overlay/usr/share/udhcpc/default.script   our DHCP lease script
 src/                      copper-sh: main.c, builtins.c, builtins.h
@@ -330,37 +515,58 @@ tests/smoke.sh            19-assertion shell smoke test
 PR.md                     drafted PR body
 ```
 
-- `origin` = `https://github.com/12hrformat/copper.git` (the fork). Upstream
-  `Copper-linux/copper` returns 403 on push, so PRs go via the fork.
-- Branches: **`copper-os` only**. The old `main`, `copper-sh` and `patch-1`
-  branches were deleted; the shell's history survives inside `copper-os`.
-- Last green CI run: `35937198186` (sha `468ba4c`), artifact `copper.iso`
-  ~29 MiB. The run after it was cancelled.
-- **Pushing needs a credential the build machine didn't have.** Git Credential
-  Manager offered only `farcrowx`, and GitHub answered
-  `Permission to 12hrformat/copper.git denied to farcrowx`. No `gh` CLI, no
-  SSH key. Get a token from the owner or push from an account that can
-  already write.
+---
+
+# Tooling and how to drive a boot
+
+## Getting the ISO
+
+Artifacts download fine now, using the Git Credential Manager token. Earlier
+notes saying this returns 401 are out of date. Capture the token into a
+variable and never print it:
+
+```sh
+out=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
+tok=$(printf '%s\n' "$out" | sed -n 's/^password=//p')
+curl -sL -H "Authorization: Bearer $tok" \
+  https://api.github.com/repos/farcrowx/copper/actions/artifacts/<id>/zip -o iso.zip
+```
+
+## The VM
+
+VMware Workstation, guest OS **Linux / Other Linux 6.x kernel 64-bit**, 2 GB,
+2 processors, **NAT** networking (bridged may not answer DHCP), and the ISO on
+the CD drive with **Connected at power on** ticked.
+
+Then **Add… → Serial Port**, "This end is connected to" → **Output to file** →
+`C:\Users\hp\Desktop\copper-boot.txt` (VMware insists on a `.txt` name and will
+warn that the file does not exist; accept it, it creates the file) → **Connect
+at power on**.
+
+Boot the **verbose** entry while diagnosing. The `copper:` and `copper-net:`
+lines now reach the file on *every* entry, so paste that file rather than
+photographing a screen.
 
 ## Tooling on the build machine
 
-- **Git for Windows is installed**, so a real POSIX shell is at
-  `C:\Program Files\Git\bin\bash.exe`. That gives you `sh -n` on the shipped
-  scripts and — more usefully — the ability to unit test shell logic with a
-  stub binary on `PATH`, no VM and no compiler. The lease script got both
-  treatments because of it. Don't assume there's no way to test shell here.
+- **Git for Windows** gives a real POSIX shell at
+  `C:\Program Files\Git\bin\bash.exe`. That allows `sh -n` on the shipped
+  scripts and — more usefully — unit testing shell logic with a stub binary on
+  `PATH`, no VM and no compiler. Most of the tests in this branch were written
+  that way. Don't assume there's no way to test shell here.
+- **This box cannot create a symlink at all** — `ln -s` fails regardless of
+  privilege, because Windows wants Developer Mode for native symlinks. So any
+  test of symlink *behaviour* has to stub `readlink`; the real thing is CI's to
+  prove, and it does.
 - No local C toolchain: no gcc/clang/tcc, no WSL, no container runtime. C
-  verification goes through Compiler Explorer's API (`cg122` = x86-64 gcc
-  12.2, C mode), driven by a script under `%LOCALAPPDATA%\Temp\opencode`.
-- **CE is glibc, not musl**, so it cannot validate musl-specific code.
-  `src/builtins.c` uses musl's `S_ISVTX` and CE reports it as an error; the
-  musl build in CI is the real oracle for those files.
-- CE's multi-file compile is broken server-side, and writing to stderr from
-  node aborts on that box (`UV_HANDLE_CLOSING`) — capture stdout only.
-- The GitHub jobs/runs API is readable unauthenticated, but downloading an
-  artifact returns **401**. So the built ISO can't be fetched or inspected
-  from the build machine; only its existence and its stage-by-stage logs can.
-- No VMware, VirtualBox or QEMU. That's why G1 needs a person.
+  verification goes through Compiler Explorer's API, which is **glibc, not
+  musl**, so it cannot validate musl-specific code. CI is the real oracle.
+- PowerShell gotchas that cost time: no heredocs (write the message to a file
+  and use `git commit -F`); inline `bash -lc` with quotes and `$` gets mangled
+  (write a `.sh` and invoke it); `curl.exe` mangles JSON in `--data-raw` (write
+  the body to a file, use `--data-binary @file`); nested `$'\r'` through
+  `bash -lc` arrives as a literal backslash-r, so CR checks must live in a
+  script file.
 
 ---
 
@@ -369,9 +575,12 @@ PR.md                     drafted PR body
 - Human-sounding commit messages and code. Nothing that reads like AI slop.
 - Keep Copper's identity distinct. Arch and Debian are reference material, not
   packaging material.
-- **Verification over vibes.** Compile clean, run the battery under ASan
-  before claiming a command works, and never ship a fake or placeholder
-  command. A command that exists but doesn't work is worse than a missing
-  one, because it lies.
-- When something is unverified, say so in the commit message and in this
-  file. The gap between "it builds" and "it boots" is the whole problem here.
+- **Verification over vibes.** Compile clean, run the battery under ASan before
+  claiming a command works, and never ship a fake or placeholder command. A
+  command that exists but doesn't work is worse than a missing one, because it
+  lies.
+- **Read the artifact, not the CI run.** A green build has shipped a stale ISO
+  here. It will again.
+- When something is unverified, say so in the commit message and in this file.
+  The gap between "it builds" and "it boots" is what this project has been
+  living on, and bugs #4 through #9 were all invisible to the build.
