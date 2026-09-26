@@ -1,6 +1,5 @@
-<p align="center">
-  <img src="./copper-logo.png" alt="Copper Linux logo" width="200">
-</p>
+<img width="1242" height="788" alt="IMG_20260926_213859" src="https://github.com/user-attachments/assets/ba0b244f-ec8e-403d-b595-1a68c8b81463" />
+
 
 <h1 align="center">Copper Linux</h1>
 
