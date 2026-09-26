@@ -19,7 +19,15 @@ RESOLV_CONF=/etc/resolv.conf
 
 [ -n "$1" ] || exit 1
 
-say() { echo "copper-net: $*"; }
+# To the screen, and to the serial port when there is one. /dev/console only
+# points at a single console, so stdout alone leaves a serial log empty on a
+# quiet boot — which is exactly the boot you want a log for.
+say() {
+    echo "copper-net: $*"
+    if [ -c /dev/ttyS0 ]; then
+        echo "copper-net: $*" > /dev/ttyS0 2>/dev/null || true
+    fi
+}
 
 # Netmask -> prefix length, by counting the leading one bits. Returns 1 for
 # anything that isn't a proper run of ones (255.0.255.0 and friends), so the

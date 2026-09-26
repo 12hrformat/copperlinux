@@ -11,6 +11,17 @@ name: build-iso
 on:
   push:
     branches: ['**']
+  # A pull request is how work reaches this repo from a fork, and without this
+  # line a PR gets no build at all: the workflow only ever ran on pushes to
+  # branches in the repo itself, so a contributor with push rights got a green
+  # tick on their fork and a redacted "no checks" on the PR. Half the bugs
+  # fixed in this round were invisible to the build, so an unbuilt PR is not
+  # obviously safe to merge.
+  #
+  # Cost: every PR now runs the full pipeline. From a warm cache that is a
+  # couple of minutes; cold it is about fifteen, and the kernel is the bulk of
+  # it. Worth it to know the thing builds before anyone reviews the diff.
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -26,6 +37,15 @@ jobs:
             xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
             python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
 
+      # The fallback prefix is deliberate: a warm iso/work/ saves a ~7 min
+      # kernel build when something unrelated changed. What makes that safe
+      # is in build.sh — every stage stamps its output with a hash of its
+      # own inputs, so a restored tree still rebuilds any stage whose
+      # sources moved. A cache hit now buys speed and cannot ship a stale
+      # artifact, which is not something the key alone can promise: the key
+      # changes on a source edit, but the fallback restores the previous
+      # tree regardless, and plain existence checks in the stages would then
+      # skip straight past the work that needed redoing.
       - name: Cache build tree (restore)
         uses: actions/cache/restore@v4
         with:

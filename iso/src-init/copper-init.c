@@ -60,42 +60,93 @@ static void apply_hostname(void) {
     sethostname(host, strlen(host));
 }
 
-/* Boot chatter, on the console everyone is already looking at. */
+/* Boot chatter. Goes to the console everyone is already looking at, and to
+   the serial port when the machine has one. Both, not either: /dev/console
+   only ever points at one of them — whichever console= was last on the kernel
+   command line — so writing to stdout alone means a quiet boot leaves a serial
+   log completely empty, which is precisely when a log is most wanted. */
 static void say(const char *fmt, ...) {
+    char line[512];
     va_list ap;
+    int n;
+    FILE *tty;
+
     va_start(ap, fmt);
-    fputs("copper: ", stdout);
-    vprintf(fmt, ap);
+    n = vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
-    fputc('\n', stdout);
+    if (n < 0)
+        return;
+    printf("copper: %s\n", line);
     fflush(stdout);
+    tty = fopen("/dev/ttyS0", "w");
+    if (tty) {
+        fprintf(tty, "copper: %s\n", line);
+        fclose(tty);
+    }
 }
 
-/* First interface that isn't loopback, or NULL. Note this is the first
-   interface *of any kind*, in whatever order the directory happens to read:
-   it isn't necessarily a wired NIC. There's no wireless support in this
-   build yet so it can't come up, but once wifi lands this needs to prefer
-   the wired one (skipping anything with a phy80211 directory would do it). */
+/* ARPHRD_* link-layer types, from linux/if_arp.h. Spelled out rather than
+   included: this builds against musl, which does not ship the kernel UAPI
+   headers, and two numbers are not worth a build dependency. */
+#define ARPHRD_ETHER             1
+#define ARPHRD_IEEE80211_RADIOTAP 801
+
+/* Link-layer type of an interface, or -1 if it cannot be read.
+   /sys/class/net/<if>/type is the ARPHRD_* value in decimal. */
+static int iface_type(const char *ifname) {
+    char path[64];
+    char buf[32];
+    FILE *f;
+    long v;
+
+    snprintf(path, sizeof path, "/sys/class/net/%s/type", ifname);
+    f = fopen(path, "r");
+    if (!f)
+        return -1;
+    if (!fgets(buf, sizeof buf, f)) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    v = strtol(buf, NULL, 10);
+    if (v < 0 || v > 0xffff)
+        return -1;
+    return (int)v;
+}
+
+/* First interface worth handing to DHCP, or NULL.
+   Not simply the first non-loopback name in the directory: with MODULES=n
+   every driver is built in, and several of them invent an interface at boot
+   before the real NIC has finished probing. The sit module's sit0 is one,
+   and handing DHCP a tunnel means broadcasting discover into nowhere. So ask
+   sysfs what the interface actually is, and only take something with a real
+   link layer. Wired first, wireless second — a box with both should use the
+   wire. */
 static const char *first_nonloop_iface(void) {
+    static const int prefs[] = { ARPHRD_ETHER, ARPHRD_IEEE80211_RADIOTAP };
     static char name[IFNAMSIZ];
     struct dirent *ent;
-    DIR *dir = opendir("/sys/class/net");
+    DIR *dir;
+    size_t pass;
 
-    if (!dir)
-        return NULL;
-    while ((ent = readdir(dir)) != NULL) {
-        size_t len = strlen(ent->d_name);
-        /* d_name is far wider than an interface name, so anything that
-           long is not one. */
-        if (len == 0 || len >= sizeof name || ent->d_name[0] == '.')
-            continue;
-        if (!strcmp(ent->d_name, "lo"))
-            continue;
-        memcpy(name, ent->d_name, len + 1);
+    for (pass = 0; pass < sizeof prefs / sizeof prefs[0]; pass++) {
+        dir = opendir("/sys/class/net");
+        if (!dir)
+            return NULL;
+        while ((ent = readdir(dir)) != NULL) {
+            size_t len = strlen(ent->d_name);
+            /* d_name is far wider than an interface name, so anything that
+               long is not one. */
+            if (len == 0 || len >= sizeof name || ent->d_name[0] == '.')
+                continue;
+            if (iface_type(ent->d_name) != prefs[pass])
+                continue;
+            memcpy(name, ent->d_name, len + 1);
+            closedir(dir);
+            return name;
+        }
         closedir(dir);
-        return name;
     }
-    closedir(dir);
     return NULL;
 }
 

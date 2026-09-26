@@ -1,6 +1,6 @@
 # Copper OS
 
-> handcrafted by 12hrformat
+> handcrafted by THE GOAT FARCROW 😘👌👌👌💕💕
 
 Copper is **our own Linux distro** — not a rebranded Debian or Arch. We run the
 real Linux kernel with *our* config, build the userland from source (musl,

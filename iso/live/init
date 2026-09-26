@@ -5,31 +5,71 @@
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
+# /dev/console is whichever console= was last on the kernel command line, and
+# it is the only place userspace output goes. On a box with no serial port that
+# is the screen, which is right; on a VM whose serial port is pointed at a file
+# it means the file gets the kernel's opinion of the boot and none of ours,
+# which is the half nobody wants. So say it in both places. The screen stays
+# authoritative and the log becomes worth having.
+say() {
+    echo "copper: $*"
+    if [ -c /dev/ttyS0 ]; then
+        echo "copper: $*" > /dev/ttyS0 2>/dev/null || true
+    fi
+}
+
 /bin/busybox mount -t proc proc /proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
-/bin/busybox mkdir -p /mnt/root /mnt/upper/upper /mnt/upper/work /mnt/merged /run
+/bin/busybox mkdir -p /mnt/root /mnt/upper /mnt/merged /run
 
+# Once we're in a shell there's no display, no ssh and no working command line
+# to come back to, so "it didn't boot" is all the report anyone gets. Say
+# which step broke instead.
+rescue() {
+    say ""
+    say "$1"
+    say "dropping to a shell on /dev/console so you can look around"
+    exec /bin/busybox sh < /dev/console > /dev/console 2>&1
+}
+
+MEDIA=""
 find_media() {
     for dev in /dev/sr[0-9]* /dev/sd[a-z] /dev/sd[a-z][0-9]* \
                /dev/hd[a-z] /dev/hd[a-z][0-9]* /dev/vd[a-z] /dev/vd[a-z][0-9]* \
                /dev/nvme0n1p[0-9]*; do
         [ -b "$dev" ] || continue
         /bin/busybox mount -t iso9660 -o ro "$dev" /mnt/root 2>/dev/null || continue
-        [ -f /mnt/root/boot/grub/grub.cfg ] && return 0
+        if [ -f /mnt/root/boot/grub/grub.cfg ]; then
+            MEDIA="$dev"
+            return 0
+        fi
         /bin/busybox umount /mnt/root 2>/dev/null
     done
     return 1
 }
 
-find_media || { echo "copper: boot medium not found"; exec /bin/busybox sh; }
+find_media || rescue "no Copper medium: looked for an iso9660 filesystem with /boot/grub/grub.cfg on it"
+say "initramfs up, medium is $MEDIA"
 
-/bin/busybox mount -t tmpfs -o size=25% tmpfs /mnt/upper
+# Writable top layer over the read-only ISO root.
+#
+# The tmpfs goes on /mnt/upper FIRST and upper/work are made inside it after.
+# That order is the whole trick: a directory created before something is
+# mounted on top of it is covered by that mount and stops existing, so the
+# overlay then fails with ENOENT on upperdir while the tmpfs sitting right
+# there looks perfectly healthy. build.sh pre-creates these same two
+# directories in the cpio, and the tmpfs hides those just as thoroughly.
+if ! /bin/busybox mount -t tmpfs -o size=25% tmpfs /mnt/upper; then
+    rescue "cannot mount tmpfs on /mnt/upper (no writable layer for the session)"
+fi
+if ! /bin/busybox mkdir -p /mnt/upper/upper /mnt/upper/work; then
+    rescue "cannot create /mnt/upper/upper and /mnt/upper/work inside the tmpfs"
+fi
 
-# writable top layer over the read-only ISO root
 /bin/busybox mount -t overlay overlay \
     -o lowerdir=/mnt/root,upperdir=/mnt/upper/upper,workdir=/mnt/upper/work \
-    /mnt/merged || { echo "copper: overlay setup failed"; exec /bin/busybox sh; }
+    /mnt/merged || rescue "overlay mount failed: lowerdir=/mnt/root upperdir=/mnt/upper/upper workdir=/mnt/upper/work"
 
 /bin/busybox mount -t proc proc /mnt/merged/proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /mnt/merged/sys 2>/dev/null
@@ -37,4 +77,16 @@ find_media || { echo "copper: boot medium not found"; exec /bin/busybox sh; }
 /bin/busybox mkdir -p /mnt/merged/run
 /bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null
 
+# switch_root on a root with no init gives one bare "not found" and nothing
+# to go on, so name the file that isn't there.
+# Test the binary, not /sbin/init. That path is a symlink to the absolute
+# /usr/bin/copper-init, and until switch_root does its chroot an absolute
+# symlink resolves against the initramfs root, where there is no /usr/bin at
+# all — so testing the link reports "missing" on an ISO that is perfectly
+# fine. The first version of this check did exactly that and turned a
+# bootable image into a rescue shell.
+[ -x /mnt/merged/usr/bin/copper-init ] \
+    || rescue "no copper-init in the merged root (it did not get built into the ISO)"
+
+say "handing over to copper-init"
 exec /bin/busybox switch_root /mnt/merged /sbin/init

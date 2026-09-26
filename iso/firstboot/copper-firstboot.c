@@ -1,6 +1,6 @@
 /*
  * copper-firstboot — first-boot personalization, in the spirit of the OOBE
- * handcrafted by 12hrformat
+ * handcrafted by farcrowx
  * on real distros / Windows. copper-init runs this once (until the marker
  * /etc/copper-firstboot.done exists).
  *
@@ -25,6 +25,7 @@ static void banner(void) {
     printf("\n===================================================\n");
     printf("         Welcome to Copper Linux\n");
     printf("===================================================\n");
+    printf("Made by farcrowx and 12hrformat\n");
     printf("A couple of questions and you're in. (This is a live\n");
     printf("session, so answers apply for now — persistence is\n");
     printf("coming in a later build.)\n\n");
