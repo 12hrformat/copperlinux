@@ -66,7 +66,14 @@ fi
 
 # switch_root on a root with no init gives one bare "not found" and nothing
 # to go on, so name the file that isn't there.
-[ -x /mnt/merged/sbin/init ] || rescue "no /sbin/init in the merged root (copper-init did not get built into the ISO)"
+# Test the binary, not /sbin/init. That path is a symlink to the absolute
+# /usr/bin/copper-init, and until switch_root does its chroot an absolute
+# symlink resolves against the initramfs root, where there is no /usr/bin at
+# all — so testing the link reports "missing" on an ISO that is perfectly
+# fine. The first version of this check did exactly that and turned a
+# bootable image into a rescue shell.
+[ -x /mnt/merged/usr/bin/copper-init ] \
+    || rescue "no copper-init in the merged root (it did not get built into the ISO)"
 
 echo "copper: handing over to copper-init"
 exec /bin/busybox switch_root /mnt/merged /sbin/init
