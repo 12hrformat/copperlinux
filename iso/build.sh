@@ -42,6 +42,19 @@ command -v curl >/dev/null || { echo "build.sh: need curl"; exit 1; }
 mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
   "$TGT"/{bin,sbin,usr/bin,usr/sbin,usr/share,etc,dev,proc,sys,run,tmp,home,root,var/log,mnt,boot}
 
+# The scripts we ship are read by busybox ash on a machine with no shell
+# anybody can ssh into, so a typo in one is found the hard way. Parse them
+# here, where failing costs a second instead of a boot.
+lint_scripts() {
+  local s
+  for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script"; do
+    sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
+  done
+  echo "scripts: live/init and the udhcpc lease script parse clean"
+}
+
+lint_scripts
+
 fetch() {                   # fetch url -> prints tarball path (stdout only)
   local url="$1"
   local f="$DL/${1##*/}"
@@ -62,6 +75,33 @@ unpack() {                  # unpack tarball -> prints its dir
 # ---------------------------------------------------------------
 # 1. Linux kernel, from kernel.org, with Copper's .config subset
 # ---------------------------------------------------------------
+
+# A kernel that boots to a black screen, or that comes up with no NIC able to
+# speak DHCP, is miserable to debug from inside a VM — you never see a build
+# error, just a dead machine. So the options Copper actually leans on are
+# checked after kconfig has had its say, and a missing one fails the build
+# here with a readable list instead.
+#
+# Only symbols that really exist in $KREL belong in this list. 6.12 dropped
+# `ETHERNET` (the driver menu is unconditional once NET is on) and moved
+# BLK_DEV_NVME to drivers/nvme/host, so grepping the old paths lies.
+require_kernel_config() {
+  local cfg="$1" sym missing=""
+  for sym in \
+      DEVTMPFS DEVTMPFS_MOUNT TMPFS OVERLAY_FS ISO9660_FS BLK_DEV_SR \
+      VT VGA_CONSOLE UNIX98_PTYS \
+      EXT4_FS BLK_DEV_SD ATA ATA_PIIX BLK_DEV_NVME \
+      VIRTIO_PCI VIRTIO_BLK \
+      NET NETDEVICES INET PACKET UNIX E1000 E1000E VIRTIO_NET ; do
+    grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
+  done
+  if [ -n "$missing" ]; then
+    echo "kernel: these options did not survive olddefconfig:$missing" >&2
+    exit 1
+  fi
+  echo "kernel: config looks fit to boot and to reach the network"
+}
+
 build_kernel() {
   [ -s "$TGT/boot/vmlinuz" ] && { echo "kernel: already built, skipping"; return; }
   echo "==> kernel $KREL"
@@ -75,10 +115,15 @@ build_kernel() {
       --enable DEVTMPFS --enable DEVTMPFS_MOUNT \
       --enable UNIX98_PTYS --enable LEGACY_PTYS \
       --enable VIRTIO_PCI --enable VIRTIO_BLK --enable VIRTIO_NET \
-      --enable E1000 --enable E1000E --enable VMXNET3 \
-      --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD \
-      --enable EXT4_FS --enable PACKET --enable UNIX --enable VT --enable INPUT
+      --enable E1000 --enable E1000E \
+      --enable VMXNET3 --enable VMWARE_VMXNET3 \
+      --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD --enable BLK_DEV_NVME \
+      --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
+      --enable VGA_CONSOLE --enable INPUT
+    # vmxnet3 was renamed at some point around 6.12; asking for both names
+    # costs nothing, since kconfig drops whichever one doesn't exist.
     make olddefconfig
+    require_kernel_config "$KD/.config"
     make -j"$JOBS" bzImage
     cp arch/x86/boot/bzImage "$TGT/boot/vmlinuz"
   popd >/dev/null
@@ -134,6 +179,27 @@ set_bb_config_off() {
   fi
 }
 
+# Copper runs its init, its shell and its network setup out of this busybox,
+# so make sure the applets we lean on really are in there. `make defconfig`
+# on busybox means "whatever the Kconfig defaults say", which is easy to
+# break by bumping the version.
+require_bb_config() {
+  local cfg="$1" sym missing=""
+  for sym in \
+      STATIC ASH \
+      UDHCPC FEATURE_UDHCPC_ARPING IP IFCONFIG ROUTE PING \
+      WGET FEATURE_WGET_HTTPS NSLOOKUP \
+      MOUNT SWITCH_ROOT HOSTNAME \
+      ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP \
+      CHPASSWD FEATURE_SHADOWPASSWDS ; do
+    grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
+  done
+  if [ -n "$missing" ]; then
+    echo "busybox: missing applets we depend on:$missing" >&2
+    exit 1
+  fi
+}
+
 # ---------------------------------------------------------------
 # 3. busybox — base utilities, ash, adduser, chpasswd, mount, ...
 # ---------------------------------------------------------------
@@ -170,6 +236,7 @@ build_busybox() {
     # edits single symbols), so oldconfig never prompts and NEW symbols
     # take their defaults on a closed stdin
     make oldconfig
+    require_bb_config "$BD/.config"
     make -j"$JOBS"
     make CONFIG_PREFIX="$TGT" install
   popd >/dev/null
@@ -233,6 +300,11 @@ build_rootfs() {
   mkdir -p "$TGT/usr/share/zoneinfo" "$TGT/etc/skel"
   cp -a /usr/share/zoneinfo/. "$TGT/usr/share/zoneinfo/" 2>/dev/null \
     || echo "  (no host zoneinfo to copy — timezone data will be missing)"
+  # udhcpc execs this the moment a lease lands, and git does not reliably
+  # carry the exec bit across platforms, so set it here.
+  chmod 0755 "$TGT/usr/share/udhcpc/default.script"
+  [ -x "$TGT/usr/share/udhcpc/default.script" ] || {
+    echo "rootfs: udhcpc lease script is not executable"; exit 1; }
 }
 
 # ---------------------------------------------------------------
