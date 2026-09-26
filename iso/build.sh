@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# Every stage below stamps itself with a hash of this script, because that is
+# where the kernel version and the config flags live. $0 is whatever was
+# typed on the command line — CI runs `sudo bash iso/build.sh kernel`, so it
+# is the relative "iso/build.sh" — and the cd on the next line stops it
+# resolving. Pin it down first.
+SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$0")"
 ROOT=$(pwd)
 WORK="$ROOT/work"; OUT="$ROOT/out"; DL="$WORK/downloads"
@@ -67,15 +73,28 @@ lint_scripts
 # produced it, and only skips when that still matches. A warm cache buys
 # speed now; it can't be wrong.
 stamped_skip() {   # stamped_skip <stamp> <input>...
-  local stamp="$1" want; shift
-  want=$(cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1)
+  local stamp="$1" want f; shift
+  # An input we can't read means we can't know whether the stage is current.
+  # Rebuild rather than guess, and say which file is missing.
+  for f in "$@"; do
+    [ -r "$f" ] || { echo "build.sh: cannot read stamp input $f" >&2; return 1; }
+  done
+  want=$(cat "$@" | sha256sum | cut -d' ' -f1)
   [ -s "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]
 }
 
 stamp_set() {      # stamp_set <stamp> <input>...
-  local stamp="$1"; shift
-  mkdir -p "$(dirname "$stamp")"
-  cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1 > "$stamp"
+  local stamp="$1" f missing=0; shift
+  for f in "$@"; do
+    [ -r "$f" ] || { echo "build.sh: cannot read stamp input $f" >&2; missing=1; }
+  done
+  if [ "$missing" -ne 0 ]; then
+    # Leave the stamp empty rather than recording a hash of half the inputs.
+    # An empty stamp never matches, so this stage rebuilds next time too.
+    : > "$stamp"
+    return 0
+  fi
+  cat "$@" | sha256sum | cut -d' ' -f1 > "$stamp"
 }
 
 # The ISO is a copy of the entire staged rootfs, so its inputs are the tree
@@ -135,9 +154,9 @@ require_kernel_config() {
 }
 
 build_kernel() {
-  # "$0" is this script, and the kernel's real inputs are the version and
-  # the scripts/config flags below — all of which live in here.
-  if [ -s "$TGT/boot/vmlinuz" ] && stamped_skip "$WORK/kernel.stamp" "$0"; then
+  # The kernel's real inputs are the version and the scripts/config flags
+  # below, and all of those live in this script, hence $SELF.
+  if [ -s "$TGT/boot/vmlinuz" ] && stamped_skip "$WORK/kernel.stamp" "$SELF"; then
     echo "kernel: already built, skipping"; return
   fi
   echo "==> kernel $KREL"
@@ -164,7 +183,7 @@ build_kernel() {
     cp arch/x86/boot/bzImage "$TGT/boot/vmlinuz"
   popd >/dev/null
   [ -s "$TGT/boot/vmlinuz" ] || { echo "kernel build failed"; exit 1; }
-  stamp_set "$WORK/kernel.stamp" "$0"
+  stamp_set "$WORK/kernel.stamp" "$SELF"
 }
 
 # ---------------------------------------------------------------
@@ -241,7 +260,7 @@ require_bb_config() {
 # 3. busybox — base utilities, ash, adduser, chpasswd, mount, ...
 # ---------------------------------------------------------------
 build_busybox() {
-  if [ -x "$TGT/bin/busybox" ] && stamped_skip "$WORK/busybox.stamp" "$0"; then
+  if [ -x "$TGT/bin/busybox" ] && stamped_skip "$WORK/busybox.stamp" "$SELF"; then
     echo "busybox: already built, skipping"; return
   fi
   echo "==> busybox"
@@ -280,7 +299,7 @@ build_busybox() {
     make CONFIG_PREFIX="$TGT" install
   popd >/dev/null
   [ -x "$TGT/bin/busybox" ] || { echo "busybox build failed"; exit 1; }
-  stamp_set "$WORK/busybox.stamp" "$0"
+  stamp_set "$WORK/busybox.stamp" "$SELF"
 }
 
 # ---------------------------------------------------------------
@@ -301,7 +320,7 @@ build_gnu() {   # build_gnu NAME URL [configure args...]
 
 build_tools() {
   if [ -x "$TGT/usr/bin/ls" ] && [ -x "$TGT/usr/bin/grep" ] \
-     && stamped_skip "$WORK/tools.stamp" "$0"; then
+     && stamped_skip "$WORK/tools.stamp" "$SELF"; then
     echo "tools: already built, skipping"; return
   fi
   echo "==> standard command suite"
@@ -313,7 +332,7 @@ build_tools() {
   build_gnu tar         "https://ftp.gnu.org/gnu/tar/tar-1.35.tar.xz"
   build_gnu gzip        "https://ftp.gnu.org/gnu/gzip/gzip-1.13.tar.xz"
   build_gnu xz          "https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.xz"
-  stamp_set "$WORK/tools.stamp" "$0"
+  stamp_set "$WORK/tools.stamp" "$SELF"
 }
 
 # ---------------------------------------------------------------
@@ -323,7 +342,7 @@ build_copper() {
   local SRC="$ROOT/../src"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
-     && stamped_skip "$WORK/copper.stamp" "$0" "$SRC"/*.c "$SRC"/*.h \
+     && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
   then
     echo "copper: already built, skipping"; return
@@ -336,7 +355,7 @@ build_copper() {
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
-  stamp_set "$WORK/copper.stamp" "$0" "$SRC"/*.c "$SRC"/*.h \
+  stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
 }
 
@@ -362,7 +381,7 @@ build_rootfs() {
 build_initramfs() {
   local INITRD="$WORK/initramfs"
   if [ -s "$TGT/boot/initrd.img" ] \
-     && stamped_skip "$WORK/initramfs.stamp" "$0" "$ROOT/live/init"; then
+     && stamped_skip "$WORK/initramfs.stamp" "$SELF" "$ROOT/live/init"; then
     echo "initramfs: already built, skipping"; return
   fi
   echo "==> initramfs"
@@ -376,7 +395,7 @@ build_initramfs() {
   ( cd "$INITRD" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -9 ) \
     > "$TGT/boot/initrd.img"
   [ -s "$TGT/boot/initrd.img" ] || { echo "initramfs build failed"; exit 1; }
-  stamp_set "$WORK/initramfs.stamp" "$0" "$ROOT/live/init"
+  stamp_set "$WORK/initramfs.stamp" "$SELF" "$ROOT/live/init"
 }
 
 # ---------------------------------------------------------------
