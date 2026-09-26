@@ -1,0 +1,130 @@
+#!/bin/sh
+# Copper Linux — handcrafted by 12hrformat
+#
+# default.script — what udhcpc runs every time the lease changes state.
+# Same job as busybox's examples/udhcp/simple.script: take the address the
+# server offered us, point the default route at its router, and write
+# resolv.conf from whatever nameservers it handed over.
+#
+# udhcpc hands us these in the environment:
+#   interface ip subnet mask broadcast router dns domain lease
+#
+# `subnet` is the netmask as a dotted quad (255.255.255.0), *not* a prefix
+# length — DHCP option 1 is a 4-byte mask and busybox exports OPTION_IP values
+# in dotted form. `mask` is the same thing as a decimal number, which is no
+# use to us. So convert to a prefix length ourselves rather than leaning on
+# busybox ip's tolerance for a dotted mask after the slash.
+
+RESOLV_CONF=/etc/resolv.conf
+
+[ -n "$1" ] || exit 1
+
+say() { echo "copper-net: $*"; }
+
+# Netmask -> prefix length, by counting the leading one bits. Returns 1 for
+# anything that isn't a proper run of ones (255.0.255.0 and friends), so the
+# caller can fall back rather than install a nonsense address.
+mask_to_prefix() {
+    local m="$1" n=0 zeros=0 o
+    [ -n "$m" ] || return 1
+
+    # Split on the dots into one to four octets.
+    local oldifs="$IFS"
+    IFS=.
+    set -f                  # keep "*" in a bad value from globbing the rootfs
+    set -- $m
+    set +f
+    # Field splitting quietly drops a trailing or leading dot, so put the
+    # pieces back together and insist they spell the original. That rejects
+    # "255.255.255.", doubled dots and stray spaces in one go.
+    [ "$*" = "$m" ] || return 1
+    IFS="$oldifs"
+    if [ "$#" -lt 1 ] || [ "$#" -gt 4 ]; then
+        return 1
+    fi
+
+    for o in "$@"; do
+        case "$o" in
+            0)
+                zeros=1
+                ;;
+            255|254|252|248|240|224|192|128)
+                # Ones after a zero would make it a non-contiguous mask, which
+                # is not a netmask at all.
+                [ "$zeros" -eq 0 ] || return 1
+                case "$o" in
+                    255) n=$((n + 8)) ;;
+                    254) n=$((n + 7)) ;;
+                    252) n=$((n + 6)) ;;
+                    248) n=$((n + 5)) ;;
+                    240) n=$((n + 4)) ;;
+                    224) n=$((n + 3)) ;;
+                    192) n=$((n + 2)) ;;
+                    128) n=$((n + 1)) ;;
+                esac
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done
+    echo "$n"
+}
+
+case "$1" in
+deconfig)
+    say "dropping the address on $interface"
+    ip -4 addr flush dev "$interface"
+    ip link set dev "$interface" up
+    ;;
+
+bound|renew)
+    # A DHCP server may leave the netmask out entirely. Guessing /24 beats
+    # handing `ip` nothing, which would install a /32 and push every packet
+    # through the default gateway.
+    #
+    # Most servers let the kernel work the broadcast address out from the
+    # prefix; honour theirs when they send one. $bcast is deliberately left
+    # unquoted so that it splits into two words.
+    prefix=$(mask_to_prefix "$subnet") || prefix=24
+    say "$interface leased $ip/$prefix"
+
+    bcast=""
+    [ -n "$broadcast" ] && bcast="broadcast $broadcast"
+    ip addr add "$ip/$prefix" $bcast dev "$interface"
+
+    if [ -n "$router" ]; then
+        # Renewals land here too, so clear the old default route first
+        # instead of stacking another one on top of it.
+        while ip route del default dev "$interface" 2>/dev/null; do
+            :
+        done
+        for gw in $router; do
+            say "default route via $gw"
+            ip route add default via "$gw" dev "$interface"
+        done
+    fi
+
+    tmp="$RESOLV_CONF.copper.$$"
+    : > "$tmp"
+    [ -n "$domain" ] && echo "search $domain" >> "$tmp"
+    for ns in $dns; do
+        say "nameserver $ns"
+        echo "nameserver $ns" >> "$tmp"
+    done
+    if [ -s "$tmp" ]; then
+        mv "$tmp" "$RESOLV_CONF"
+    else
+        # Some networks hand out addresses but no resolver. Keep the one
+        # we shipped rather than leaving the box with no DNS at all.
+        say "lease carried no nameserver, keeping the fallback"
+        rm -f "$tmp"
+    fi
+    ;;
+
+leasefail)
+    say "no lease on $interface yet, still asking"
+    ;;
+esac
+
+exit 0
