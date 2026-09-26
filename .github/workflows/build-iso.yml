@@ -26,6 +26,15 @@ jobs:
             xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
             python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
 
+      # The fallback prefix is deliberate: a warm iso/work/ saves a ~7 min
+      # kernel build when something unrelated changed. What makes that safe
+      # is in build.sh — every stage stamps its output with a hash of its
+      # own inputs, so a restored tree still rebuilds any stage whose
+      # sources moved. A cache hit now buys speed and cannot ship a stale
+      # artifact, which is not something the key alone can promise: the key
+      # changes on a source edit, but the fallback restores the previous
+      # tree regardless, and plain existence checks in the stages would then
+      # skip straight past the work that needed redoing.
       - name: Cache build tree (restore)
         uses: actions/cache/restore@v4
         with:

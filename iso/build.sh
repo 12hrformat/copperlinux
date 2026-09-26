@@ -55,6 +55,38 @@ lint_scripts() {
 
 lint_scripts
 
+# ---- stage caching -----------------------------------------------------
+# iso/work/ is cached between runs, and the CI cache deliberately falls back
+# to the most recent older tree so the expensive kernel build survives an
+# unrelated change. That makes a stale stage easy: "does the output file
+# exist" is just as true for a tree built from sources that have since
+# changed. This build shipped exactly that once — an ISO whose initrd was
+# packed from the previous version of iso/live/init, so the overlay
+# directories were missing and the first boot died on a valid-looking
+# artifact. So every stage stamps its output with a hash of the inputs that
+# produced it, and only skips when that still matches. A warm cache buys
+# speed now; it can't be wrong.
+stamped_skip() {   # stamped_skip <stamp> <input>...
+  local stamp="$1" want; shift
+  want=$(cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1)
+  [ -s "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]
+}
+
+stamp_set() {      # stamp_set <stamp> <input>...
+  local stamp="$1"; shift
+  mkdir -p "$(dirname "$stamp")"
+  cat "$@" 2>/dev/null | sha256sum | cut -d' ' -f1 > "$stamp"
+}
+
+# The ISO is a copy of the entire staged rootfs, so its inputs are the tree
+# itself rather than any one file in it. Run from inside the tree so the
+# hashed paths are relative — absolute ones carry the checkout directory and
+# would make the stamp differ between runners for no reason.
+tree_hash() {      # tree_hash <dir>
+  ( cd "$1" && find . -type f -exec sha256sum {} + | LC_ALL=C sort ) \
+    | sha256sum | cut -d' ' -f1
+}
+
 fetch() {                   # fetch url -> prints tarball path (stdout only)
   local url="$1"
   local f="$DL/${1##*/}"
@@ -103,7 +135,11 @@ require_kernel_config() {
 }
 
 build_kernel() {
-  [ -s "$TGT/boot/vmlinuz" ] && { echo "kernel: already built, skipping"; return; }
+  # "$0" is this script, and the kernel's real inputs are the version and
+  # the scripts/config flags below — all of which live in here.
+  if [ -s "$TGT/boot/vmlinuz" ] && stamped_skip "$WORK/kernel.stamp" "$0"; then
+    echo "kernel: already built, skipping"; return
+  fi
   echo "==> kernel $KREL"
   local KT KD
   KT=$(fetch "https://cdn.kernel.org/pub/linux/kernel/$KPATH/linux-$KREL.tar.xz")
@@ -128,6 +164,7 @@ build_kernel() {
     cp arch/x86/boot/bzImage "$TGT/boot/vmlinuz"
   popd >/dev/null
   [ -s "$TGT/boot/vmlinuz" ] || { echo "kernel build failed"; exit 1; }
+  stamp_set "$WORK/kernel.stamp" "$0"
 }
 
 # ---------------------------------------------------------------
@@ -204,7 +241,9 @@ require_bb_config() {
 # 3. busybox — base utilities, ash, adduser, chpasswd, mount, ...
 # ---------------------------------------------------------------
 build_busybox() {
-  [ -x "$TGT/bin/busybox" ] && { echo "busybox: already built, skipping"; return; }
+  if [ -x "$TGT/bin/busybox" ] && stamped_skip "$WORK/busybox.stamp" "$0"; then
+    echo "busybox: already built, skipping"; return
+  fi
   echo "==> busybox"
   local BT BD
   BT=$(fetch "https://busybox.net/downloads/busybox-1.36.1.tar.bz2")
@@ -241,6 +280,7 @@ build_busybox() {
     make CONFIG_PREFIX="$TGT" install
   popd >/dev/null
   [ -x "$TGT/bin/busybox" ] || { echo "busybox build failed"; exit 1; }
+  stamp_set "$WORK/busybox.stamp" "$0"
 }
 
 # ---------------------------------------------------------------
@@ -260,8 +300,10 @@ build_gnu() {   # build_gnu NAME URL [configure args...]
 }
 
 build_tools() {
-  [ -x "$TGT/usr/bin/ls" ] && [ -x "$TGT/usr/bin/grep" ] \
-    && { echo "tools: already built, skipping"; return; }
+  if [ -x "$TGT/usr/bin/ls" ] && [ -x "$TGT/usr/bin/grep" ] \
+     && stamped_skip "$WORK/tools.stamp" "$0"; then
+    echo "tools: already built, skipping"; return
+  fi
   echo "==> standard command suite"
   build_gnu coreutils   "https://ftp.gnu.org/gnu/coreutils/coreutils-9.5.tar.xz"
   build_gnu grep        "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz"
@@ -271,17 +313,22 @@ build_tools() {
   build_gnu tar         "https://ftp.gnu.org/gnu/tar/tar-1.35.tar.xz"
   build_gnu gzip        "https://ftp.gnu.org/gnu/gzip/gzip-1.13.tar.xz"
   build_gnu xz          "https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.xz"
+  stamp_set "$WORK/tools.stamp" "$0"
 }
 
 # ---------------------------------------------------------------
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
 build_copper() {
-  [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
-    && [ -x "$TGT/usr/bin/copper-firstboot" ] \
-    && { echo "copper: already built, skipping"; return; }
-  echo "==> copper built-ins"
   local SRC="$ROOT/../src"
+  if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
+     && [ -x "$TGT/usr/bin/copper-firstboot" ] \
+     && stamped_skip "$WORK/copper.stamp" "$0" "$SRC"/*.c "$SRC"/*.h \
+        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
+  then
+    echo "copper: already built, skipping"; return
+  fi
+  echo "==> copper built-ins"
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-sh" \
      "$SRC/main.c" "$SRC/builtins.c" -I "$SRC"
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-init" \
@@ -289,6 +336,8 @@ build_copper() {
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
+  stamp_set "$WORK/copper.stamp" "$0" "$SRC"/*.c "$SRC"/*.h \
+    "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
 }
 
 # ---------------------------------------------------------------
@@ -311,9 +360,12 @@ build_rootfs() {
 # 7. live initramfs (busybox + our /init, drivers built into kernel)
 # ---------------------------------------------------------------
 build_initramfs() {
-  [ -s "$TGT/boot/initrd.img" ] && { echo "initramfs: already built, skipping"; return; }
-  echo "==> initramfs"
   local INITRD="$WORK/initramfs"
+  if [ -s "$TGT/boot/initrd.img" ] \
+     && stamped_skip "$WORK/initramfs.stamp" "$0" "$ROOT/live/init"; then
+    echo "initramfs: already built, skipping"; return
+  fi
+  echo "==> initramfs"
   # Only the mount points themselves. upper/ and work/ are deliberately NOT
   # created here: /init has to make them after it mounts the tmpfs on
   # /mnt/upper, because a tmpfs mounted over a directory hides what was
@@ -324,18 +376,28 @@ build_initramfs() {
   ( cd "$INITRD" && find . -print0 | cpio --null -o --format=newc 2>/dev/null | gzip -9 ) \
     > "$TGT/boot/initrd.img"
   [ -s "$TGT/boot/initrd.img" ] || { echo "initramfs build failed"; exit 1; }
+  stamp_set "$WORK/initramfs.stamp" "$0" "$ROOT/live/init"
 }
 
 # ---------------------------------------------------------------
 # 8. boot media (grub makes a BIOS+UEFI bootable ISO)
 # ---------------------------------------------------------------
 build_iso() {
-  [ -s "$OUT/copper.iso" ] && { echo "iso: already built, skipping"; return; }
-  echo "==> grub-mkrescue"
+  # Stamped on the whole staged tree, not on grub.cfg alone: the ISO is a
+  # copy of all of it, so a change to the overlay, the initrd or the kernel
+  # all have to be able to invalidate it. The config goes in first so it is
+  # part of the tree that gets hashed, which is the tree that gets packaged.
   mkdir -p "$TGT/boot/grub"
   cp "$ROOT/boot/grub.cfg" "$TGT/boot/grub/grub.cfg"
+  local want; want=$(tree_hash "$TGT")
+  if [ -s "$OUT/copper.iso" ] && [ -s "$WORK/iso.stamp" ] \
+     && [ "$(cat "$WORK/iso.stamp")" = "$want" ]; then
+    echo "iso: already built, skipping"; return
+  fi
+  echo "==> grub-mkrescue"
   grub-mkrescue -o "$OUT/copper.iso" "$TGT"
   [ -s "$OUT/copper.iso" ] || { echo "grub-mkrescue failed"; exit 1; }
+  echo "$want" > "$WORK/iso.stamp"
   ls -lh "$OUT/copper.iso"
   sha256sum "$OUT/copper.iso"
 }
