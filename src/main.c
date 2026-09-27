@@ -6,6 +6,7 @@
  * full coreutils exists on the system.
  *
  * Supports: pipes (|) and < > >> redirection.
+ * Line editing: arrow keys, backspace, history navigation.
  *
  * Build:  make
  * Run:    ./copper-sh
@@ -20,11 +21,14 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <errno.h>
+#include <termios.h>
 #include <sys/wait.h>
 
 #include "builtins.h"
 
 #define HIST_MAX 64
+#define EDIT_BUF_SIZE 4096
 
 static char *hist[HIST_MAX];
 static int   hist_n  = 0;
@@ -73,6 +77,182 @@ const struct builtin *builtin_lookup(const char *name) {
     for (const struct builtin *b = btable; b->name; b++)
         if (!strcmp(name, b->name)) return b;
     return NULL;
+}
+
+/* ---------------------------------------------------------------- */
+/*  line editor                                                       */
+
+static char edit_buf[EDIT_BUF_SIZE];
+static int edit_len = 0;
+static int edit_pos = 0;
+static int hist_idx = -1;              /* -1 = editing, 0+ = browsing */
+static char saved_line[EDIT_BUF_SIZE]; /* line being edited before history */
+static struct termios orig_termios;
+static int raw_mode = 0;
+
+static void disable_raw_mode(void) {
+    if (raw_mode)
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+    raw_mode = 0;
+}
+
+static int enable_raw_mode(void) {
+    if (!isatty(STDIN_FILENO)) return 0;
+    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) return -1;
+    raw_mode = 1;
+    struct termios raw = orig_termios;
+    raw.c_lflag &= ~(ECHO | ICANON);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    return tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+}
+
+static void refresh_line(const char *prompt) {
+    /* \r\033[K: go to col 0, clear line. Print prompt+buf, then
+       reposition cursor at prompt_len + edit_pos. */
+    char seq[EDIT_BUF_SIZE + 128];
+    int n = snprintf(seq, sizeof seq, "\r\033[K%s%s\r\033[%dC",
+                     prompt, edit_buf,
+                     (int)(strlen(prompt) + edit_pos));
+    if (n > 0)
+        write(STDOUT_FILENO, seq, (size_t)n);
+}
+
+static void edit_insert(char c) {
+    if (edit_len >= EDIT_BUF_SIZE - 1) return;
+    memmove(edit_buf + edit_pos + 1, edit_buf + edit_pos,
+            (size_t)(edit_len - edit_pos));
+    edit_buf[edit_pos] = c;
+    edit_len++;
+    edit_pos++;
+    edit_buf[edit_len] = '\0';
+}
+
+static void edit_backspace(void) {
+    if (edit_pos == 0) return;
+    memmove(edit_buf + edit_pos - 1, edit_buf + edit_pos,
+            (size_t)(edit_len - edit_pos));
+    edit_pos--;
+    edit_len--;
+    edit_buf[edit_len] = '\0';
+}
+
+static void edit_delete(void) {
+    if (edit_pos >= edit_len) return;
+    memmove(edit_buf + edit_pos, edit_buf + edit_pos + 1,
+            (size_t)(edit_len - edit_pos - 1));
+    edit_len--;
+    edit_buf[edit_len] = '\0';
+}
+
+static void edit_move_left(void) {
+    if (edit_pos > 0) edit_pos--;
+}
+
+static void edit_move_right(void) {
+    if (edit_pos < edit_len) edit_pos++;
+}
+
+static void edit_move_home(void) { edit_pos = 0; }
+static void edit_move_end(void)  { edit_pos = edit_len; }
+
+static void edit_hist_prev(void) {
+    if (hist_idx < hist_n - 1) {
+        if (hist_idx == -1)
+            snprintf(saved_line, sizeof saved_line, "%s", edit_buf);
+        hist_idx++;
+        snprintf(edit_buf, sizeof edit_buf, "%s",
+                 hist[hist_n - 1 - hist_idx]);
+        edit_len = (int)strlen(edit_buf);
+        edit_pos = edit_len;
+    }
+}
+
+static void edit_hist_next(void) {
+    if (hist_idx >= 0) {
+        hist_idx--;
+        if (hist_idx == -1)
+            snprintf(edit_buf, sizeof edit_buf, "%s", saved_line);
+        else
+            snprintf(edit_buf, sizeof edit_buf, "%s",
+                     hist[hist_n - 1 - hist_idx]);
+        edit_len = (int)strlen(edit_buf);
+        edit_pos = edit_len;
+    }
+}
+
+/*
+ * Read a line with full editing. Returns 1 if a line was read,
+ * 0 on EOF (Ctrl-D on empty line, or read error).
+ * Falls back to getline() when stdin is not a tty.
+ */
+static int read_line_edited(char *buf, size_t cap, const char *prompt) {
+    if (!raw_mode) {
+        printf("%s", prompt);
+        fflush(stdout);
+        char *line = NULL;
+        size_t n = 0;
+        ssize_t len = getline(&line, &n, stdin);
+        if (len < 0) { free(line); return 0; }
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+        snprintf(buf, cap, "%s", line);
+        free(line);
+        return 1;
+    }
+
+    edit_len = 0;
+    edit_pos = 0;
+    edit_buf[0] = '\0';
+    hist_idx = -1;
+    saved_line[0] = '\0';
+
+    refresh_line(prompt);
+
+    for (;;) {
+        char c;
+        ssize_t n = read(STDIN_FILENO, &c, 1);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            if (edit_len == 0) { printf("\n"); return 0; }
+            continue;
+        }
+
+        if (c == '\r' || c == '\n') {
+            printf("\n");
+            break;
+        } else if (c == 4) {                   /* Ctrl-D */
+            if (edit_len == 0) { printf("\n"); return 0; }
+            edit_delete();
+        } else if (c == 127 || c == 8) {       /* Backspace */
+            edit_backspace();
+        } else if (c == 27) {                  /* Escape sequence */
+            char seq[2];
+            if (read(STDIN_FILENO, &seq[0], 1) != 1) { refresh_line(prompt); continue; }
+            if (read(STDIN_FILENO, &seq[1], 1) != 1) { refresh_line(prompt); continue; }
+            if (seq[0] == '[') {
+                if (seq[1] == 'A')      edit_hist_prev();
+                else if (seq[1] == 'B') edit_hist_next();
+                else if (seq[1] == 'C') edit_move_right();
+                else if (seq[1] == 'D') edit_move_left();
+                else if (seq[1] == 'H') edit_move_home();
+                else if (seq[1] == 'F') edit_move_end();
+                else if (seq[1] == '3') {
+                    char t;
+                    if (read(STDIN_FILENO, &t, 1) == 1 && t == '~')
+                        edit_delete();
+                }
+            }
+        } else if (c >= 32 && c < 127) {       /* printable ASCII */
+            edit_insert(c);
+        }
+        /* other control chars ignored */
+
+        refresh_line(prompt);
+    }
+
+    snprintf(buf, cap, "%s", edit_buf);
+    return 1;
 }
 
 /* ---------------------------------------------------------------- */
@@ -356,22 +536,25 @@ int b_history(int argc, char **argv) {
 /* ---------------------------------------------------------------- */
 
 int main(void) {
-    char *line = NULL;
-    size_t cap = 0;
-
     signal(SIGINT, SIG_IGN);             /* ctrl-c must not kill the shell */
     banner();
 
+    if (enable_raw_mode() == 0)
+        atexit(disable_raw_mode);
+
     while (1) {
         char cwd[PATH_MAX];
-        printf("copper@copper:%s$ ", short_pwd(cwd, sizeof cwd));
-        fflush(stdout);
+        char prompt[PATH_MAX + 64];
+        snprintf(prompt, sizeof prompt, "copper@copper:%s$ ",
+                 short_pwd(cwd, sizeof cwd));
 
-        ssize_t len = getline(&line, &cap, stdin);
-        if (len < 0) { putchar('\n'); break; }      /* ctrl-d = exit */
+        char *line = malloc(EDIT_BUF_SIZE);
+        if (!line) { perror("malloc"); break; }
 
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-            line[--len] = '\0';
+        if (!read_line_edited(line, EDIT_BUF_SIZE, prompt)) {
+            free(line);
+            break;
+        }
 
         /* session history (the raw line, like any other shell) */
         if (line[0]) {
@@ -386,11 +569,11 @@ int main(void) {
 
         int argc;
         char **argv = tokenize_line(line, &argc);
-        if (argc == 0) continue;
+        if (argc == 0) { free(line); continue; }
 
         struct cmdseg *cmds = NULL;
         int nsegs = 0;
-        if (parse_line(argv, argc, &cmds, &nsegs) != 0) continue;
+        if (parse_line(argv, argc, &cmds, &nsegs) != 0) { free(line); continue; }
 
         int bye = 0;
         if (nsegs == 1 && !cmds[0].in && !cmds[0].out &&
@@ -400,10 +583,10 @@ int main(void) {
         run_segments(cmds, nsegs);
         free_cmds(cmds, nsegs);
 
-        if (bye) break;
+        if (bye) { free(line); break; }
+        free(line);
     }
 
     for (int i = 0; i < hist_n; i++) free(hist[i]);
-    free(line);
     return 0;
 }
