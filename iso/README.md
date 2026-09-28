@@ -1,6 +1,6 @@
 # Copper Linux — build internals
 
-> handcrafted by 12hrformat
+> made by farcrowx
 
 Everything under `iso/` contributes to a fully from-source Linux distro:
 
