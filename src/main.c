@@ -441,6 +441,8 @@ static int run_segments(struct cmdseg *cmds, int n) {
             if (pipe(pipesd[k])) { perror("copper-sh: pipe"); free(pipesd); return 1; }
     }
 
+    if (n < 1) { free(pipesd); return 0; }
+
     pid_t *pids = calloc((size_t)n, sizeof(pid_t));
     if (!pids) { perror("malloc"); free(pipesd); return 1; }
 
