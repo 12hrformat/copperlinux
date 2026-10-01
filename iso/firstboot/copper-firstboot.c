@@ -84,7 +84,7 @@ static void read_password(const char *prompt, char *buf, size_t cap,
         if (confirm_prompt) {
             char *q = getpass(confirm_prompt);
             if (!q) {
-                if (!read_line(again, again, sizeof again)) again[0] = '\0';
+                if (!read_line(again, sizeof again)) again[0] = '\0';
             } else if (strlen(q) < sizeof again) {
                 snprintf(again, sizeof again, "%s", q);
             }
