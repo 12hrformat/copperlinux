@@ -39,8 +39,14 @@ restore_backup() {
         return 1
     fi
 
-    # Convert backup name back to path (replace _ with /)
-    local target="/$(echo "$name" | sed 's|__|/|g')"
+    # Convert the backup name back to the path it came from.
+    #
+    # copper-charge writes backup names by turning every / into _, so
+    # /usr/bin/foo becomes usr_bin_foo. This used to undo that by replacing
+    # "__" (a double underscore) with "/", which can never match: tr produces
+    # one underscore per slash, never two in a row. Restoring therefore always
+    # failed with "target file not found". Replace every _ with / instead.
+    local target="/$(echo "$name" | tr '_' '/')"
 
     if [ ! -f "$target" ]; then
         say "target file not found: $target"

@@ -20,6 +20,12 @@ HOTFIX_URL="${HOTFIX_URL:-https://raw.githubusercontent.com/Copper-linux/copper/
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/copper}"
 LOG_FILE="${LOG_FILE:-/var/log/copper-charge.log}"
 
+# If a hotfix database is installed locally, use it and skip the network
+# entirely. Lets you test a fix on a machine with no route out, and means a
+# dead network degrades to "use what is already here" instead of a hard
+# failure. Delete this file to go back to always fetching.
+LOCAL_DB="/etc/copper/hotfixes.json"
+
 say() {
     echo "copper: $*"
     echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE" 2>/dev/null
@@ -29,12 +35,29 @@ say() {
 
 mkdir -p "$BACKUP_DIR"
 
-say "fetching hotfixes..."
 TMP=$(mktemp)
-if ! curl -fsSL "$HOTFIX_URL" -o "$TMP" 2>/dev/null; then
-    say "could not fetch hotfixes — no network or file not found"
-    rm -f "$TMP"
-    exit 1
+if [ -f "$LOCAL_DB" ]; then
+    say "using installed hotfix database $LOCAL_DB"
+    cp "$LOCAL_DB" "$TMP"
+else
+    say "fetching hotfixes from $HOTFIX_URL"
+    # The live system ships busybox wget, not curl. Prefer curl when it
+    # exists (nicer errors), fall back to wget.
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$HOTFIX_URL" -o "$TMP" 2>/dev/null
+        FETCH_RC=$?
+    else
+        # busybox wget has no -f/-s/-L in the same shape; -q quiet, -O outfile,
+        # and it follows redirects itself. --no-check-certificate because the
+        # live rootfs carries no CA bundle.
+        wget -q --no-check-certificate -T 20 -O "$TMP" "$HOTFIX_URL" 2>/dev/null
+        FETCH_RC=$?
+    fi
+    if [ "$FETCH_RC" -ne 0 ] || [ ! -s "$TMP" ]; then
+        say "could not fetch hotfixes (rc=$FETCH_RC) — no network, or the file is not there yet"
+        rm -f "$TMP"
+        exit 1
+    fi
 fi
 
 if ! grep -q '"fail_code"' "$TMP"; then
