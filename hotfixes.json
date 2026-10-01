@@ -1,0 +1,11 @@
+{
+  "hotfixes": [
+    {
+      "id": "example-fix",
+      "file": "src/main.c",
+      "fail_code": "the failing line of code goes here",
+      "new_code": "the fixed line of code goes here",
+      "description": "Example hotfix — replace with real fixes"
+    }
+  ]
+}
