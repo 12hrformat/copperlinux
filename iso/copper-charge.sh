@@ -9,9 +9,16 @@
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-HOTFIX_URL="https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json"
-BACKUP_DIR="/var/backups/copper"
-LOG_FILE="/var/log/copper-charge.log"
+# Read config if it exists
+CONFIG_FILE="/etc/copper/config"
+if [ -f "$CONFIG_FILE" ]; then
+    . "$CONFIG_FILE"
+fi
+
+# Defaults if config is missing
+HOTFIX_URL="${HOTFIX_URL:-https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json}"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/copper}"
+LOG_FILE="${LOG_FILE:-/var/log/copper-charge.log}"
 
 say() {
     echo "copper: $*"

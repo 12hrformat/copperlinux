@@ -356,12 +356,17 @@ build_copper() {
      "$ROOT/firstboot/copper-firstboot.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
 
+  # hotfix tools — copper charge and copper rollback
+  install -m 0755 "$ROOT/copper-charge.sh" "$TGT/usr/bin/copper-charge"
+  install -m 0755 "$ROOT/copper-rollback.sh" "$TGT/usr/bin/copper-rollback"
+
   # switch_root is going to need all of these, and a staged tree missing one
   # of them is a black screen on a machine with no shell to debug it from.
   # Say it here, where it costs a second. (The udhcpc lease script is checked
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
-  for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot; do
+  for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
+           usr/bin/copper-charge usr/bin/copper-rollback; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
       exit 1
@@ -379,7 +384,8 @@ build_copper() {
   fi
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
-    "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
+    "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
+    "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh"
 }
 
 # ---------------------------------------------------------------
