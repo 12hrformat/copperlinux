@@ -217,9 +217,10 @@ static void bring_up_network(void) {
     start_dhcp(ifname);
 }
 
-static void spawn_tty(int tty) {
+/* Returns the child's pid (the caller reaps it), or -1 if the fork failed. */
+static pid_t spawn_tty(int tty) {
     pid_t pid = fork();
-    if (pid != 0) return;
+    if (pid != 0) return pid;
 
     setsid();
     char dev[32];
@@ -256,10 +257,32 @@ int main(void) {
        the user is still typing their name. */
     bring_up_network();
 
+    /* ...but udhcpc prints its progress to the same console the wizard is
+       prompting on, and a lease landing mid-question lands in the middle of
+       the prompt. Give it a beat to finish talking before the first question,
+       which costs a second on a normal DHCP server and keeps the questions
+       readable. A slow server is still not blocking: this is a fixed pause,
+       not a wait on the lease. */
+    usleep(1500 * 1000);
+    printf("\n");
+    fflush(stdout);
+
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
         pid_t wiz = fork();
         if (wiz == 0) {
+            /* The wizard needs a controlling terminal of its own. getpass()
+               reads from /dev/tty rather than stdin, so without a session and
+               an acquired tty it cannot open /dev/tty at all and the password
+               questions come back unusable. Same treatment spawn_tty() gives
+               the shell, pointed at /dev/console because that is where the
+               wizard's stdout already goes. */
+            setsid();
+            int cfd = open("/dev/console", O_RDWR);
+            if (cfd >= 0) {
+                ioctl(cfd, TIOCSCTTY, 0);
+                if (cfd > 2) close(cfd);
+            }
             execl("/usr/bin/copper-firstboot", "copper-firstboot",
                   (char *)NULL);
             _exit(1);
@@ -268,11 +291,18 @@ int main(void) {
         waitpid(wiz, &wst, 0);
     }
 
-    spawn_tty(1);
+    /* Exactly one shell at a time. Keep the pid so the reaper below can wait on
+       this specific child instead of on any child: udhcpc is our child too, and
+       `udhcpc -b` leaves a short-lived parent behind when it daemonises.
+       waitpid(-1) would return on that exit and start a second copper-sh on the
+       same tty, so two shells fought over stdin -- typing came out garbled and
+       the banner printed twice. */
+    pid_t sh = spawn_tty(1);
     for (;;) {
         int wst;
-        waitpid(-1, &wst, 0);        /* someone exited — bring the shell back */
-        spawn_tty(1);
+        if (sh > 0)
+            waitpid(sh, &wst, 0);
+        sh = spawn_tty(1);
     }
     return 0;                        /* never reached */
 }

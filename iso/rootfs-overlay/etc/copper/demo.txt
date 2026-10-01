@@ -1,0 +1,7 @@
+Copper hotfix demo file
+=======================
+
+THIS LINE IS BROKEN
+
+Run `copper charge` as root and this line is replaced in place.
+Run `copper rollback` to put the original back.
