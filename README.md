@@ -28,11 +28,14 @@ general daily use.
 
 | Part | Status |
 |---|---|
-| `copper-sh` (shell) | Done. Built and tested, no known issues. |
-| Networking | Working. |
+| `copper-sh` (shell) | Works. Arrow-key line editing, history, pipes, redirects. |
+| Networking | Works — wired only. DHCP on boot, `ping`/`nslookup`/`wget` present. |
+| `copper charge` / `copper rollback` | Ship in the ISO. Logic tested end to end off-ISO; not yet run on a booted system. |
+| First-boot wizard | Boots and asks its questions. Account creation fixed, but a full clean run is still unconfirmed. |
 | GUI | Not started — planned for later. |
 | Base system (kernel, musl, userland) | Building from source, CI green end to end. |
-| Bootable ISO | Builds successfully. Boots in a VM: not yet confirmed. |
+| Bootable ISO | Builds successfully. Boots in a VM. |
+| WiFi | **Not supported.** Wired drivers only, no `wpa_supplicant`, and a VM has no wireless NIC anyway. |
 
 ---
 
@@ -46,6 +49,8 @@ Copper Linux
 ├── copper-sh       — our shell
 ├── copper-init     — our init, lives at /sbin/init
 ├── copper-firstboot — first-boot setup wizard
+├── copper          — copper charge / rollback front end
+├── hotfixes.json   — the hotfix database `copper charge` reads
 └── copper.iso      — bootable live ISO (VMware / VirtualBox / QEMU)
 ```
 
@@ -69,7 +74,7 @@ sudo bash iso/build.sh
 ```
 
 or check the Actions logs for a CI run. A finished build uploads
-`copper.iso` (~29 MB) as an Actions artifact.
+`copper.iso` (~57 MB) as an Actions artifact.
 
 ---
 
@@ -121,13 +126,115 @@ make install    # /usr/local/bin/copper-sh
 
 ---
 
+## copper charge — hotfixes without a reinstall
+
+The idea: a bug is found, someone writes the fix down in `hotfixes.json`, and
+anyone running Copper can pull that fix onto their live system in place. No
+ISO rebuild, no reinstall, and if a fix turns out to be wrong there is a way
+back.
+
+```sh
+copper charge                  # apply every hotfix that applies
+copper charge --status         # (same thing — no real dry-run mode yet)
+copper rollback                # list available backups
+copper rollback <backup_name>  # put one back
+```
+
+Both need root. Backups land in `/var/backups/copper/`, and every action is
+appended to `/var/log/copper-charge.log`.
+
+### Writing a hotfix
+
+`hotfixes.json` at the repo root. One entry per bug:
+
+```json
+{
+  "hotfixes": [
+    {
+      "id": "demo-banner",
+      "file": "etc/copper/demo.txt",
+      "fail_code": "THIS LINE IS BROKEN",
+      "new_code": "THIS LINE HAS BEEN FIXED BY COPPER CHARGE",
+      "description": "Demo: proves charge can find, back up and patch a file"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Short name for this fix, used in the log |
+| `file` | Path on the **live system**, relative to `/` |
+| `fail_code` | The exact text to look for. Its absence means "already fixed" |
+| `new_code` | What to put in its place |
+| `description` | One line, shown when the fix is applied |
+
+### How it decides
+
+- `fail_code` present in the file → back it up, then replace it. Repeat until
+  the text is gone.
+- `fail_code` absent → skip with `already fixed?`. This is what makes
+  `copper charge` safe to run twice, or on a machine that already has the fix.
+- File missing → skip, do not create it. `copper charge` never writes a new
+  file; it only patches one that already exists.
+
+There is no automatic failure detection. A human maintainer writes the entry,
+and `copper charge` applies the text edits. Anything subtler than a literal
+string swap does not belong in this format.
+
+### Where it gets the database
+
+`/etc/copper/config`:
+
+```sh
+HOTFIX_URL="https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json"
+BACKUP_DIR="/var/backups/copper"
+LOG_FILE="/var/log/copper-charge.log"
+```
+
+Point `HOTFIX_URL` at a fork or branch to test someone else's fixes.
+
+**If `/etc/copper/hotfixes.json` exists it is used and the network is never
+touched.** The ISO ships one so `copper charge` is testable with no network
+at all. Delete that file to go back to always fetching.
+
+### Rollback
+
+`copper charge` writes backups under `/var/backups/copper/`, naming each one
+after the file it came from with `/` turned into `_`:
+
+```
+/etc/copper/demo.txt   →   etc_copper_demo.txt
+```
+
+`copper rollback` with no arguments lists them; give it one name to restore.
+The current file is saved as `<name>.pre-rollback` first, so a rollback can
+itself be undone.
+
+### Notes and limits
+
+- The live system ships busybox `wget`, not `curl`. `copper charge` prefers
+  `curl` when it is present and falls back to `wget` otherwise.
+- The rootfs carries no CA bundle, so `wget` runs with
+  `--no-check-certificate`. That is fine for fetching a JSON file from a
+  known repo over a link you already trust; it is **not** fine for anything
+  security-sensitive.
+- Both scripts are plain busybox `sh`. No python on the live system.
+- Only the first occurrence of `fail_code` is replaced per pass.
+
+---
+
 ## Repo layout
 
 ```
 src/main.c            shell loop, prompt, tokenizer, process launching
 src/builtins.c        builtin commands + command table
 src/builtins.h        interface between the two
+hotfixes.json         hotfix database read by `copper charge`
 iso/build.sh          from-source distro build
+iso/copper.sh         installs as /usr/bin/copper
+iso/copper-charge.sh  installs as /usr/bin/copper-charge
+iso/copper-rollback.sh installs as /usr/bin/copper-rollback
 iso/live/init         live initramfs
 iso/boot/             GRUB config
 iso/src-init/         copper-init source
@@ -143,11 +250,15 @@ PR.md                 PR notes/template
 
 ## What's next
 
+- A confirmed clean first boot: wizard asks everything, creates the account,
+  drops to a `dragon@copper` prompt
+- `copper charge` run against a real booted system, not just off-ISO
+- WiFi, if we decide a VM-testable target is possible at all
+- `copper charge --status` as a real dry run
 - GUI — no timeline yet, comes after the base system is solid
 - `~/.copperrc` init file for the shell
 - Shell history persisted to disk
-- Real line editing (arrow keys, tab completion) in `copper-sh`
-- A confirmed clean boot in a VM
+- Tab completion in `copper-sh`
 
 ---
 
@@ -170,7 +281,7 @@ own license:
 | busybox | GPLv2 |
 | coreutils, findutils, tar, gzip, sed, grep | GPLv3 |
 | musl | MIT |
-| Copper source files (`copper-sh`, `copper-init`, `copper-firstboot`, build scripts) | MIT |
+| Copper source files (`copper-sh`, `copper-init`, `copper-firstboot`, `copper` tools, build scripts) | MIT |
 
 Building or distributing the full ISO means complying with all of the
 above, not just Copper's own MIT terms.

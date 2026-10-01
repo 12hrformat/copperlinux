@@ -1,4 +1,4 @@
-# Copper OS — Handoff
+# Copper Linux — Handoff
 
 > Read this first, then `iso/README.md` for the build internals.
 > Written by whoever had the machine last. Everything in it is either verified
@@ -27,86 +27,97 @@ Upstream projects are reference material. Nothing gets packaged as-is.
 # Read this part: the branch, and why it isn't on upstream
 
 **Both previous PRs are merged.** Upstream `main` is now `7b4e5fd`
-("Merge pull request #3 from farcrowx/copper-os"), so everything through
-`d639326` is on `Copper-linux/copper`.
+("Merge pull request #3 from farcrowx/copper-os").
 
-The new work is on a branch called **`patch-1`**, and it is **on the fork, not
-on upstream**:
-
-```
-origin    https://github.com/12hrformat/copper.git      (read-only here)
-fork      https://github.com/farcrowx/copper.git        (push target)
-upstream  https://github.com/Copper-linux/copper.git    (read-only here)
-```
-
-`patch-1` lives on **`farcrowx/copper`** and is **9 commits ahead of upstream
-`main`**, touching 6 files, +345/-48:
+**Current work goes on `untested`, on the `12hrformat` fork.** That branch is
+staging: things land there untested, and only move to upstream `main` after
+someone has booted them.
 
 ```
-9750dac say it in both places: the screen and the serial log
-2601222 init: ask sysfs what an interface is before handing it to DHCP
-971b6e5 boot: put tty0 last so the screen is /dev/console again
-0cf3fd9 iso: make the build fail on the things it used to ship silently
-b7facc7 init: test for copper-init, not for the symlink pointing at it
-a225b17 boot: send the console somewhere we can actually read it
-307d6b9 iso: pin the script path before the cd, and fail safe in the stamps
-d9b1ce1 iso: stamp stage outputs so a warm cache can't ship a stale one
-3ae61c1 iso: create the overlay dirs after the tmpfs goes over them
+origin    https://github.com/Copper-linux/copper.git    (read-only here)
+dragon    https://github.com/12hrformat/copper.git      (works — push here)
+fork      https://github.com/farcrowx/copper.git        (push denied)
 ```
 
-**It needs a PR to land.** The only credential on this machine belongs to
-`farcrowx`, and GitHub answers `push=False` for that account on
-`Copper-linux/copper` (`admin=false, pull=true`). Somebody with write access
-has to open `farcrowx:patch-1 → Copper-linux/copper:main`, or take the branch
-and push it up directly.
+**Use `dragon` as the push remote.** `fork` was the historical target and now
+answers `permission denied`; `origin` answers `push=False`. The credential on
+this machine has no write access to `Copper-linux/copper`, which is why
+everything lands on the fork first.
 
-To get it:
+Work on `untested` so far:
+
+```
+b811a15 add 'copper' front end so 'copper charge' actually works
+ab6c17f copper charge/rollback: fix three blockers, add a testable demo hotfix
+22ffde5 fix: user creation, doubled banner, garbled typing, hardcoded prompt
+7fe1450 firstboot: make stdout unbuffered
+59ddc2d firstboot: fix invisible password prompt, give wizard a controlling tty
+903e764 copper-sh: guard run_segments against n<1
+8a73513 firstboot: fix bad read_line call in confirm-password fallback
+007f6fd copper-sh: arrow-key line editing
+```
+
+**Landing it still needs somebody with write access.** Open
+`12hrformat:untested → Copper-linux/copper:main`. Do not merge blind — G1 is
+still open (a full wizard run has not been confirmed end to end).
+
+The old `copper-os` branch has been deleted from the fork; its content lives
+on as `untested`. `patch-1` is long merged and is history, not a target.
+
+To pick up the work:
 
 ```sh
-git fetch upstream fork
-git log --oneline upstream/main..fork/patch-1     # should show the 9 above
-git checkout -b patch-1 fork/patch-1
+git fetch dragon
+git log --oneline upstream/main..dragon/untested
+git checkout -b untested dragon/untested
+```
+
+If a push is rejected with `fetch first`:
+
+```sh
+git pull --rebase dragon untested
+git push dragon HEAD:untested
 ```
 
 ---
 
 # Where things actually stand
 
-**The box boots and gets onto the network.** This is not a projection. A
-VMware guest, 2 GB, NAT, booting the ISO, produces this and nothing after it
-is broken:
+**The box boots, gets onto the network, and runs the first-boot wizard.** A
+VMware guest, 2 GB, NAT, booting the ISO, has produced this:
 
 ```
 copper: initramfs up, medium is /dev/sr0
 copper: handing over to copper-init
 copper: eth0 is up, asking DHCP for an address
-copper-net: dropping the address on eth0
-copper-net: eth0 leased 192.168.179.129/24
-copper-net: default route via 192.168.179.2
-copper-net: nameserver 192.168.179.2
+copper-net: eth0 leased 192.168.127.132/24
+copper-net: default route via 192.168.127.2
+copper-net: nameserver 192.168.127.2
+
+===================================================
+          Welcome to Copper Linux
+===================================================
+Your name: dragon
+Username [letters, digits, - _]: dragon
+Hostname [copper]: copper
+Password (root):
+...
 ```
 
-That is the whole boot path — kernel, initramfs, overlay, `switch_root`, our
-PID 1, DHCP, netmask conversion, default route, resolver — verified on
-hardware, from an artifact that was taken apart and read before it was
-trusted.
-
-**Last known-good ISO:** `copper4.iso`, sha256
-`2355a64008c2aa48554510bc14e790e349191e38c031bab1dffa99cba09b338d`, 57.2 MB,
-from CI run `36242735281` (sha `9750dac`).
+That is kernel, initramfs, overlay, `switch_root`, our PID 1, DHCP, netmask
+conversion, default route, resolver, and the wizard — verified on hardware,
+from artifacts that were taken apart and read before being trusted.
 
 ## What has never run
 
-Two things, and they are the whole remaining risk:
-
-1. **The first-boot wizard.** `iso/firstboot/copper-firstboot.c` has never been
-   executed on any machine. It compiles clean, and that is all anyone can say.
-   The last thing on the screen during the successful boot was
-   `copper-net: nameserver 192.168.179.2`; nobody has confirmed whether a
-   wizard appeared after it or whether PID 1 dropped straight to a shell. This
-   is the first thing to check, and it is central to the "personalizes like a
-   real distro OOBE" requirement.
-2. **Real internet traffic.** We have an address, a prefix, a default route
+1. **A complete, clean first-boot wizard run.** The wizard now reaches every
+   question and, as of `22ffde5`, creates the account correctly. But nobody
+   has yet seen one boot go banner → all questions → `Done — welcome` → a
+   `dragon@copper` prompt. Each stage was fixed and confirmed individually;
+   the whole path has not been confirmed in a single pass.
+2. **`copper charge` on a booted system.** The logic is verified end to end
+   off-ISO (see below) but has never run against a live root.
+3. **Real internet traffic.** We have an address, a prefix, a default route
    and a nameserver. Nothing has yet proved that a name resolves or that a TCP
    connection completes. `ping 1.1.1.1` and a `wget` are still unrun.
 
@@ -339,6 +350,70 @@ blocked on it.
 
 ---
 
+# `copper charge` — what it is and how it got debugged
+
+The hotfix system. `copper charge` pulls `hotfixes.json` and patches the live
+system in place; `copper rollback` puts it back. Full user-facing docs are in
+`README.md`. This section is the part a next person needs and the README does
+not say: **every one of these was found by running the thing, not by reading
+it.**
+
+`copper-charge.sh` and `copper-rollback.sh` had never been executed by anyone
+before today. Four defects, each of which made the feature completely
+non-functional:
+
+1. **`charge` called `curl`, which does not exist on the live system.** The
+   rootfs ships busybox applets; there is no `curl` anywhere in the ISO.
+   Checked by listing the artifact, not by assuming. Now prefers `curl` if
+   present and falls back to `wget`.
+2. **`rollback` could never restore anything.** `charge` names a backup by
+   `tr '/' '_'`, so `/usr/bin/foo` becomes `usr_bin_foo`. `rollback` undid
+   that with `sed 's|__|/|g'` — replacing a *double* underscore, which can
+   never appear when `tr` emits one per slash. Every restore died with
+   `target file not found`. Now `tr '_' '/'`.
+3. **The only hotfix in the database targeted `src/main.c`,** a repo path that
+   does not exist on a booted system, so even a successful fetch could only
+   ever print `skipping … not found`. Replaced with a demo entry against
+   `/etc/copper/demo.txt`, which the ISO ships.
+4. **There was no `copper` binary at all.** The tools shipped as
+   `copper-charge` and `copper-rollback`, so the command everyone would type,
+   `copper charge`, returned `not found`. Added `/usr/bin/copper` as a front
+   end, calling the tools by absolute path so a short `PATH` cannot hide them.
+
+## How it is verified
+
+Not by a green CI run — by running both scripts against a fake root in WSL
+with the real ISO overlay files, as root, and reading the actual file contents
+after each step:
+
+```
+copper: applied demo-banner — Demo: proves charge can find, back up and patch a file
+copper:   backed up to .../var/backups/copper/etc_copper_demo.txt
+copper: charge complete
+  -> second run: skipping demo-banner — fail_code not in etc/copper/demo.txt (already fixed?)
+  -> rollback:  restored etc_copper_demo.txt → .../etc/copper/demo.txt
+```
+
+Apply, backup, idempotent skip, and restore are all confirmed. What is **not**
+confirmed is the same cycle on a booted system.
+
+## Testing it offline
+
+The ISO installs `hotfixes.json` at `/etc/copper/hotfixes.json`, and `charge`
+prefers that file and never touches the network when it exists. So the hotfix
+system can be tested on a VM with no working internet. Delete the file to go
+back to fetching from `HOTFIX_URL`.
+
+## A trap worth knowing
+
+`busybox adduser` and `addgroup` write to the real `/etc/passwd` and
+`/etc/group` regardless of `HOME`, `PWD`, or anything else. Probing them
+inside a WSL shell **modifies WSL**. Back those files up and restore them in
+a `trap`, or you will leave junk accounts behind. This happened twice here and
+was cleaned up both times.
+
+---
+
 # What is verified, and what is not
 
 Being precise here matters, because it is easy to mistake "it compiles" for
@@ -383,7 +458,9 @@ Being precise here matters, because it is easy to mistake "it compiles" for
 
 ## Has never run
 
-- **The first-boot wizard.** Compiles; never executed. G1.
+- **A full clean first-boot wizard run**, banner to `dragon@copper` prompt in
+  one pass. Each stage is fixed and individually confirmed. G1.
+- **`copper charge` against a booted system.** Verified off-ISO only.
 - **Any real internet traffic.** No `ping`, no `nslookup`, no `wget`. G2.
 
 ## A note on green CI runs

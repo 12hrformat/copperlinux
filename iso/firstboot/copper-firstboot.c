@@ -67,32 +67,45 @@ static int valid_tz(const char *z) {
     return 1;   /* bare zones (UTC) and paths (America/New_York) both OK */
 }
 
-/* password reading: silent when a tty is available, plain fallback otherwise */
+/* Ask for one password, twice, and insist the two match.
+
+   getpass() reads from /dev/tty rather than stdin, so it needs the process to
+   own a controlling terminal. The wizard is forked straight out of copper-init
+   and inherits no session of its own, so getpass() usually cannot open /dev/tty
+   and hands back NULL. That fallback used to print only its warning, never the
+   question itself, which left the user staring at a bare "(no silent input
+   available)" line with no idea what was being asked — and whatever they typed
+   next went in blind. Print the prompt ourselves in that case. */
+static void ask_password(const char *prompt, char *buf, size_t cap) {
+    char *p = getpass(prompt);
+    if (p) {
+        if (strlen(p) < cap)
+            snprintf(buf, cap, "%s", p);
+        else
+            buf[0] = '\0';
+        return;
+    }
+    printf("%s", prompt);
+    fflush(stdout);
+    if (!read_line(buf, cap)) buf[0] = '\0';
+}
+
 static void read_password(const char *prompt, char *buf, size_t cap,
                           const char *confirm_prompt) {
     char again[256];
     for (;;) {
-        char *p = getpass(prompt);
-        if (!p) {
-            printf("(no silent input available — type it plainly)\n");
-            if (!read_line(buf, cap)) buf[0] = '\0';
-        } else if (strlen(p) < cap) {
-            snprintf(buf, cap, "%s", p);
-        }
+        ask_password(prompt, buf, cap);
 
         if (confirm_prompt) {
-            char *q = getpass(confirm_prompt);
-            if (!q) {
-                if (!read_line(again, sizeof again)) again[0] = '\0';
-            } else if (strlen(q) < sizeof again) {
-                snprintf(again, sizeof again, "%s", q);
-            }
+            ask_password(confirm_prompt, again, sizeof again);
             if (buf[0] && strcmp(buf, again) == 0) return;
             printf("Those didn't match — try again.\n");
+            fflush(stdout);
             continue;
         }
         if (buf[0]) return;
         printf("Password can't be empty.\n");
+        fflush(stdout);
     }
 }
 
@@ -124,18 +137,29 @@ int main(void) {
     char rootpw[256];
     char userpw[256];
 
+    /* Unbuffered, once, so no prompt can ever be left sitting in a buffer
+       waiting for a newline to push it out. /dev/console is a character
+       device, not a terminal, so stdio picks full buffering and a prompt
+       without a trailing newline stays invisible until something else
+       happens to flush it -- which looked like the wizard hanging. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     banner();
+    fflush(stdout);
 
     printf("Your name: ");
+    fflush(stdout);
     read_line(name, sizeof name);
     if (!name[0]) snprintf(name, sizeof name, "friend");
 
     do {
         printf("Username [letters, digits, - _]: ");
+        fflush(stdout);
         read_line(user, sizeof user);
     } while (!valid_user(user));
 
     printf("Hostname [copper]: ");
+    fflush(stdout);
     {
         char h[64] = "";
         if (read_line(h, sizeof h) && h[0] && valid_host(h))
@@ -146,6 +170,7 @@ int main(void) {
                   "Confirm root password: ");
 
     printf("Timezone [UTC]: ");
+    fflush(stdout);
     {
         char z[128] = "";
         if (read_line(z, sizeof z) && z[0] && valid_tz(z))
@@ -162,11 +187,24 @@ int main(void) {
     run("echo '::1 localhost ip6-localhost ip6-loopback' >> /etc/hosts");
     run("/bin/busybox hostname %s", host);
 
-    /* the named user, with copper-sh as their login shell */
-    if (run("/bin/busybox adduser -h /home/%s -s /usr/bin/copper-sh "
-            "-G users,audio,video,dialout,cdrom %s", user, user) != 0) {
+    /* The named user, with copper-sh as their login shell.
+
+       Supplementary groups go in one at a time via addgroup. This busybox's
+       adduser takes exactly one group after -G: passing "users,audio,video"
+       makes it look up that entire string as a single group name and fail
+       with "unknown group users,audio,video", and -G users alone never
+       creates the group entry either. addgroup USER GROUP one at a time is
+       the form this build actually implements. */
+    if (run("/bin/busybox adduser -h /home/%s -s /usr/bin/copper-sh %s",
+            user, user) != 0) {
         printf("Couldn't create user %s.\n", user);
         return 1;
+    }
+    const char *supp[] = {"users", "audio", "video", "dialout", "cdrom", NULL};
+    for (const char **g = supp; *g; g++) {
+        /* A missing supplementary group is not worth aborting the boot for --
+           the account itself already exists and works. */
+        run("/bin/busybox addgroup %s %s", user, *g);
     }
     read_password("Password (for you): ", userpw, sizeof userpw,
                   "Confirm your password: ");
