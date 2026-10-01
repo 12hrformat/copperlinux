@@ -75,6 +75,7 @@ static void read_password(const char *prompt, char *buf, size_t cap,
         char *p = getpass(prompt);
         if (!p) {
             printf("(no silent input available — type it plainly)\n");
+            fflush(stdout);
             if (!read_line(buf, cap)) buf[0] = '\0';
         } else if (strlen(p) < cap) {
             snprintf(buf, cap, "%s", p);
@@ -83,16 +84,18 @@ static void read_password(const char *prompt, char *buf, size_t cap,
         if (confirm_prompt) {
             char *q = getpass(confirm_prompt);
             if (!q) {
-                if (!read_line(again, sizeof again)) again[0] = '\0';
+                if (!read_line(again, again, sizeof again)) again[0] = '\0';
             } else if (strlen(q) < sizeof again) {
                 snprintf(again, sizeof again, "%s", q);
             }
             if (buf[0] && strcmp(buf, again) == 0) return;
             printf("Those didn't match — try again.\n");
+            fflush(stdout);
             continue;
         }
         if (buf[0]) return;
         printf("Password can't be empty.\n");
+        fflush(stdout);
     }
 }
 
@@ -125,17 +128,21 @@ int main(void) {
     char userpw[256];
 
     banner();
+    fflush(stdout);
 
     printf("Your name: ");
+    fflush(stdout);
     read_line(name, sizeof name);
     if (!name[0]) snprintf(name, sizeof name, "friend");
 
     do {
         printf("Username [letters, digits, - _]: ");
+        fflush(stdout);
         read_line(user, sizeof user);
     } while (!valid_user(user));
 
     printf("Hostname [copper]: ");
+    fflush(stdout);
     {
         char h[64] = "";
         if (read_line(h, sizeof h) && h[0] && valid_host(h))
@@ -146,6 +153,7 @@ int main(void) {
                   "Confirm root password: ");
 
     printf("Timezone [UTC]: ");
+    fflush(stdout);
     {
         char z[128] = "";
         if (read_line(z, sizeof z) && z[0] && valid_tz(z))
