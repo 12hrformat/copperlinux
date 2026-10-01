@@ -1,4 +1,4 @@
 *.o
 copper-sh
 iso/work/
-iso/out/
+iso/out/iso-artifact*/
