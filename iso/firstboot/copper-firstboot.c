@@ -137,6 +137,13 @@ int main(void) {
     char rootpw[256];
     char userpw[256];
 
+    /* Unbuffered, once, so no prompt can ever be left sitting in a buffer
+       waiting for a newline to push it out. /dev/console is a character
+       device, not a terminal, so stdio picks full buffering and a prompt
+       without a trailing newline stays invisible until something else
+       happens to flush it -- which looked like the wizard hanging. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     banner();
     fflush(stdout);
 
