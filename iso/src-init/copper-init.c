@@ -217,9 +217,10 @@ static void bring_up_network(void) {
     start_dhcp(ifname);
 }
 
-static void spawn_tty(int tty) {
+/* Returns the child's pid (the caller reaps it), or -1 if the fork failed. */
+static pid_t spawn_tty(int tty) {
     pid_t pid = fork();
-    if (pid != 0) return;
+    if (pid != 0) return pid;
 
     setsid();
     char dev[32];
@@ -290,11 +291,18 @@ int main(void) {
         waitpid(wiz, &wst, 0);
     }
 
-    spawn_tty(1);
+    /* Exactly one shell at a time. Keep the pid so the reaper below can wait on
+       this specific child instead of on any child: udhcpc is our child too, and
+       `udhcpc -b` leaves a short-lived parent behind when it daemonises.
+       waitpid(-1) would return on that exit and start a second copper-sh on the
+       same tty, so two shells fought over stdin -- typing came out garbled and
+       the banner printed twice. */
+    pid_t sh = spawn_tty(1);
     for (;;) {
         int wst;
-        waitpid(-1, &wst, 0);        /* someone exited — bring the shell back */
-        spawn_tty(1);
+        if (sh > 0)
+            waitpid(sh, &wst, 0);
+        sh = spawn_tty(1);
     }
     return 0;                        /* never reached */
 }

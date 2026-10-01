@@ -23,6 +23,8 @@
 #include <errno.h>
 #include <termios.h>
 #include <sys/wait.h>
+#include <pwd.h>
+#include <unistd.h>
 
 #include "builtins.h"
 
@@ -266,6 +268,33 @@ static void banner(void) {
     puts("     /       \\        (yeah it's a real shell)");
     puts("    /_________\\");
     puts("");
+}
+
+/* ---------------------------------------------------------------- */
+
+/* Who the prompt should say you are. Both were hardcoded as "copper", which
+   meant the prompt still read copper@copper after the first-boot wizard had
+   made a real account and handed over to it. Ask the system, and fall back to
+   the old strings when the lookup fails (no passwd entry, restricted /etc). */
+static char prompt_user[64] = "copper";
+static char prompt_host[64] = "copper";
+
+static void resolve_prompt_identity(void) {
+    /* the uid actually running us, not $USER -- $USER can be inherited stale */
+    uid_t uid = getuid();
+
+    struct passwd *pw = getpwuid(uid);
+    if (pw && pw->pw_name && pw->pw_name[0])
+        snprintf(prompt_user, sizeof prompt_user, "%s", pw->pw_name);
+
+    const char *host = getenv("HOSTNAME");
+    if (host && host[0]) {
+        snprintf(prompt_host, sizeof prompt_host, "%s", host);
+    } else {
+        char h[64] = "";
+        if (gethostname(h, sizeof h) == 0 && h[0])
+            snprintf(prompt_host, sizeof prompt_host, "%s", h);
+    }
 }
 
 /* cwd for the prompt, replacing $HOME with ~ */
@@ -538,6 +567,7 @@ int b_history(int argc, char **argv) {
 
 int main(void) {
     signal(SIGINT, SIG_IGN);             /* ctrl-c must not kill the shell */
+    resolve_prompt_identity();
     banner();
 
     if (enable_raw_mode() == 0)
@@ -545,9 +575,10 @@ int main(void) {
 
     while (1) {
         char cwd[PATH_MAX];
-        char prompt[PATH_MAX + 64];
-        snprintf(prompt, sizeof prompt, "copper@copper:%s$ ",
-                 short_pwd(cwd, sizeof cwd));
+        /* room for user@host: plus the full cwd, and the separators between them */
+char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
+        snprintf(prompt, sizeof prompt, "%s@%s:%s$ ",
+                 prompt_user, prompt_host, short_pwd(cwd, sizeof cwd));
 
         char *line = malloc(EDIT_BUF_SIZE);
         if (!line) { perror("malloc"); break; }

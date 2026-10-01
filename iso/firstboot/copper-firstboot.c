@@ -187,11 +187,24 @@ int main(void) {
     run("echo '::1 localhost ip6-localhost ip6-loopback' >> /etc/hosts");
     run("/bin/busybox hostname %s", host);
 
-    /* the named user, with copper-sh as their login shell */
-    if (run("/bin/busybox adduser -h /home/%s -s /usr/bin/copper-sh "
-            "-G users,audio,video,dialout,cdrom %s", user, user) != 0) {
+    /* The named user, with copper-sh as their login shell.
+
+       Supplementary groups go in one at a time via addgroup. This busybox's
+       adduser takes exactly one group after -G: passing "users,audio,video"
+       makes it look up that entire string as a single group name and fail
+       with "unknown group users,audio,video", and -G users alone never
+       creates the group entry either. addgroup USER GROUP one at a time is
+       the form this build actually implements. */
+    if (run("/bin/busybox adduser -h /home/%s -s /usr/bin/copper-sh %s",
+            user, user) != 0) {
         printf("Couldn't create user %s.\n", user);
         return 1;
+    }
+    const char *supp[] = {"users", "audio", "video", "dialout", "cdrom", NULL};
+    for (const char **g = supp; *g; g++) {
+        /* A missing supplementary group is not worth aborting the boot for --
+           the account itself already exists and works. */
+        run("/bin/busybox addgroup %s %s", user, *g);
     }
     read_password("Password (for you): ", userpw, sizeof userpw,
                   "Confirm your password: ");
