@@ -67,27 +67,37 @@ static int valid_tz(const char *z) {
     return 1;   /* bare zones (UTC) and paths (America/New_York) both OK */
 }
 
-/* password reading: silent when a tty is available, plain fallback otherwise */
+/* Ask for one password, twice, and insist the two match.
+
+   getpass() reads from /dev/tty rather than stdin, so it needs the process to
+   own a controlling terminal. The wizard is forked straight out of copper-init
+   and inherits no session of its own, so getpass() usually cannot open /dev/tty
+   and hands back NULL. That fallback used to print only its warning, never the
+   question itself, which left the user staring at a bare "(no silent input
+   available)" line with no idea what was being asked — and whatever they typed
+   next went in blind. Print the prompt ourselves in that case. */
+static void ask_password(const char *prompt, char *buf, size_t cap) {
+    char *p = getpass(prompt);
+    if (p) {
+        if (strlen(p) < cap)
+            snprintf(buf, cap, "%s", p);
+        else
+            buf[0] = '\0';
+        return;
+    }
+    printf("%s", prompt);
+    fflush(stdout);
+    if (!read_line(buf, cap)) buf[0] = '\0';
+}
+
 static void read_password(const char *prompt, char *buf, size_t cap,
                           const char *confirm_prompt) {
     char again[256];
     for (;;) {
-        char *p = getpass(prompt);
-        if (!p) {
-            printf("(no silent input available — type it plainly)\n");
-            fflush(stdout);
-            if (!read_line(buf, cap)) buf[0] = '\0';
-        } else if (strlen(p) < cap) {
-            snprintf(buf, cap, "%s", p);
-        }
+        ask_password(prompt, buf, cap);
 
         if (confirm_prompt) {
-            char *q = getpass(confirm_prompt);
-            if (!q) {
-                if (!read_line(again, sizeof again)) again[0] = '\0';
-            } else if (strlen(q) < sizeof again) {
-                snprintf(again, sizeof again, "%s", q);
-            }
+            ask_password(confirm_prompt, again, sizeof again);
             if (buf[0] && strcmp(buf, again) == 0) return;
             printf("Those didn't match — try again.\n");
             fflush(stdout);

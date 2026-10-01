@@ -256,10 +256,32 @@ int main(void) {
        the user is still typing their name. */
     bring_up_network();
 
+    /* ...but udhcpc prints its progress to the same console the wizard is
+       prompting on, and a lease landing mid-question lands in the middle of
+       the prompt. Give it a beat to finish talking before the first question,
+       which costs a second on a normal DHCP server and keeps the questions
+       readable. A slow server is still not blocking: this is a fixed pause,
+       not a wait on the lease. */
+    usleep(1500 * 1000);
+    printf("\n");
+    fflush(stdout);
+
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
         pid_t wiz = fork();
         if (wiz == 0) {
+            /* The wizard needs a controlling terminal of its own. getpass()
+               reads from /dev/tty rather than stdin, so without a session and
+               an acquired tty it cannot open /dev/tty at all and the password
+               questions come back unusable. Same treatment spawn_tty() gives
+               the shell, pointed at /dev/console because that is where the
+               wizard's stdout already goes. */
+            setsid();
+            int cfd = open("/dev/console", O_RDWR);
+            if (cfd >= 0) {
+                ioctl(cfd, TIOCSCTTY, 0);
+                if (cfd > 2) close(cfd);
+            }
             execl("/usr/bin/copper-firstboot", "copper-firstboot",
                   (char *)NULL);
             _exit(1);
