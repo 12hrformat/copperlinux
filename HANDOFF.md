@@ -649,7 +649,7 @@ photographing a screen.
 
 # Rules to keep
 
-- Human-sounding commit messages and code. Nothing that reads like AI slop.
+- No AI slop.
 - Keep Copper's identity distinct. Arch and Debian are reference material, not
   packaging material.
 - **Verification over vibes.** Compile clean, run the battery under ASan before
@@ -661,3 +661,6 @@ photographing a screen.
 - When something is unverified, say so in the commit message and in this file.
   The gap between "it builds" and "it boots" is what this project has been
   living on, and bugs #4 through #9 were all invisible to the build.
+- If you make a file that wasn't already made, write "handcrafted by [ your name ]" and if you update a file that had bugs, please write "updated by [ your name, the bug, the line where the bug was ]"
+----
+THANK YOU
