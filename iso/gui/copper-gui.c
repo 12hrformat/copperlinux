@@ -687,6 +687,24 @@ int main(int argc, char **argv)
     int i, rc;
     time_t deadline = 0;
 
+    /* When this runs as PID 1, argv beyond argv[0] is the kernel handing over
+     * whatever else was on the command line, not an operator asking for
+     * something. That is not a guess: booted with rdinit=/copper-gui and a
+     * nogui token on the command line, the token arrived here as argv[1], this
+     * program rejected it as an unknown option, printed its usage and exited 3.
+     * The screen was left in 720x400 text mode -- which looked, from a
+     * distance, like the escape hatch working. It was the desktop refusing to
+     * start.
+     *
+     * Dropping them is the honest reading: nogui, gui=0, quiet and anything else
+     * on the command line belong to copper-init, which is the thing that reads
+     * them. If this is PID 1, copper-init is not here to have read them. */
+    if (getpid() == 1 && argc > 1) {
+        fprintf(stderr, "copper-gui: running as init; ignoring %d kernel-supplied "
+                        "argument%s\n", argc - 1, argc == 2 ? "" : "s");
+        argc = 1;
+    }
+
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--selftest"))
             selftest = 1;

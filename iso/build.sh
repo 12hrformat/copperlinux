@@ -150,6 +150,27 @@ require_kernel_config() {
     echo "kernel: these options did not survive olddefconfig:$missing" >&2
     exit 1
   fi
+
+  # The half of the graphical desktop that is easy to get backwards.
+  #
+  # FRAMEBUFFER_CONSOLE routes the VGA text console through the framebuffer
+  # instead of the legacy text buffer. That changes how the boot art is rendered,
+  # and the drawing is the one thing in this image nobody is allowed to change, so
+  # it stays off and the artwork keeps the path it has always had.
+  #
+  # Asserted rather than merely requested, because the failure mode is silent: a
+  # kernel bump, or a graphics driver that selects it, would switch the console
+  # over without anybody asking, the build would still succeed, and the symptom
+  # would be subtly different artwork that still looked roughly right.
+  #
+  # Note the symbol is simply absent from the config today, because CONFIG_FB is
+  # not set either -- see build_kernel for why there is no framebuffer here yet.
+  if grep -q '^CONFIG_FRAMEBUFFER_CONSOLE=y' "$cfg"; then
+    echo "kernel: CONFIG_FRAMEBUFFER_CONSOLE came back on; that would change" >&2
+    echo "        how the boot art is rendered. It must stay off." >&2
+    exit 1
+  fi
+
   echo "kernel: config looks fit to boot and to reach the network"
 }
 
@@ -174,9 +195,47 @@ build_kernel() {
       --enable VMXNET3 --enable VMWARE_VMXNET3 \
       --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD --enable BLK_DEV_NVME \
       --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
-      --enable VGA_CONSOLE --enable INPUT
+      --enable VGA_CONSOLE --enable INPUT \
+      --disable FRAMEBUFFER_CONSOLE
     # vmxnet3 was renamed at some point around 6.12; asking for both names
     # costs nothing, since kconfig drops whichever one doesn't exist.
+    #
+    # DRM_BOCHS is deliberately NOT enabled here. It was, and the consequence was
+    # measured rather than assumed:
+    #
+    #     bochs-drm 0000:00:02.0: vgaarb: deactivate vga console
+    #     Console: switching to colour dummy device 80x25
+    #
+    # at about 1.7 seconds, during kernel bring-up -- long before anything in the
+    # image draws anything. bochs-drm takes exclusive ownership of the VGA
+    # hardware, and with CONFIG_FRAMEBUFFER_CONSOLE off nothing ever takes it
+    # back, because fbcon is precisely the thing that re-registers tty0 against
+    # the new framebuffer. tty0 is then left registered, accepts writes, and
+    # discards them: writing to /dev/tty0 returns 0, and a screendump taken after
+    # clearing the screen and printing 80 '@' onto it is indistinguishable from
+    # one taken from a boot where nothing was written at all.
+    #
+    # The image would still build, still boot, still bring up a desktop
+    # afterwards, and would never once display the boot art. That is a worse
+    # trade than having no desktop, so the flag is off and the boot art is left
+    # exactly as it was.
+    #
+    # Having both needs fbcon enabled with the classic VGA font pinned, so that
+    # the artwork is rasterised by the same glyphs the text plane used. Whether
+    # that output is genuinely identical is a question about pixels, to be
+    # measured against the current rendering, and it is a decision about the
+    # artwork. It does not belong in a kernel config line, which is why this
+    # comment exists: so the next person to solve the framebuffer by adding
+    # DRM_BOCHS finds out what it costs before shipping it.
+    #
+    # The desktop therefore comes up only where a framebuffer already exists, and
+    # this kernel does not provide one: CONFIG_FB is not set and DRM_BOCHS is not
+    # set, so /dev/fb0 does not exist and copper-gui never starts. On the ISO that
+    # is today is a shell, exactly as it was before any of this. copper-gui exits
+    # 1 with a clear message when /dev/fb0 is absent, and copper-init falls
+    # straight through to the shell in that case, so nothing regresses -- but the
+    # desktop is wired in and waiting, not running, and the commit message says
+    # so rather than leaving it to be discovered on a first boot.
     make olddefconfig
     require_kernel_config "$KD/.config"
     make -j"$JOBS" bzImage
@@ -339,11 +398,14 @@ build_tools() {
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
 build_copper() {
-  local SRC="$ROOT/../src"
+local SRC="$ROOT/../src"
+  local GUI="$ROOT/gui"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
+     && [ -x "$TGT/usr/bin/copper-gui" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
-        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
+        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
+        "$GUI/copper-gui.c" "$GUI/fbabi.h" "$GUI/font8x8.h"
   then
     echo "copper: already built, skipping"; return
   fi
@@ -354,6 +416,12 @@ build_copper() {
      "$ROOT/src-init/copper-init.c"
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
+  # The desktop. -I "$GUI" for font8x8.h, which is compiled in rather than loaded
+  # at runtime: there is no font file to find on a machine that is still deciding
+  # whether it has a graphics driver, and a desktop that cannot find its own font
+  # is a desktop of empty rectangles.
+  $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-gui" \
+     "$GUI/copper-gui.c" -I "$GUI"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
 
   # hotfix tools — copper charge and copper rollback
@@ -367,6 +435,7 @@ build_copper() {
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
+           usr/bin/copper-gui \
            usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -386,6 +455,7 @@ build_copper() {
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
+    "$GUI/copper-gui.c" "$GUI/fbabi.h" "$GUI/font8x8.h" \
     "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 
@@ -434,6 +504,247 @@ build_rootfs() {
     done < <(comm -23 "$old" "$new")
   fi
   mv -f "$new" "$old"
+assert_no_empty_files
+  assert_commands_reachable
+  assert_shell_scripts_parse
+  assert_hotfix_db_readable
+}
+
+# ---------------------------------------------------------------
+# 6b. no command in the image may be an empty REGULAR file
+# ---------------------------------------------------------------
+# Narrow on purpose, and deliberately not about symlinks.
+#
+# A zero-byte regular file that is supposed to be an executable is fatal:
+# execve() finds it, refuses it, and the shell reports "command not found"
+# for a command that is plainly listed. An empty *symlink* is not a thing --
+# a symlink has no size of its own; it has a target.
+#
+# `find -type f` does not match symlinks (find defaults to -P, no follow), so
+# this ignores every one of the 600-odd applet links and looks only at real
+# files. That distinction matters: an earlier version of this gate was aimed
+# at "310 empty files" which turned out to be a measurement error. p7zip
+# reports those entries correctly as symlinks -- Mode = lr-xr-xr-x,
+# Symbolic Link = ../bin/busybox -- but silently writes some of them to disk as
+# 0-byte regular files on extraction. Inspect the image with `mount -o loop`
+# or bsdtar, never with p7zip, or you will chase this ghost again.
+#
+# A few files are legitimately empty, so they are named rather than allowing a
+# blanket exemption.
+assert_no_empty_files() {
+  local empties
+  empties=$( cd "$TGT" && find . -type f -size 0 \
+    ! -path './etc/motd' \
+    ! -path './etc/timezone' \
+    ! -path './var/log/*' \
+    ! -name '*.uuid' \
+    # Vestigial cosmopolitan artifact. It is shipped empty and grub.cfg never
+    # boots it -- the menu entries load /boot/vmlinuz and /boot/initrd.img --
+    # so an empty mach_kernel costs nothing. Worth knowing it is a no-op file.
+    ! -name 'mach_kernel' \
+    -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort )
+
+  if [ -z "$empties" ]; then
+    echo "rootfs: no empty regular files in the staged tree"
+    return 0
+  fi
+
+  local n
+  n=$(printf '%s\n' "$empties" | wc -l)
+  {
+    echo "rootfs: $n empty regular file(s) in the staged tree."
+    echo "If any of these is meant to be executable, the shell will answer"
+    echo "'command not found' for it, because execve() cannot run an empty file."
+    echo
+    printf '%s\n' "$empties" | head -25
+    [ "$n" -gt 25 ] && echo "  ... and $((n - 25)) more"
+    echo
+    echo "Usual cause: a symlink was overwritten without --remove-destination,"
+    echo "so the copy wrote through the link and produced an empty file."
+  } >&2
+  exit 1
+}
+
+# ---------------------------------------------------------------
+# 6c. the commands people actually type must be reachable BY NAME
+# ---------------------------------------------------------------
+# This tests the thing that actually broke, which is not "is the file there".
+#
+# `ip` and `ifconfig` were present, compiled into the shipped busybox, and
+# correctly symlinked the entire time, and still answered "command not found".
+# They live in sbin. PID 1 started with no PATH in its environment, so execvp
+# fell back to the kernel's compiled-in default -- /bin:/usr/bin -- and sbin
+# was never searched. Every existence-style check passes on that failure,
+# which is how it survived several builds and several boots.
+#
+# So: resolve each name the way the live shell will, through the PATH
+# copper-init sets, in that order, with no fallback and no confstr. If the two
+# ever drift apart, the build says so instead of a user finding out.
+assert_commands_reachable() {
+  # Must match setenv("PATH", ...) in copper-init.c. Keeping the two in step
+  # by hand is exactly the kind of thing that drifts, so if this fires, check
+  # that line first.
+  local copper_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+  local applet d found target cand missing=""
+  for applet in \
+      sh ls cat cp mv rm mkdir touch chmod chown \
+      grep sed awk cut tr sort uniq wc head tail \
+      date sleep env printf echo test true false \
+      ln mktemp find xargs basename dirname which \
+      id hostname uname ps kill df du \
+      adduser addgroup chpasswd \
+      ip ifconfig route ping wget nslookup \
+      mount umount switch_root \
+      copper copper-charge copper-rollback copper-gui \
+      vi ; do
+
+    found=""
+    # Walk PATH in the real order, first hit wins, exactly like execvp.
+    local oldifs="$IFS"
+    IFS=:
+    for d in $copper_path; do
+      IFS="$oldifs"
+      if [ "$d" = "/" ]; then cand="$TGT$applet"; else cand="$TGT$d/$applet"; fi
+      # -L first: a busybox applet link resolves relative to its own directory,
+      # so -e alone reports "missing" for a perfectly good link.
+      if [ -L "$cand" ] || [ -e "$cand" ]; then found="$cand"; break; fi
+      IFS=:
+    done
+    IFS="$oldifs"
+
+    if [ -z "$found" ]; then
+      missing="$missing $applet"
+      continue
+    fi
+
+    target="$found"
+    [ -L "$found" ] && target=$(readlink -f "$found" 2>/dev/null || echo "$found")
+    if [ ! -e "$target" ]; then
+      echo "rootfs: '$applet' is a symlink to nowhere: $found -> $(readlink "$found")" >&2
+      echo "       execve() cannot follow it, so the shell reports 'command not found'" >&2
+      exit 1
+    fi
+    if [ -f "$target" ] && [ ! -s "$target" ]; then
+      echo "rootfs: '$applet' resolves to an EMPTY file: $target" >&2
+      echo "       execve() cannot run an empty file" >&2
+      exit 1
+    fi
+  done
+
+  if [ -n "$missing" ]; then
+    {
+      echo "rootfs: these commands would answer 'command not found' on a live shell."
+      echo "        They are not on PATH=$copper_path"
+      echo
+      for a in $missing; do echo "          $a" >&2; done
+      echo
+      echo "        Either the applet is genuinely missing from the image, or"
+      echo "        copper-init's setenv("PATH", ...) no longer matches the list"
+      echo "        checked here. Those two must stay identical."
+    } >&2
+    exit 1
+  fi
+  echo "rootfs: every required command is reachable by name on PATH"
+}
+
+# ---------------------------------------------------------------
+# 6c. no shell script in the repo may fail to parse
+# ---------------------------------------------------------------
+# A quoting mistake in a shell script does not stop it from running: the shell
+# starts executing whatever the broken quoting handed it. One real example --
+# an apostrophe inside a comment within a single-quoted awk program closed the
+# quote, and the remainder of the awk was executed as shell, failing as
+# "buf[depth]: not found" with nothing pointing at the real cause.
+assert_shell_scripts_parse() {
+  local f bad=0
+
+  # bash -n, not sh -n. build.sh uses process substitution and is run with
+  # bash, so checking it with a POSIX shell reports a syntax error in code
+  # that runs perfectly well every day.
+  # `git ls-files` prints paths relative to the directory you run it in, so
+  # this has to be run from the repository root or the paths do not resolve.
+  # Run from $ROOT and it silently lists iso/ only -- tests/ never gets checked.
+  local n_bash=0
+  for f in $(cd "$REPO" && git ls-files '*.sh' 2>/dev/null); do
+    [ -f "$REPO/$f" ] || { echo "build: $f is listed by git but not on disk" >&2; bad=1; continue; }
+    n_bash=$((n_bash + 1))
+    if ! out=$(bash -n "$REPO/$f" 2>&1); then
+      echo "build: $f does not parse:" >&2
+      echo "$out" | sed 's/^/       /' >&2
+      bad=1
+    fi
+  done
+  [ "$bad" -eq 0 ] || exit 1
+
+  # The three tools that run on a live system declare #!/bin/busybox sh and
+  # are executed by busybox ash, not by bash. Grammar the POSIX shell does not
+  # have -- array assignment, the `function` keyword, process substitution --
+  # would fail on the machine this ISO is for, which is the only place it
+  # matters. So check those against a POSIX shell too, when one is available.
+  #
+  # What this does NOT catch: bash builtins that happen to be spelled like
+  # ordinary commands. dash -n accepts `[[ -n "$1" ]]`, because to its parser
+  # that is a command called "[[" with two arguments, and it only fails when it
+  # runs. Catching those needs a shell that runs the code, not one that reads
+  # it, which is what the charge tests do.
+  local posix=""
+  for c in dash ash busybox; do
+    command -v "$c" >/dev/null 2>&1 && { posix="$c"; break; }
+  done
+
+  if [ -n "$posix" ]; then
+    local n_posix=0
+    for f in iso/copper.sh iso/copper-charge.sh iso/copper-rollback.sh; do
+      [ -f "$REPO/$f" ] || {
+        echo "build: $f is missing, so the POSIX check cannot run on it" >&2
+        bad=1; continue; }
+      n_posix=$((n_posix + 1))
+      if ! out=$("$posix" -n "$REPO/$f" 2>&1); then
+        echo "build: $f is not POSIX sh, and it runs under busybox ash:" >&2
+        echo "$out" | sed 's/^/       /' >&2
+        bad=1
+      fi
+    done
+    [ "$bad" -eq 0 ] || exit 1
+    # A check that looked at nothing and reported success is worse than no
+    # check at all, because it reads like the busybox tools were verified.
+    # This loop was skipping all three over a wrong path, and `[ -f ] ||
+    # continue` is precisely the construct that hides that.
+    [ "$n_posix" -eq 3 ] || {
+      echo "build: the POSIX check covered $n_posix of 3 busybox tools" >&2; exit 1; }
+    echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
+  else
+    echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
+  fi
+  [ "$n_bash" -gt 0 ] || { echo "build: no shell scripts were found to check" >&2; exit 1; }
+}
+
+# ---------------------------------------------------------------
+# 6d. the hotfix database must survive the parser that reads it
+# ---------------------------------------------------------------
+# The parser is hand-written awk, because the live system has no python3. It
+# once concatenated the whole file into a single line, so every field came
+# back as the last entry value and all but the last entry were invisible --
+# which worked perfectly, because the database had exactly one entry.
+#
+# So this does not test a copy of the parser. It runs the real script and
+# compares what comes out against what is in the file.
+assert_hotfix_db_readable() {
+  # $ROOT is iso/, not the repository root, so "$ROOT/iso/..." is iso/iso/...
+  # and the gate died with "no such file" while printing an explanation about
+  # the parser. Check the path first and say which of the two it actually is.
+  local gate="$REPO/iso/assert-hotfix-db.sh"
+  if [ ! -f "$gate" ]; then
+    echo "build: $gate is missing, so the hotfix database was never checked." >&2
+    exit 1
+  fi
+  ( cd "$REPO" && "$gate" ) || {
+    echo "build: the hotfix database did not survive the parser." >&2
+    echo "       Every entry but the last would be silently ignored on a" >&2
+    echo "       live system, with no error and no change." >&2
+    exit 1
+  }
 }
 
 # ---------------------------------------------------------------
