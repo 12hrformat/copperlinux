@@ -25,6 +25,37 @@ on:
   workflow_dispatch:
 
 jobs:
+# Fast, and runs first. Nothing here builds anything: it is the set of
+  # checks that catch a mistake in seconds instead of after a fifteen-minute
+  # kernel build, and it needs no toolchain beyond a POSIX shell.
+  #
+  # Kept as its own job so a failure here is obviously not a compile error.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: copper-sh smoke test
+        run: |
+          make -s
+          ./tests/smoke.sh
+
+      # Needs root, because the tools insist on it. The reported bug -- a
+      # charge that applied nothing left no backup for rollback to use -- is
+      # only visible end to end, against the real scripts.
+      - name: charge / rollback cycle
+        run: sudo ./tests/charge.sh
+
+      # Runs the first-boot wizard against the real busybox and a real
+      # /etc, in a mount namespace so it cannot touch the runner. It catches
+      # the account-creation regressions, which nothing else here does.
+      - name: first-boot account gate
+        run: sudo ./tests/account-gate.sh
+
+  # Deliberately NOT `needs: checks`. The checks job and this one run
+  # concurrently, so a shell-level mistake is reported within a minute while
+  # the kernel is still building, without withholding the artifact from a run
+  # that only failed the fast checks.
   build:
     runs-on: ubuntu-latest
     steps:
@@ -33,9 +64,19 @@ jobs:
       - name: Install from-source build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bison flex bc cpio rsync curl wget \
+          sudo apt-get install -y build-essential gcc-13 bison flex bc cpio rsync curl wget \
             xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
             python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
+
+      # build.sh pins the kernel compiler itself, and says why: gcc 15 rejects
+      # this kernel's ACPI signature table under -Werror, so an unpinned runner
+      # fails in ACPI code thousands of lines from anything that changed. The pin
+      # lives in build.sh so local builds get it too -- this line only makes sure
+      # the pinned compiler is actually installed, rather than assuming the
+      # runner's default happens to be the right version. ubuntu-latest is gcc-13
+      # today, which is exactly why this was never hit: it works until the
+      # image moves, and then it fails for a reason that has nothing to do with
+      # the change under test.
 
       # The fallback prefix is deliberate: a warm iso/work/ saves a ~7 min
       # kernel build when something unrelated changed. What makes that safe

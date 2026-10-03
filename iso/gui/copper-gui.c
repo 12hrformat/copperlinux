@@ -32,6 +32,22 @@
  * reports, so a machine that hands back BGRX instead of XRGB gets the same
  * colours rather than a blue desktop.
  *
+ * One contract with whoever launches this, and it is not a suggestion: stdout
+ * must not be the framebuffer console.
+ *
+ * /dev/console is whichever console= comes last on the kernel command line, and
+ * Copper's default boot entry ends with console=tty0 -- so a process wired to
+ * /dev/console has its output rendered by fbcon onto the very pixels this
+ * program is drawing. The line reporting that the desktop is up is printed
+ * after the frame is drawn, because printing it before would report something
+ * that had not happened yet. So that one line lands on the finished desktop, as
+ * a console row with the console's black background, and stamps a black band
+ * with grey glyphs in it straight across the title bar.
+ *
+ * It looks exactly like a rendering fault and is not one. Every pixel below the
+ * log line was correct. copper-init therefore points this program's stdout at a
+ * serial port, or at /dev/null when there is none -- see start_gui().
+ *
  * Exit status: 0 = drew and (unless --selftest) ran
  *              1 = no /dev/fb0, so there is no framebuffer to draw on
  *              2 = /dev/fb0 is not a usable packed-pixel graphics surface

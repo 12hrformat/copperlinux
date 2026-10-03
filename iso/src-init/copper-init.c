@@ -284,18 +284,53 @@ static pid_t start_gui(void) {
     if (pid != 0)
         return pid;
 
-    /* Its own session, and the console on stdout, so the handful of things it
-       has to say -- the geometry it was handed, any device it could not open --
-       still reach the serial log after the text console stops being a thing
-       anyone can see. */
+    /* Its own session, and a log on stdout that is *not* the screen.
+
+       This used to dup /dev/console onto stdout and stderr, on the reasoning
+       that the console was where diagnostics went. It is not, any more, once
+       the desktop is running: /dev/console is whichever console= appears last
+       on the kernel command line, and the default boot entry ends with
+       console=tty0. So that "log" was the framebuffer.
+
+       copper-gui prints the line it uses to report the desktop is up, and it
+       prints it after drawing, because before drawing it would be reporting
+       something that had not happened. With stdout on tty0, fbcon rendered
+       that line as a console row and stamped it over the finished desktop: a
+       black band the width of the text, across the title bar, with grey
+       glyphs in it. Measured at 1280x800, one 16-pixel row from x=0 to x=447,
+       which is 56 console columns -- the length of the message.
+
+       It read as a rendering bug and it was not one. The desktop drew every
+       pixel correctly; a log line was written over the top of it afterwards.
+
+       So the log goes to a serial port when the kernel gave us one, and to
+       /dev/null when it did not. Never to the console, because the console is
+       the desktop now. A desktop with a line of text painted across it is
+       broken, and no amount of correct drawing underneath fixes that. */
     setsid();
-    int cfd = open("/dev/console", O_RDWR);
-    if (cfd >= 0) {
-        dup2(cfd, 0);
-        dup2(cfd, 1);
-        dup2(cfd, 2);
-        ioctl(cfd, TIOCSCTTY, 0);
-        if (cfd > 2) close(cfd);
+    {
+        static const char *logs[] = { "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2",
+                                      "/dev/ttyS3" };
+        unsigned nlogs = sizeof logs / sizeof logs[0];
+        unsigned i;
+        int logfd = -1;
+
+        for (i = 0; i < nlogs; i++) {
+            logfd = open(logs[i], O_WRONLY | O_NOCTTY);
+            if (logfd >= 0)
+                break;
+        }
+        if (logfd < 0)
+            logfd = open("/dev/null", O_WRONLY);
+
+        if (logfd >= 0) {
+            dup2(logfd, 1);
+            dup2(logfd, 2);
+            if (logfd > 2)
+                close(logfd);
+        }
+        /* stdin is left alone: copper-gui reads /dev/input, not the terminal,
+           and the shell this init falls back to needs the console back. */
     }
     execl("/usr/bin/copper-gui", "copper-gui", (char *)NULL);
     /* Reaching here means the binary is not in the image. Say so instead of

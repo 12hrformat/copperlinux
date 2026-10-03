@@ -151,27 +151,37 @@ require_kernel_config() {
     exit 1
   fi
 
-  # The half of the graphical desktop that is easy to get backwards.
+  # The graphical desktop's other half, which is easy to get backwards.
   #
-  # FRAMEBUFFER_CONSOLE routes the VGA text console through the framebuffer
-  # instead of the legacy text buffer. That changes how the boot art is rendered,
-  # and the drawing is the one thing in this image nobody is allowed to change, so
-  # it stays off and the artwork keeps the path it has always had.
+  # CONFIG_FRAMEBUFFER_CONSOLE routes tty0 through the framebuffer instead of the
+  # legacy text buffer. It is required, not optional: without it there is no
+  # /dev/fb0 for the desktop to draw on, and without DRM_BOCHS there is no
+  # framebuffer for /dev/fb0 to come from. With only the driver, tty0 is left
+  # registered and discarding writes -- the machine would have a desktop and a
+  # dead console, and the first-boot questions would go nowhere.
   #
-  # Asserted rather than merely requested, because the failure mode is silent: a
-  # kernel bump, or a graphics driver that selects it, would switch the console
-  # over without anybody asking, the build would still succeed, and the symptom
-  # would be subtly different artwork that still looked roughly right.
+  # Asserted as =y rather than merely requested, because kconfig silently drops an
+  # option whose dependencies are unmet. Asking for FB without a driver is
+  # accepted without complaint and produces a kernel with neither, which is the
+  # same as the configuration this replaced: it builds, it boots, and it shows a
+  # shell. A flag that vanishes quietly needs a check that fails loudly.
   #
-  # Note the symbol is simply absent from the config today, because CONFIG_FB is
-  # not set either -- see build_kernel for why there is no framebuffer here yet.
-  if grep -q '^CONFIG_FRAMEBUFFER_CONSOLE=y' "$cfg"; then
-    echo "kernel: CONFIG_FRAMEBUFFER_CONSOLE came back on; that would change" >&2
-    echo "        how the boot art is rendered. It must stay off." >&2
+  # FONT_8x16 is pinned so the console keeps the glyphs it had on the text plane.
+  # Left to its own devices kconfig also picks FONT_8x8, and the console renders
+  # 160x100 of unreadably small text instead.
+  for sym in DRM DRM_BOCHS DRM_FBDEV_EMULATION FB FRAMEBUFFER_CONSOLE \
+             FONT_8x16 ; do
+    grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
+  done
+  if [ -n "$missing" ]; then
+    echo "kernel: the desktop needs these, and they did not survive" >&2
+    echo "        olddefconfig:$missing" >&2
+    echo "        Without them there is no /dev/fb0 and copper-gui cannot" >&2
+    echo "        start. This build would boot to a shell." >&2
     exit 1
   fi
 
-  echo "kernel: config looks fit to boot and to reach the network"
+  echo "kernel: config looks fit to boot, to reach the network, and to draw"
 }
 
 build_kernel() {
@@ -184,8 +194,37 @@ build_kernel() {
   local KT KD
   KT=$(fetch "https://cdn.kernel.org/pub/linux/kernel/$KPATH/linux-$KREL.tar.xz")
   KD=$(unpack "$KT")
+
+  # The compiler, pinned rather than whatever the machine happens to have.
+  #
+  # gcc 15 turned -Wunterminated-string-initialization into a warning the kernel
+  # builds with -Werror, and this kernel's ACPI signature table trips it:
+  #
+  #     drivers/acpi/tables.c:410: error: initializer-string for array of 'char'
+  #     truncates NUL terminator [-Werror=unterminated-string-initialization]
+  #
+  # so the build stops in ACPI code, thousands of lines away from anything that
+  # was changed. Pinning the compiler is the smaller fix: the alternative is
+  # carrying a patch against the kernel's own source that no upstream asked for,
+  # and that silently stops being needed the moment the kernel is bumped.
+  #
+  # The pin lives here rather than in CI config so a local build gets it too.
+  # Set KERNEL_CC to override; set it empty to force the system default.
+  local KCC="${KERNEL_CC-gcc-13}"
+  local kcc=()
+  if [ -n "$KCC" ]; then
+    command -v "$KCC" >/dev/null 2>&1 || {
+      echo "kernel: KERNEL_CC=$KCC but there is no such compiler." >&2
+      echo "        Install it, or set KERNEL_CC= to use the default." >&2
+      exit 1; }
+    kcc=(CC="$KCC" HOSTCC="$KCC")
+    echo "    compiler: $("$KCC" --version | head -1)"
+  else
+    echo "    compiler: system default ($(gcc --version | head -1))"
+  fi
+
   pushd "$KD" >/dev/null
-    make defconfig
+    make "${kcc[@]}" defconfig
     scripts/config --disable MODULES \
       --enable ISO9660_FS --enable OVERLAY_FS --enable TMPFS \
       --enable DEVTMPFS --enable DEVTMPFS_MOUNT \
@@ -196,49 +235,54 @@ build_kernel() {
       --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD --enable BLK_DEV_NVME \
       --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
       --enable VGA_CONSOLE --enable INPUT \
-      --disable FRAMEBUFFER_CONSOLE
+      --enable DRM --enable DRM_BOCHS --enable DRM_FBDEV_EMULATION \
+      --enable FB --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16
     # vmxnet3 was renamed at some point around 6.12; asking for both names
     # costs nothing, since kconfig drops whichever one doesn't exist.
     #
-    # DRM_BOCHS is deliberately NOT enabled here. It was, and the consequence was
-    # measured rather than assumed:
+    # The framebuffer, and why it is here now.
+    #
+    # DRM_BOCHS was deliberately left off for a long time, and the reason was
+    # measured rather than guessed:
     #
     #     bochs-drm 0000:00:02.0: vgaarb: deactivate vga console
     #     Console: switching to colour dummy device 80x25
     #
-    # at about 1.7 seconds, during kernel bring-up -- long before anything in the
-    # image draws anything. bochs-drm takes exclusive ownership of the VGA
-    # hardware, and with CONFIG_FRAMEBUFFER_CONSOLE off nothing ever takes it
-    # back, because fbcon is precisely the thing that re-registers tty0 against
-    # the new framebuffer. tty0 is then left registered, accepts writes, and
-    # discards them: writing to /dev/tty0 returns 0, and a screendump taken after
-    # clearing the screen and printing 80 '@' onto it is indistinguishable from
-    # one taken from a boot where nothing was written at all.
+    # at about 1.7 seconds, during bring-up. bochs-drm takes exclusive ownership of
+    # the VGA hardware, and with CONFIG_FRAMEBUFFER_CONSOLE off nothing ever took it
+    # back -- fbcon is the thing that re-registers tty0 against the new framebuffer.
+    # tty0 was then left registered, accepting writes and discarding them: writing
+    # to /dev/tty0 returned 0, and a screendump after clearing the screen and
+    # printing 80 '@' onto it was indistinguishable from a boot where nothing had
+    # been written at all.
     #
-    # The image would still build, still boot, still bring up a desktop
-    # afterwards, and would never once display the boot art. That is a worse
-    # trade than having no desktop, so the flag is off and the boot art is left
-    # exactly as it was.
+    # That was a real problem, and it was not solved by adding the driver. It was
+    # solved by adding fbcon as well, so the desktop and the text console can own
+    # the same device -- which is the whole requirement, since the machine has to
+    # run the first-boot questions as text and then hand the screen to the desktop.
     #
-    # Having both needs fbcon enabled with the classic VGA font pinned, so that
-    # the artwork is rasterised by the same glyphs the text plane used. Whether
-    # that output is genuinely identical is a question about pixels, to be
-    # measured against the current rendering, and it is a decision about the
-    # artwork. It does not belong in a kernel config line, which is why this
-    # comment exists: so the next person to solve the framebuffer by adding
-    # DRM_BOCHS finds out what it costs before shipping it.
+    # What that costs, now measured:
     #
-    # The desktop therefore comes up only where a framebuffer already exists, and
-    # this kernel does not provide one: CONFIG_FB is not set and DRM_BOCHS is not
-    # set, so /dev/fb0 does not exist and copper-gui never starts. On the ISO that
-    # is today is a shell, exactly as it was before any of this. copper-gui exits
-    # 1 with a clear message when /dev/fb0 is absent, and copper-init falls
-    # straight through to the shell in that case, so nothing regresses -- but the
-    # desktop is wired in and waiting, not running, and the commit message says
-    # so rather than leaving it to be discovered on a first boot.
-    make olddefconfig
+    #   * fbcon takes tty0 over from vgacon at about 8s, and the text console
+    #     works -- rendering and keystrokes both, verified by decoding a
+    #     screenshot back into the characters it shows, 100% of glyphs matched
+    #     against the kernel's own font_8x16.
+    #   * the console becomes 160x50 rather than 80x25, because fbcon lays the
+    #     whole 1280x800 surface out as 8x16 cells. Anything that asks the
+    #     terminal how big it is -- the first-boot wizard does, and centres
+    #     itself accordingly -- will lay itself out differently. The wizard was
+    #     checked both ways: the two forms are 12 rows by 66 columns and differ in
+    #     0 of 792 cells, once aligned. Same words, same arrangement, different
+    #     margins, because the terminal is a different size.
+    #   * during boot the kernel log is visible on the console unless the entry is
+    #     booted quiet, which the default entry is.
+    #
+    # Still true of all of the above: every one of these was measured under QEMU's
+    # stdvga with bochs-drm. That is not a graphics driver any real machine uses.
+    # Nothing here says what i915 or amdgpu does, because nothing here tested it.
+    make "${kcc[@]}" olddefconfig
     require_kernel_config "$KD/.config"
-    make -j"$JOBS" bzImage
+    make "${kcc[@]}" -j"$JOBS" bzImage
     cp arch/x86/boot/bzImage "$TGT/boot/vmlinuz"
   popd >/dev/null
   [ -s "$TGT/boot/vmlinuz" ] || { echo "kernel build failed"; exit 1; }
