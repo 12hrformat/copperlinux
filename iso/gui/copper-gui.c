@@ -500,7 +500,11 @@ static int paint_all(int inputs)
     paint_content(&L);
     paint_taskbar(&L, up);
     paint_markers();
-    paint_cursor((int)fb.w / 2, (int)fb.h / 2);
+
+    /* No pointer here. This function knows nothing about where the pointer is,
+       and drawing it at the centre on every repaint meant a repaint for any
+       other reason put it back in the middle. Whoever repaints draws it, at a
+       position they actually hold. */
 
     msync(fb.base, fb.len, MS_SYNC);
     return 0;
@@ -753,7 +757,16 @@ int main(int argc, char **argv)
     if (use_input)
         open_inputs(pfd, (int)(sizeof pfd / sizeof pfd[0]), &inputs);
 
+    /* The pointer position belongs outside the event loop. Inside it, every
+       pass starts again from the middle, so the mouse reports a movement, the
+       next iteration discards it, and the next repaint draws it back where it
+       started: the pointer is pinned to the centre and cannot be moved off it.
+       Declared in the loop, it was reset once a second by the poll timeout
+       alone, whether the mouse moved or not. */
+    int cx = (int)fb.w / 2, cy = (int)fb.h / 2;
+
     paint_all(inputs);
+    paint_cursor(cx, cy);
     printf("copper-gui: drew a desktop at %ux%u, %d input device%s\n",
            fb.w, fb.h, inputs, inputs == 1 ? "" : "s");
 
@@ -771,7 +784,6 @@ int main(int argc, char **argv)
      * somebody else's stale pixels. */
     for (;;) {
         int ready, k;
-        int cx = (int)fb.w / 2, cy = (int)fb.h / 2;
         int dirty = 0, quit = 0;
 
         if (deadline && time(NULL) >= deadline)
