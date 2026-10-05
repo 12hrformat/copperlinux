@@ -193,8 +193,8 @@ require_kernel_config() {
   if [ -n "$missing" ]; then
     echo "kernel: the desktop needs these, and they did not survive" >&2
     echo "        olddefconfig:$missing" >&2
-    echo "        Without them there is no /dev/fb0 and copper-gui cannot" >&2
-    echo "        start. This build would boot to a shell." >&2
+    echo "        Without them there is no /dev/fb0, so nothing can put" >&2
+    echo "        anything on the screen. This build would boot to a shell." >&2
     exit 1
   fi
 
@@ -496,13 +496,10 @@ build_tools() {
 # ---------------------------------------------------------------
 build_copper() {
 local SRC="$ROOT/../src"
-  local GUI="$ROOT/gui"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
-     && [ -x "$TGT/usr/bin/copper-gui" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
-        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$GUI/copper-gui.c" "$GUI/fbabi.h" "$GUI/font8x8.h"
+        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
   then
     echo "copper: already built, skipping"; return
   fi
@@ -513,12 +510,6 @@ local SRC="$ROOT/../src"
      "$ROOT/src-init/copper-init.c"
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
-  # The desktop. -I "$GUI" for font8x8.h, which is compiled in rather than loaded
-  # at runtime: there is no font file to find on a machine that is still deciding
-  # whether it has a graphics driver, and a desktop that cannot find its own font
-  # is a desktop of empty rectangles.
-  $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-gui" \
-     "$GUI/copper-gui.c" -I "$GUI"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
 
   # hotfix tools — copper charge and copper rollback
@@ -538,7 +529,7 @@ local SRC="$ROOT/../src"
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/copper-gui usr/bin/startxfce \
+           usr/bin/startxfce \
            usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -558,7 +549,6 @@ local SRC="$ROOT/../src"
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-    "$GUI/copper-gui.c" "$GUI/fbabi.h" "$GUI/font8x8.h" \
     "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 
@@ -699,7 +689,7 @@ assert_commands_reachable() {
       adduser addgroup chpasswd \
       ip ifconfig route ping wget nslookup \
       mount umount switch_root \
-      copper copper-charge copper-rollback copper-gui startxfce \
+      copper copper-charge copper-rollback startxfce \
       vi ; do
 
     found=""

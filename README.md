@@ -32,7 +32,7 @@ general daily use.
 | Networking | Works — wired only. DHCP on boot, `ping`/`nslookup`/`wget` present. |
 | `copper charge` / `copper rollback` | Ship in the ISO. Logic tested end to end off-ISO; not yet run on a booted system. |
 | First-boot wizard | Boots and asks its questions. A full run was verified: all six questions answered, nothing refused, no shell prompt. |
-| Desktop (`copper-gui`) | **Draws.** A framebuffer desktop, verified 17/17 exact pixel assertions. No longer started automatically — boot lands on a shell instead, and `gui=1` brings the desktop back. |
+| Desktop | **Removed.** There was a framebuffer desktop, `copper-gui`, which drew a picture of a desktop with hardcoded strings and no window manager behind it. It is gone: `iso/gui/` is deleted, the build stage that compiled it is gone, and `gui=1` no longer means anything. XFCE is the desktop, and XFCE is real software doing real work rather than our own drawing. |
 | X server (Xorg) | **Builds.** 1.21.1.9 with `modesetting_drv.so` and `libfbdevhw.so` both present. Not yet booted inside Copper — a server that compiles is a server that links. |
 | `startxfce` | **Ships, and says why it cannot start.** It names the missing piece and returns a distinct exit code, so "XFCE isn't built yet" is never confused with a broken PATH. |
 | XFCE | **Wanted, not started.** It is an X client, so it needs the server above plus glib, GTK3 and ~30 libraries, which means a glibc userspace alongside the static musl one. |
@@ -89,7 +89,6 @@ the X stack costs a shell rather than the machine.
 |---|---|
 | `startxfce` | Starts the X server if one is not already running, then XFCE on it. |
 | `startxfce --check` | Reports what is installed and exits, starting nothing. |
-| `copper-gui` | The framebuffer desktop, drawn straight into `/dev/fb0`. |
 
 `startxfce` exits **20** if there is no X server in the image, **21** if XFCE is
 missing, **22** if the server started but never opened a display, **23** if the
@@ -121,7 +120,6 @@ Copper Linux
 ├── copper-sh       — our shell
 ├── copper-init     — our init, lives at /sbin/init
 ├── copper-firstboot — first-boot setup wizard
-├── copper-gui      — the framebuffer desktop
 ├── copper          — copper charge / rollback front end
 ├── hotfixes.json   — the hotfix database `copper charge` reads
 └── copper.iso      — bootable live ISO (VMware / VirtualBox / QEMU)

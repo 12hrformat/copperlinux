@@ -238,133 +238,6 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
-/* Should the graphical desktop start by itself?
-
-   The kernel command line is the switch. There is no config file to read,
-   because on a first boot the wizard has not run and /etc is still whatever
-   the initramfs left behind. `gui=1` appears in /proc/cmdline, and the GRUB
-   menu has an entry that sets it.
-
-   The default is the shell, which is a change. The end state is XFCE, and
-   XFCE is something the user starts with `startxfce` rather than something
-   handed to them: the X server builds but has never been booted on this
-   kernel, so an automatic start either works or leaves a blank screen, and
-   neither is worth it to someone who is about to type startxfce anyway. A
-   shell in front of it also means a failure in the X stack costs a shell
-   rather than the machine.
-
-   copper-gui is still reachable with gui=1, so the framebuffer desktop can be
-   compared against the shell on one ISO.
-
-   `nogui` and `gui=0` are still accepted and now mean the same as saying
-   nothing, so a command line written for an older build keeps working.
-
-   This is not a nicety. copper-gui programs the VGA into a graphics mode, and
-   on a machine whose framebuffer it cannot drive there is no way back to a text
-   console once that has happened -- the shell exists, but there is no longer a
-   screen to show it on. Being able to append one word at the GRUB prompt is the
-   difference between "boot it with a flag" and "rebuild the ISO". */
-static int gui_requested(void) {
-    char line[512];
-    char *tok;
-    FILE *f = fopen("/proc/cmdline", "r");
-
-    if (!f)
-        return 0;                   /* no /proc: the default is the shell */
-    if (!fgets(line, sizeof line, f)) {
-        fclose(f);
-        return 0;
-    }
-    fclose(f);
-
-    /* Whole tokens, not a substring. A bare "gui" is a word the user may type
-       at the GRUB prompt, and strstr would also match it inside any unrelated
-       argument that happens to contain those three letters. */
-    for (tok = strtok(line, " \t\n"); tok; tok = strtok(NULL, " \t\n")) {
-        if (strcmp(tok, "gui=1") == 0 || strcmp(tok, "gui") == 0)
-            return 1;
-    }
-    return 0;
-}
-
-/* Start the graphical desktop, if it was asked for and this machine has a
-   framebuffer to put it on.
-
-   Returns the child's pid, or 0 when the desktop is not wanted and the caller
-   should fall back to a shell. */
-static pid_t start_gui(void) {
-    if (!gui_requested()) {
-        say("copper: gui=1 to start the desktop, otherwise a shell");
-        say("copper: type startxfce for XFCE");
-        return 0;
-    }
-    if (access("/dev/fb0", R_OK) != 0) {
-        /* Not an error. It is a kernel built without a graphics driver, and a
-           shell is the right thing to hand it. */
-        say("copper: no /dev/fb0, starting the shell");
-        return 0;
-    }
-
-    pid_t pid = fork();
-    if (pid != 0)
-        return pid;
-
-    /* Its own session, and a log on stdout that is *not* the screen.
-
-       This used to dup /dev/console onto stdout and stderr, on the reasoning
-       that the console was where diagnostics went. It is not, any more, once
-       the desktop is running: /dev/console is whichever console= appears last
-       on the kernel command line, and the default boot entry ends with
-       console=tty0. So that "log" was the framebuffer.
-
-       copper-gui prints the line it uses to report the desktop is up, and it
-       prints it after drawing, because before drawing it would be reporting
-       something that had not happened. With stdout on tty0, fbcon rendered
-       that line as a console row and stamped it over the finished desktop: a
-       black band the width of the text, across the title bar, with grey
-       glyphs in it. Measured at 1280x800, one 16-pixel row from x=0 to x=447,
-       which is 56 console columns -- the length of the message.
-
-       It read as a rendering bug and it was not one. The desktop drew every
-       pixel correctly; a log line was written over the top of it afterwards.
-
-       So the log goes to a serial port when the kernel gave us one, and to
-       /dev/null when it did not. Never to the console, because the console is
-       the desktop now. A desktop with a line of text painted across it is
-       broken, and no amount of correct drawing underneath fixes that. */
-    setsid();
-    {
-        static const char *logs[] = { "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2",
-                                      "/dev/ttyS3" };
-        unsigned nlogs = sizeof logs / sizeof logs[0];
-        unsigned i;
-        int logfd = -1;
-
-        for (i = 0; i < nlogs; i++) {
-            logfd = open(logs[i], O_WRONLY | O_NOCTTY);
-            if (logfd >= 0)
-                break;
-        }
-        if (logfd < 0)
-            logfd = open("/dev/null", O_WRONLY);
-
-        if (logfd >= 0) {
-            dup2(logfd, 1);
-            dup2(logfd, 2);
-            if (logfd > 2)
-                close(logfd);
-        }
-        /* stdin is left alone: copper-gui reads /dev/input, not the terminal,
-           and the shell this init falls back to needs the console back. */
-    }
-    execl("/usr/bin/copper-gui", "copper-gui", (char *)NULL);
-    /* Reaching here means the binary is not in the image. Say so instead of
-       exiting into a blank screen: the caller's fallback puts a shell up in a
-       moment, and a silent failure here would look like a hang. */
-    say("copper: /usr/bin/copper-gui is missing from the image");
-    _exit(127);
-}
-
 int main(void) {
     console_stdio();
 
@@ -457,22 +330,23 @@ int main(void) {
         }
     }
 
-    /* The shell, unless the command line asked for the desktop.
+    /* The shell.
 
-       Either way it comes after the wizard rather than before it, because the
-       wizard asks questions on the text console and anything that takes the
-       screen first would leave those questions with nowhere to be seen.
+       There is no automatic desktop. The desktop is XFCE, and XFCE is something
+       the user starts with `startxfce` at the prompt below rather than something
+       boot hands them: the X stack is not in this image yet, so an automatic
+       start either works or leaves a blank screen, and neither is worth it to
+       someone who is about to type startxfce anyway. A shell in front of it also
+       means a failure in the X stack costs a shell rather than the machine.
 
-       start_gui() returns 0 whenever the desktop is not wanted -- no gui=1, no
-       /dev/fb0, or copper-gui absent from the image -- and this then falls
-       through to exactly the shell every earlier build gave you. A machine with
-       no graphics driver gets a shell, not a broken screen.
+       This also removes the whole reason the desktop used to have a kernel
+       command line switch. Driving the VGA into a graphics mode is irreversible
+       from the text console: on a machine whose framebuffer it cannot drive there
+       is no way back, because the shell exists but there is no longer a screen to
+       show it on. Xorg takes the display through KMS and leaves a working console
+       behind, so there is nothing to switch away from. */
 
-       When the desktop does run and later exits, the shell is what comes up
-       next. That is deliberate: copper-gui quits on Escape, and a desktop with
-       no escape route out of it is a dead end for anyone whose hardware it does
-       not suit. */
-    pid_t session = start_gui();
+    say("copper: type startxfce for XFCE");
 
     /* Exactly one session at a time. Keep the pid so the reaper below can wait
        on this specific child instead of on any child: udhcpc is our child too,
@@ -482,10 +356,10 @@ int main(void) {
        same tty, so two shells fought over stdin -- typing came out garbled and
        the banner printed twice. */
     for (;;) {
+        pid_t session = spawn_tty(1);
         int wst;
         if (session > 0)
             waitpid(session, &wst, 0);
-        session = spawn_tty(1);
     }
     return 0;                        /* never reached */
 }

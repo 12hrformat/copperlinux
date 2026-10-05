@@ -2,3 +2,14 @@
 copper-sh
 iso/work/
 iso/out/iso-artifact*/
+
+# Build output. iso/build.sh stages the whole rootfs under iso-artifact*/ before
+# grub-mkrescue runs, so a build leaves several hundred megabytes of unpacked
+# tree and finished .iso files in the working directory. None of it is source.
+iso-artifact/
+iso-artifact[0-9]*/
+iso-main-latest/
+
+# Python bytecode from tests/firstboot-drive.py.
+__pycache__/
+*.pyc
