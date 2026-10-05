@@ -151,26 +151,33 @@ require_kernel_config() {
     exit 1
   fi
 
-  # The graphical desktop's other half, which is easy to get backwards.
+  # Every display driver, asserted rather than merely requested.
   #
-  # CONFIG_FRAMEBUFFER_CONSOLE routes tty0 through the framebuffer instead of the
-  # legacy text buffer. It is required, not optional: without it there is no
-  # /dev/fb0 for the desktop to draw on, and without DRM_BOCHS there is no
-  # framebuffer for /dev/fb0 to come from. With only the driver, tty0 is left
-  # registered and discarding writes -- the machine would have a desktop and a
-  # dead console, and the first-boot questions would go nowhere.
+  # Two separate mistakes are guarded against here, and both produced a machine
+  # that booted to a shell.
   #
-  # Asserted as =y rather than merely requested, because kconfig silently drops an
-  # option whose dependencies are unmet. Asking for FB without a driver is
-  # accepted without complaint and produces a kernel with neither, which is the
-  # same as the configuration this replaced: it builds, it boots, and it shows a
-  # shell. A flag that vanishes quietly needs a check that fails loudly.
+  # The first is asking for a symbol whose dependencies are unmet. kconfig
+  # accepts --enable FB with no complaint, olddefconfig drops it without a word,
+  # and the build goes green with a kernel that has neither a framebuffer nor a
+  # driver to make one. A flag that vanishes quietly needs a check that fails
+  # loudly, so each of these is asserted to be =y in the config after
+  # olddefconfig rather than trusted to have been requested.
   #
-  # FONT_8x16 is pinned so the console keeps the glyphs it had on the text plane.
-  # Left to its own devices kconfig also picks FONT_8x8, and the console renders
-  # 160x100 of unreadably small text instead.
-  for sym in DRM DRM_BOCHS DRM_FBDEV_EMULATION FB FRAMEBUFFER_CONSOLE \
-             FONT_8x16 ; do
+  # The second is a driver that is present but useless on the machine it is
+  # needed on -- DRM_BOCHS on anything that is not QEMU's Bochs VGA adapter,
+  # which is most machines. No amount of asserting it is =y catches that, because
+  # it genuinely is =y. Asserting every driver here means a machine with no
+  # matching driver is a gap in this list rather than a surprise at boot, and
+  # that the two failures are told apart: a dropped symbol stops the build, an
+  # unbound one shows up as a missing /dev/fb0 in the log.
+  #
+  # FONT_8x16 is pinned so the console keeps the glyphs it had on the text
+  # plane. Left to its own devices kconfig also picks FONT_8x8, and the console
+  # renders 160x100 of unreadably small text instead.
+  for sym in DRM DRM_FBDEV_EMULATION DRM_BOCHS DRM_SIMPLEDRM \
+             DRM_VMWGFX DRM_VIRTIO_GPU DRM_QXL DRM_VBOXVIDEO DRM_I915 \
+             FB FB_VESA FB_EFI \
+             FRAMEBUFFER_CONSOLE FONT_8x16 ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -235,51 +242,87 @@ build_kernel() {
       --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD --enable BLK_DEV_NVME \
       --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
       --enable VGA_CONSOLE --enable INPUT \
-      --enable DRM --enable DRM_BOCHS --enable DRM_FBDEV_EMULATION \
-      --enable FB --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16
+      --enable DRM --enable DRM_FBDEV_EMULATION \
+      --enable DRM_BOCHS --enable DRM_SIMPLEDRM \
+      --enable DRM_VMWGFX --enable DRM_VIRTIO_GPU \
+      --enable DRM_QXL --enable DRM_VBOXVIDEO \
+      --enable DRM_I915 \
+      --enable FB --enable FB_VESA --enable FB_EFI \
+      --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16
     # vmxnet3 was renamed at some point around 6.12; asking for both names
     # costs nothing, since kconfig drops whichever one doesn't exist.
     #
-    # The framebuffer, and why it is here now.
+    # The framebuffer, and why there is more than one driver in this list.
     #
-    # DRM_BOCHS was deliberately left off for a long time, and the reason was
-    # measured rather than guessed:
+    # The first version of this enabled DRM_BOCHS alone, and that was a real
+    # mistake rather than a misunderstanding of what the symbol does.
     #
-    #     bochs-drm 0000:00:02.0: vgaarb: deactivate vga console
-    #     Console: switching to colour dummy device 80x25
+    # DRM_BOCHS binds to exactly one device: QEMU's Bochs VGA adapter, PCI
+    # 1234:1111. It is not "the QEMU display driver" and it is not a generic
+    # framebuffer. Enable it and you have a kernel that can drive precisely one
+    # graphics device out of all of them.
     #
-    # at about 1.7 seconds, during bring-up. bochs-drm takes exclusive ownership of
-    # the VGA hardware, and with CONFIG_FRAMEBUFFER_CONSOLE off nothing ever took it
-    # back -- fbcon is the thing that re-registers tty0 against the new framebuffer.
-    # tty0 was then left registered, accepting writes and discarding them: writing
-    # to /dev/tty0 returned 0, and a screendump after clearing the screen and
-    # printing 80 '@' onto it was indistinguishable from a boot where nothing had
-    # been written at all.
+    # Every measurement behind that change -- the desktop drawing, the text
+    # console, the handover, all seventeen pixel assertions -- was taken under
+    # QEMU with `-vga std`, which is that one adapter. So the work looked
+    # finished, and shipped, and booted to a shell:
     #
-    # That was a real problem, and it was not solved by adding the driver. It was
-    # solved by adding fbcon as well, so the desktop and the text console can own
-    # the same device -- which is the whole requirement, since the machine has to
-    # run the first-boot questions as text and then hand the screen to the desktop.
+    #     copper: no /dev/fb0, starting the shell
     #
-    # What that costs, now measured:
+    # Under VMware the guest gets a different display device entirely, nothing
+    # in the kernel binds to it, /dev/fb0 never appears, and copper-init does
+    # the correct thing with the situation it was given and starts a shell. The
+    # fallback worked exactly as designed. That is what made it so easy to miss:
+    # the failure was indistinguishable from a machine with no graphics at all,
+    # and nothing in the log said "no driver for your display".
     #
-    #   * fbcon takes tty0 over from vgacon at about 8s, and the text console
-    #     works -- rendering and keystrokes both, verified by decoding a
-    #     screenshot back into the characters it shows, 100% of glyphs matched
-    #     against the kernel's own font_8x16.
-    #   * the console becomes 160x50 rather than 80x25, because fbcon lays the
-    #     whole 1280x800 surface out as 8x16 cells. Anything that asks the
-    #     terminal how big it is -- the first-boot wizard does, and centres
-    #     itself accordingly -- will lay itself out differently. The wizard was
-    #     checked both ways: the two forms are 12 rows by 66 columns and differ in
-    #     0 of 792 cells, once aligned. Same words, same arrangement, different
-    #     margins, because the terminal is a different size.
-    #   * during boot the kernel log is visible on the console unless the entry is
-    #     booted quiet, which the default entry is.
+    # So the list is deliberately broad. A live image has to bring up whatever
+    # machine it is put on, and the cost of a driver nobody has is a few hundred
+    # kilobytes against the cost of a desktop that never appears:
     #
-    # Still true of all of the above: every one of these was measured under QEMU's
-    # stdvga with bochs-drm. That is not a graphics driver any real machine uses.
-    # Nothing here says what i915 or amdgpu does, because nothing here tested it.
+    #   DRM_BOCHS      QEMU std VGA (1234:1111)
+    #   DRM_VMWGFX     VMware SVGA -- vmware-svga
+    #                  (the symbol is DRM_VMWGFX, not DRM_VMWARE. Asking for
+    #                   DRM_VMWARE is accepted by scripts/config and then dropped
+    #                   without a word, which is the failure this whole comment
+    #                   exists to prevent -- caught by the assertion below, on
+    #                   the one driver that actually mattered.)
+    #   DRM_VIRTIO_GPU virtio-gpu, the common paravirtualised default
+    #   DRM_QXL        QEMU with a qxl adapter
+    #   DRM_VBOXVIDEO  VirtualBox
+    #   DRM_I915       Intel integrated graphics
+    #   DRM_SIMPLEDRM  the generic fallback: binds to anything with a linear
+    #                  framebuffer and no better driver, which is the case that
+    #                  would otherwise produce a shell
+    #   FB_VESA/FB_EFI legacy BIOS and EFI framebuffers, for the same reason
+    #
+    # DRM_BOCHS also has to be accompanied by FRAMEBUFFER_CONSOLE, and that part
+    # was not a mistake. With the driver alone, tty0 stays registered, accepts
+    # writes and discards them: write() returns 0, and a screendump after
+    # clearing the screen and printing 80 '@' is indistinguishable from a boot
+    # where nothing was written. fbcon is what re-registers tty0 against the new
+    # framebuffer, so the desktop and the text console share one device -- which
+    # is the whole requirement, since the machine has to ask its first-boot
+    # questions as text and then hand the screen to the desktop.
+    #
+    # What sharing it costs, measured:
+    #
+    #   * the text console works -- rendering and keystrokes both, verified by
+    #     decoding screenshots back into the characters they show and matching
+    #     every glyph against the kernel's own font_8x16.
+    #   * it becomes 160x50 rather than 80x25, because fbcon lays the whole
+    #     surface out as 8x16 cells. Anything that asks the terminal how big it
+    #     is will lay itself out differently. The wizard was checked both ways:
+    #     the two forms are 12 rows by 66 columns and differ in 0 of 792 cells,
+    #     once aligned. Same words, same arrangement, different margins.
+    #   * the kernel log is visible during boot unless the entry boots quiet,
+    #     which the default entry does.
+    #
+    # And the limit of all of it: a driver in this list is a claim that it
+    # compiles, not a claim that it has ever initialised on that hardware. The
+    # only one measured here is DRM_BOCHS. Treat the rest as untested until
+    # somebody boots the machine they are for -- which is the whole reason this
+    # comment is longer than the flag list.
     make "${kcc[@]}" olddefconfig
     require_kernel_config "$KD/.config"
     make "${kcc[@]}" -j"$JOBS" bzImage
