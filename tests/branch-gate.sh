@@ -42,7 +42,12 @@ pass=0
 fail=0
 skip=0
 
-# check <label> <ok|known|bad> [detail]
+# check <label> <ok|known|bad|skipped> [detail]
+#
+# Every status the callers use is listed. A status with no arm here prints
+# nothing and moves no counter, so the test it describes disappears from the
+# summary without a word -- and this runs non-root as well as root, which is
+# what most of the skipped paths are for.
 record() {
     case "$2" in
         ok)    printf '  PASS       %-24s %s\n' "$1" "${3:-}" ; pass=$((pass + 1)) ;;
@@ -50,6 +55,11 @@ record() {
                 printf '             (this branch lacks the untested feature the test covers)\n'
                 skip=$((skip + 1)) ;;
         bad)   printf '  FAIL       %-24s %s\n' "$1" "${3:-}" ; fail=$((fail + 1)) ;;
+        skipped)
+                printf '  SKIPPED    %-24s %s\n' "$1" "${3:-}"
+                printf '             (not run, and not counted as passing)\n'
+                skip=$((skip + 1)) ;;
+        *)     printf '  FAIL       %-24s unknown status: %s\n' "$1" "$2" ; fail=$((fail + 1)) ;;
     esac
 }
 
@@ -75,20 +85,28 @@ echo "--- tests/startxfce-gate.sh: the startxfce launcher ---"
 # returns its own exit code, so "XFCE is not built yet" is never confused with
 # a broken PATH or a server that would not start.
 if [ "$ROOT" -ne 1 ]; then
-    record startxfce-gate.sh skipped-not-root "needs root for the socket stubs"
+    record startxfce-gate.sh skipped "needs root for the socket stubs"
 elif out=$(bash tests/startxfce-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^  ok' || true)
     record startxfce-gate.sh ok "$n checks"
 else
     record startxfce-gate.sh bad "a startxfce check failed"
-    printf '%s\n' "$out" | grep -E '^  (FAIL|ok)' | head -20 | sed 's/^/    /'
+    # The failures come first, in full, with the detail line that follows each
+    # one. Capping the report by taking its first N lines hides the failure
+    # whenever the test passed more than N checks first: this gate reported
+    # twenty green ticks and no reason, because the one failing check was the
+    # twenty-first line. The passes are then a count, which is all they were
+    # for.
+    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
+    oks=$(printf '%s\n' "$out" | grep -cE '^  ok' || true)
+    printf '    (%s checks passed; the failures are the lines above)\n' "$oks"
 fi
 
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/charge.sh: covers hotfix charge/rollback ---"
 if [ "$ROOT" -ne 1 ]; then
-    record charge.sh skipped-not-root "needs root; CI runs it with sudo"
+    record charge.sh skipped "needs root; CI runs it with sudo"
 elif out=$(bash tests/charge.sh 2>&1); then
     # The divergence has closed. copper.sh on this branch now falls back to the
     # local database, so the test passes. That is good news and it means the
@@ -116,7 +134,7 @@ fi
 echo
 echo "--- tests/account-gate.sh: proves tests/account.sh catches real bugs ---"
 if [ "$ROOT" -ne 1 ]; then
-    record account-gate.sh skipped-not-root "needs root; CI runs it with sudo"
+    record account-gate.sh skipped "needs root; CI runs it with sudo"
 elif out=$(bash tests/account-gate.sh 2>&1); then
     record account-gate.sh ok "divergence closed -- the gate now proves its three bugs"
 else

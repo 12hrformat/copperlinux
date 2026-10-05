@@ -93,10 +93,28 @@ hasnt() {
 PROBE=$TMP/no-such-xdpyinfo
 
 run_sut() {
-    # The trailing "$@" carries options like --check through to the launcher.
-    COPPER_XORG="$1" COPPER_STARTXFCE4="$2" COPPER_XLOG="$TMP/xorg.log" \
-    COPPER_XPROBE="$PROBE" XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES="$3" \
+    # The three settings are saved before the shift, because shift renumbers the
+    # positional parameters and they are gone afterwards.
+    #
+    # shift comes first, on its own line. A trailing backslash on the line above
+    # would join the assignments to shift instead, and what an assignment prefixes
+    # is the command on the NEXT line -- so they would configure shift, and the
+    # launcher would be invoked with none of them. Measured, not read:
+    #
+    #     with the assignments prefixing shift:       child sees MYVAR=[<unset>]
+    #     with the assignments prefixing the command: child sees MYVAR=[what was set]
+    #
+    # With the environment silently absent the launcher used its defaults, and
+    # its default XSOCKDIR is the real /tmp/.X11-unix. So the test drove the
+    # machine's actual X display instead of its own, which is both why every case
+    # failed and why running it started notification daemons on a desktop.
+    xorg=$1
+    session=$2
+    tries=$3
     shift 3
+    # The trailing "$@" carries options like --check through to the launcher.
+    COPPER_XORG="$xorg" COPPER_STARTXFCE4="$session" COPPER_XLOG="$TMP/xorg.log" \
+    COPPER_XPROBE="$PROBE" XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES="$tries" \
     sh "$SUT" "$@" 2>&1
 }
 
@@ -135,7 +153,11 @@ echo "=== case 1: nothing installed at all ==="
 reset
 out=$(run_sut "$TMP/nope/Xorg" "$TMP/nope/startxfce4" 40); rc=$?
 eq "  exit code is 20 (no X server)" 20 "$rc"
-has "  names the X server it looked for" "no/Xorg" "$out"
+# The whole path, not a fragment of it. "no/Xorg" was here before and could never
+# match: the path ends "nope/Xorg", and no is followed by pe rather than by the
+# slash. The assertion was wrong, not the launcher -- it failed identically on CI
+# and here while exit 20 and the rest of the message were correct.
+has "  names the X server it looked for" "$TMP/nope/Xorg" "$out"
 has "  says the X stack is not built yet" "not in this image yet" "$out"
 
 echo
@@ -290,8 +312,33 @@ time.sleep(60)"
 EOF
 chmod +x "$TMP/Xorg"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
-# A probe that fails is exactly what a real xdpyinfo does against a dead socket.
-printf '#!/bin/sh\nexit 1\n' > "$TMP/probe"; chmod +x "$TMP/probe"
+# A probe that always fails is not a stand-in for xdpyinfo. display_live() also
+# runs the probe after starting a server, to decide the display came up, so a
+# probe stuck at exit 1 reports a healthy display as dead and the wait loop can
+# never succeed. Measured against a real listening socket:
+#
+#     state          exit 1     connects
+#     live              1            0
+#     stale file        1            1
+#     no socket         1            1
+#
+# Connecting is what xdpyinfo does, and it is what distinguishes the two states a
+# socket file cannot: a listener accepts, a leftover file refuses.
+cat > "$TMP/probe" <<'PROBE_EOF'
+#!/usr/bin/env python3
+import os, socket, sys
+num = os.environ.get("DISPLAY", ":0").lstrip(":") or "0"
+path = os.path.join(os.environ.get("XSOCKDIR", "/tmp/.X11-unix"), "X" + num)
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+try:
+    s.connect(path)
+except OSError as e:
+    print("cannot reach %s: %s" % (path, e), file=sys.stderr)
+    sys.exit(1)
+sys.exit(0)
+PROBE_EOF
+chmod +x "$TMP/probe"
 out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
       COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$TMP/probe" \
       XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
@@ -308,7 +355,7 @@ out=$(run_sut "$TMP/Xorg" "$TMP/nope" 5 --check); rc=$?
 eq "  exit code is 0 even with pieces missing" 0 "$rc"
 has "  reports the server it found" "found the X server" "$out"
 has "  reports the XFCE it did not find" "NO XFCE" "$out"
-hasnt "  started anything" "starting" "$out"
+hasnt "  claims to have started nothing" "starting" "$out"
 
 echo
 echo "=== case 9: usage ==="

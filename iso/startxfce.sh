@@ -148,6 +148,7 @@ if [ "$have_xfce" != 1 ]; then
         # Name both paths. "It is not there" leaves the reader guessing where it
         # looked; "it is not at /usr/bin/Xorg" does not.
         report
+        say "no X server at $XORG"
         say "the X stack is not in this image yet."
         say "build and install the glibc userspace first; see HANDOFF.md, XFCE."
         exit 20
