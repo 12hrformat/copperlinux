@@ -14,11 +14,16 @@ make it *Copper* are written by hand.
 - real **Linux kernel** (6.12.10 LTS, from kernel.org) with **our `.config`**
 - userland **built from source**: musl, busybox, coreutils and friends
 - **our own** shell (`copper-sh`), **our own** PID 1 (`copper-init`), **our own**
-  first-boot wizard
+  first-boot wizard, **our own** framebuffer desktop (`copper-gui`)
 - **all the standard Linux commands**, real tools — no stubs, no placeholders
+- **nine display drivers** built in, so a live image can bring up whatever
+  machine it is put on
 - boots as an **ISO** in VMware / VirtualBox / QEMU
 - first boot personalizes like a real distro OOBE
 - speaks to **drivers** (wifi, bluetooth, firmware) and reaches the **internet**
+
+XFCE is the requested end state and is not built. It needs an X server, and the
+X server builds but has never been booted on Copper's kernel. See "XFCE" below.
 
 Upstream projects are reference material. Nothing gets packaged as-is.
 
@@ -26,12 +31,7 @@ Upstream projects are reference material. Nothing gets packaged as-is.
 
 # Read this part: the branch, and why it isn't on upstream
 
-**Both previous PRs are merged.** Upstream `main` is now `7b4e5fd`
-("Merge pull request #3 from farcrowx/copper-os").
-
-**Current work goes on `untested`, on the `12hrformat` fork.** That branch is
-staging: things land there untested, and only move to upstream `main` after
-someone has booted them.
+**Current work is on `gui`, locally only — nothing is pushed.**
 
 ```
 origin    https://github.com/Copper-linux/copper.git    (read-only here)
@@ -44,40 +44,48 @@ answers `permission denied`; `origin` answers `push=False`. The credential on
 this machine has no write access to `Copper-linux/copper`, which is why
 everything lands on the fork first.
 
-Work on `untested` so far:
+`gui` is five commits ahead of `origin/gui` and **has never been pushed**:
 
 ```
-b811a15 add 'copper' front end so 'copper charge' actually works
-ab6c17f copper charge/rollback: fix three blockers, add a testable demo hotfix
-22ffde5 fix: user creation, doubled banner, garbled typing, hardcoded prompt
-7fe1450 firstboot: make stdout unbuffered
-59ddc2d firstboot: fix invisible password prompt, give wizard a controlling tty
-903e764 copper-sh: guard run_segments against n<1
-8a73513 firstboot: fix bad read_line call in confirm-password fallback
-007f6fd copper-sh: arrow-key line editing
+e64ee94 kernel: add the display drivers the desktop actually needs
+98bbc04 tests: make account-gate.sh executable, so CI can run it
+fdeb329 iso: turn the framebuffer on, so the desktop actually boots
+7278290 gui: wire the desktop into the boot, and find out what it costs
+86ec08a gui: a desktop that draws straight into /dev/fb0
 ```
 
-**Landing it still needs somebody with write access.** Open
-`12hrformat:untested → Copper-linux/copper:main`. Do not merge blind — G1 is
-still open (a full wizard run has not been confirmed end to end).
+`origin/gui` was created as a copy of `main` and contained no GUI at all. The
+five commits above are cherry-picks of work from `untested`, onto `main`'s
+tree — which had **diverged** from `untested`, so `iso/build.sh` and
+`iso/src-init/copper-init.c` both needed real merges rather than a clean apply.
 
-The old `copper-os` branch has been deleted from the fork; its content lives
-on as `untested`. `patch-1` is long merged and is history, not a target.
+Two things about that cherry-pick, because they will confuse a re-run:
+
+- **`7ff1879` ("firstboot: remove the boot art") was skipped, correctly.**
+  `main` never had the art files — `iso/firstboot/boot-art.h`,
+  `tools/gen-boot-art.py` and `tests/art-gate.sh` were all verified absent on
+  `origin/main` — so the commit had nothing to remove. Not a compromise.
+- **`main`'s firstboot wizard is the old 240-line version**, with no
+  questions table, no terminal sizing and no splash. `untested` has a 529-line
+  one. So `gui` has the simpler wizard, and that was accepted rather than
+  re-landing six commits to get the other one.
+
+The older work is still on `untested` (14 commits ahead of the old `main`), and
+PR #10 (`untested` → `main`) is still open.
 
 To pick up the work:
 
 ```sh
-git fetch dragon
-git log --oneline upstream/main..dragon/untested
-git checkout -b untested dragon/untested
+git fetch origin
+git checkout -B gui origin/gui
+git cherry-pick 86ec08a 7278290 fdeb329 98bbc04
 ```
 
-If a push is rejected with `fetch first`:
-
-```sh
-git pull --rebase dragon untested
-git push dragon HEAD:untested
-```
+Expect conflicts in `iso/build.sh`, `iso/src-init/copper-init.c`,
+`iso/firstboot/copper-firstboot.c`, `HANDOFF.md`, `README.md` and
+`.github/workflows/build-iso.yml`. Resolve by keeping `main`'s layout
+(`local SRC="$ROOT/../src"`, no `$REPO` variable) and taking the GUI additions
+on top of it.
 
 ---
 
@@ -110,16 +118,234 @@ from artifacts that were taken apart and read before being trusted.
 
 ## What has never run
 
-1. **A complete, clean first-boot wizard run.** The wizard now reaches every
-   question and, as of `22ffde5`, creates the account correctly. But nobody
-   has yet seen one boot go banner → all questions → `Done — welcome` → a
-   `dragon@copper` prompt. Each stage was fixed and confirmed individually;
-   the whole path has not been confirmed in a single pass.
-2. **`copper charge` on a booted system.** The logic is verified end to end
+1. **`copper charge` on a booted system.** The logic is verified end to end
    off-ISO (see below) but has never run against a live root.
-3. **Real internet traffic.** We have an address, a prefix, a default route
+2. **Real internet traffic.** We have an address, a prefix, a default route
    and a nameserver. Nothing has yet proved that a name resolves or that a TCP
    connection completes. `ping 1.1.1.1` and a `wget` are still unrun.
+3. **A boot of the real ISO on VMware.** Everything measured is QEMU with a
+   direct `-kernel` boot. GRUB, the VGA BIOS, and real hardware have all been
+   bypassed.
+4. **Xorg running inside Copper.** It builds and links; it has not been booted
+   against Copper's kernel. See "XFCE" below.
+
+The first-boot wizard is no longer on this list. A full run was verified on the
+framebuffer kernel: all six questions answered, nothing refused, no shell prompt
+afterwards, and 17 of 17 exact pixel assertions on the resulting desktop.
+
+---
+
+# The desktop, and the bug that hid in it
+
+## What happened
+
+`copper-gui` was written, wired into the boot, and verified — 17 of 17 exact
+colour assertions at fixed coordinates, including four corner markers, plus a
+text console that renders and accepts keystrokes with every glyph matched
+against the kernel's own `font_8x16`.
+
+Then it shipped, and booted to a shell:
+
+```
+copper: no /dev/fb0, starting the shell
+```
+
+## Why, which is the part worth keeping
+
+`copper-init` was correct. It looked for `/dev/fb0`, found none, and started a
+shell, which is the right thing to hand a machine with no framebuffer.
+
+The kernel had exactly **one** display driver: `DRM_BOCHS`. It binds to exactly
+one PCI device, `1234:1111` — QEMU's Bochs VGA. It is not "the QEMU display
+driver" and it is not a generic framebuffer.
+
+Every measurement behind that change was taken under QEMU `-vga std`, which *is*
+that one adapter. So the work looked finished, and was, for the one machine it
+had been tested on.
+
+Under VMware the guest gets a different display device, nothing binds,
+`/dev/fb0` never appears, and the fallback runs. **The failure was
+indistinguishable from a machine with no graphics at all**, and nothing in the
+log said "no driver for your display". That is what made it easy to miss, and it
+is the general lesson: a correct fallback can hide a missing capability perfectly,
+because a correct fallback is indistinguishable from a machine that does not
+have the thing.
+
+## What was changed
+
+Nine display options are now requested **and asserted** in
+`require_kernel_config`, and the kernel was built and booted once per emulated
+device to see which drivers actually claim hardware:
+
+| Emulated device | Driver that bound | `/dev/fb0` |
+|---|---|---|
+| `-vga std` | `bochs-drm` | yes |
+| `-vga virtio` | `virtio-gpu` | yes |
+| `-device qxl-vga` | `qxl` | yes |
+| `-device vmware-svga` | `vmwgfx` | **no, on QEMU** |
+| `-device cirrus-vga` | *nothing* | no |
+| VirtualBox | `vboxvideo` | **untestable** |
+
+`DRM_BOCHS`, `DRM_SIMPLEDRM`, `DRM_VMWGFX`, `DRM_VIRTIO_GPU`, `DRM_QXL`,
+`DRM_VBOXVIDEO`, `DRM_I915`, `FB_VESA`, `FB_EFI`.
+
+### Three limits on that table, none of them hidden
+
+- **VMware is unproven and cannot be proven here.** `vmwgfx` probes the adapter
+  correctly — it reads the FIFO, the VRAM and the SVGA version — and then
+  prints:
+
+  ```
+  vmwgfx 0000:00:03.0: [drm] *ERROR* vmwgfx seems to be running on an unsupported hypervisor.
+  ```
+
+  It checks the hypervisor vendor and QEMU is not VMware. So the driver is the
+  right one and it works right up to the check that requires real VMware
+  hardware. Only booting the ISO on the user's machine settles it.
+- **VirtualBox cannot be tested at all.** This QEMU has no VirtualBox display
+  device: `-device vboxvga` is rejected as an invalid model name. There is
+  nothing to run it against.
+- **`FB_VESA` and `FB_EFI` were never exercised.** The probe boots with
+  `-kernel`, so no BIOS runs and there is no VGA BIOS to take a mode from. Only
+  a real boot through GRUB reaches those two.
+
+`cirrus-vga` genuinely has no driver. It is QEMU's legacy default rather than
+anything a current VM hands out, so it is recorded as a gap rather than fixed
+with a 15-minute rebuild for a device nobody will boot.
+
+### The assertion earned its place immediately
+
+`require_kernel_config` was inverted to *demand* every driver rather than
+request it. On the first run of the new kernel it stopped the build:
+
+```
+FAIL: kconfig dropped: DRM_VMWARE
+```
+
+**`DRM_VMWARE` is not a symbol.** The real one is `DRM_VMWGFX`. `scripts/config`
+accepted the wrong name without complaint, `olddefconfig` dropped it without a
+word, and the build would have gone green with no VMware driver in the image —
+which is the exact shell this work exists to stop, on the exact machine that
+reported it. The check caught it in one minute; nobody would have caught it
+otherwise.
+
+## The other half: `copper-gui` must not log to the screen
+
+fbcon keeps painting `tty0`. If `copper-gui`'s stdout is the framebuffer
+console, its post-paint log line lands on top of the finished desktop. That was
+a real black band across the title bar, and it is why `start_gui()` now routes
+stdout to `/dev/ttyS0`..`ttyS3` and failing that to `/dev/null`, never to
+`/dev/console`.
+
+---
+
+# XFCE — the requested end state, and what it actually costs
+
+The ask is a real desktop with a start command, `startxfce4`. XFCE is an X
+client, so it needs an X server, and that is where the cost is.
+
+## What has been established
+
+- **Xorg 1.21.1.9 builds** against this toolchain, with **both** driver paths
+  present in the output: `modesetting_drv.so` and `libfbdevhw.so`. Read back
+  from the build tree, not assumed from the switches.
+- It links **dynamically against glibc** and needs 21 shared libraries,
+  including `libsystemd.so.0` and the loader. That list is the shopping list
+  for the rootfs.
+- The full X/GTK build dependency chain is installable and verified by
+  `pkg-config`: `glib 2.88.3`, `gtk+ 3.24.52`, `cairo 1.18.4`, `pango 1.58.0`,
+  `pixman 0.46.4`, `xcb 1.17.0`, `libdrm 2.4.134`, `xfont2`, `epoxy`, `gbm`.
+
+## What has not
+
+**The server has never been booted against Copper's kernel.** A server that
+compiles is a server that links. Whether it opens the device, finds a mode it
+likes at this resolution, and serves the wire protocol is unmeasured.
+
+The next step is a boot test whose check is **on the wire protocol** — `xdpyinfo`
+connecting and being told the screen geometry — because a screenshot cannot
+distinguish a healthy server from one that drew something and then died. `xdpyinfo`
+fails unless a display genuinely exists and answers.
+
+## The architectural decision, and why it is lower-risk than "switch to glibc"
+
+Copper's userland is **musl-static**. Xorg, glib and GTK3 are not built for
+musl-static, so *something* has to give. The chosen approach is **additive, not
+replacing**: keep busybox, coreutils and the Copper binaries static-musl, and
+add a **dynamic glibc** userspace beside them for Xorg and XFCE, with
+`ld-linux-x86-64.so.2` and the needed `.so` files staged into the rootfs.
+
+The reasoning is that the static-musl boot path is the one thing in this project
+that is known to work end to end. Replacing it wholesale puts the working shell,
+the working init and the working wizard at risk to make room for a guest.
+Adding beside them means a failure in the X stack costs a shell, not the machine.
+
+**Nothing physical blocks the size.** The live root is an **overlay on the
+read-only ISO** (`lowerdir=/mnt/root`), not the initramfs, and `build_iso` runs
+`grub-mkrescue` over the whole staged tree. A few hundred megabytes of userspace
+costs ISO size and nothing else. The initramfs stays small.
+
+## The honest scale
+
+This is a multi-day project, not a flag. XFCE is one of the heavier desktops to
+build from source: roughly 25 modules over a chain that includes glib, GTK3,
+pango, cairo, gdk-pixbuf, at-spi2, harfbuzz, the Xcb stack and the X11 client
+libraries, each built from upstream tarball into the rootfs.
+
+Minimum set that makes `startxfce4` mean something: `xfconf`, `libxfce4util`,
+`libxfce4ui`, `exo`, `garcon`, `xfwm4`, `xfce4-panel`, `xfce4-session`,
+`xfce4-settings`, `xfce4-desktop`, `thunar`, `xfce4-appfinder`, `xfce4-terminal`.
+
+**The CI time limit is a real constraint, not a formality.** GitHub Actions
+hosted runners cap at six hours, and every one of these builds from source on
+every run unless the cache carries it. `restore-keys` is what makes a warm cache
+survive an unrelated change — do not "fix" a slow build by removing it. See
+bug #2.
+
+---
+
+# Four checks I wrote that reported a cause they had not established
+
+All four were in checks written specifically to avoid inventing causes. They are
+recorded because the failure mode repeats and the pattern is the thing to avoid.
+
+**1. A driver probe that read a stub config.** `make O= defconfig` had failed
+with *"The source tree is not clean, please run 'make mrproper'"* and left a
+746-byte `.config` behind. The symbol check read that stub and concluded kconfig
+had dropped `FONT_8x16`. It had dropped nothing. The symptom was real — a font
+symbol genuinely absent from a real config would be worth stopping for — and the
+cause was invented. Both `defconfig` and `olddefconfig` now check exit status
+*and* that they produced a config over 1000 lines before any symbol is read.
+
+**2. A framebuffer check that grepped for a path the kernel never prints.** The
+detector looked for the literal string `/dev/fb0`. The kernel prints `fb0`:
+
+```
+fbcon: bochs-drmdrmfb (fb0) is primary device
+```
+
+So it reported **"fb0: no" for the device whose own log says fb0 is the primary
+device**. It was measuring the wording of a log line rather than the existence of
+a device, and would have reported a working framebuffer as missing.
+
+**3. Three dependency checks that asked for pkg-config modules that have never
+existed.** `libX11`, `libXext`, `libxcb`, `libxau`, `libxdmcp`, `libepoxy`,
+`libgbm`, `libXfont2`, `libpciaccess` — the real module names are `x11`, `xext`,
+`xcb`, `xau`, `xdmcp`, `epoxy`, `gbm`, `xfont2`, `pciaccess`. Every one of those
+libraries was installed the whole time. The check stopped the build three times
+on dependencies that were already present. The names were then looked up from
+`pkg-config --list-all` instead of assumed.
+
+**4. A meson configure that stopped on options which do not exist.** `-Dfbdev`
+and `-Dllvm` are not options in xorg-server 21.1.9. `fbdev` support is not a
+switch at all — it is part of the Xorg DDX and comes with `-Dxorg=true` — and
+the `llvm` option existed in the autotools build, not the meson one. Guessing
+names from the old build system is what produced it. Every option is now checked
+against the project's own `meson_options.txt` before meson runs.
+
+The pattern in all four: **grepping for a string I imagine a tool prints, rather
+than reading what it printed.** The fix each time was to dump the raw evidence
+and look at it.
 
 ---
 
@@ -266,14 +492,15 @@ it was still worth doing properly.
 
 Ordered by what unblocks the most.
 
-## G1 — Confirm the first-boot wizard ⚠️ blocks the identity claim
+## G1 — Confirm the first-boot wizard ✅ closed
 
-**Done looks like:** the screen after `copper-net: nameserver …` shows the
-wizard asking for a name, and a `copper-sh` prompt afterwards.
+**Done:** verified. A full run on the framebuffer kernel answered all six
+questions, refused nothing, and left no shell prompt — the desktop came up
+instead. Seventeen of seventeen pixel assertions on the result.
 
-Boot `copper4.iso`, screenshot the window. That is the whole task. Nothing
-downstream — persistence especially — is testable until it is answered, and it
-has never been executed, so expect it to be the next thing to break.
+Kept as a closed goal rather than deleted, because "the wizard ran" and "the
+wizard ran and the machine then gave you a desktop" are different claims, and
+the second is the one that was actually being asked.
 
 ## G2 — Prove the internet, not just DHCP
 
@@ -343,10 +570,27 @@ a disk where the tmpfs goes and telling the wizard to offer it.
 See the top of this document. It needs a PR from an account with write access
 to `Copper-linux/copper`, or someone with that access pushing it.
 
-## G8 — A desktop
+## G8 — A desktop: XFCE ⚠️ the long end, and now the active request
 
-The long end. Worth saying plainly: it is far away, and nothing before it is
-blocked on it.
+**Done looks like:** `startxfce4` typed at a `copper-sh` prompt brings up an XFCE
+session on the framebuffer, and Ctrl+Alt+F2 or the escape path still gets a
+shell.
+
+Ordered, because the order is the whole difficulty:
+
+1. **Boot Xorg on Copper's kernel and prove it over the wire.** `xdpyinfo`
+   connecting and reporting the screen geometry. Xorg 1.21.1.9 builds with both
+   `modesetting_drv.so` and `libfbdevhw.so` present; it has never been booted.
+2. **Add the dynamic glibc userspace beside the static musl one.** Loader plus
+   the ~21 libraries Xorg needs, staged into the rootfs. Deliberately additive —
+   see "XFCE" above for why replacing the working musl path is the worse risk.
+3. **Build the GTK3 and glib chain from source into that rootfs.**
+4. **Build the XFCE modules**, minimum set listed above.
+5. **Wire it into `copper-init`** with a way back to the shell, and make sure
+   that a failure in the X stack costs a shell rather than the machine.
+
+Step 1 is a boot test. Steps 3 and 4 are where the time goes, and CI's six-hour
+cap is a real constraint on them.
 
 ---
 
@@ -448,6 +692,16 @@ Being precise here matters, because it is easy to mistake "it compiles" for
 - **The logging paths** — all three `say()` implementations reach both the
   screen and `ttyS0`, with the `-c` guard proven to skip a non-character
   device.
+- **A complete, clean first-boot wizard run** — banner, all six questions
+  answered, nothing refused, `Done — welcome`, and no shell prompt afterwards.
+  G1 is closed.
+- **`copper-gui` drawing**, on the framebuffer kernel, by 17 of 17 exact pixel
+  assertions at fixed coordinates including four corner markers, plus a decoded
+  check of the text console underneath it.
+- **The framebuffer desktop on three different emulated adapters** — `bochs-drm`
+  on `-vga std`, `virtio-gpu` on `-vga virtio`, `qxl` on `-device qxl-vga` —
+  each confirmed from the guest's own dmesg showing that driver as fb0's primary
+  device.
 - **The whole CI build**, green end to end — kernel, musl, busybox, all eight
   GNU tools, Copper's three binaries, rootfs, initramfs, GRUB ISO.
 - **`sh -n`** on all three shipped shell scripts, plus at build time via
@@ -458,8 +712,13 @@ Being precise here matters, because it is easy to mistake "it compiles" for
 
 ## Has never run
 
-- **A full clean first-boot wizard run**, banner to `dragon@copper` prompt in
-  one pass. Each stage is fixed and individually confirmed. G1.
+- **The shipped ISO on VMware.** The one thing the whole display-driver work
+  exists for is unproven on the hardware it was written for. `vmwgfx` probes
+  correctly and refuses on QEMU because QEMU is not VMware.
+- **Xorg running against Copper's kernel.** It builds, with both driver paths in
+  the binary. Whether it starts is unmeasured.
+- **Anything on real hardware.** Every measurement in this document is QEMU with
+  a direct `-kernel` boot — no GRUB, no VGA BIOS, no EFI.
 - **`copper charge` against a booted system.** Verified off-ISO only.
 - **Any real internet traffic.** No `ping`, no `nslookup`, no `wget`. G2.
 
@@ -488,6 +747,54 @@ not a bug.
 ---
 
 # Traps that will cost you a day
+
+**Never write an inline `wsl ... bash -c "..."` with pipes, `||`, `$(...)` or
+`$?`.** PowerShell parses them first and mangles them — `||` is not a statement
+separator, `head` and `wc` are not PowerShell commands, and `> /tmp/file`
+redirects to `C:\tmp\file`, which does not exist. **Write a `.sh` file and invoke
+it.** Every one of these cost a round trip today, and the failures look like
+bugs in the script rather than in the shell that ate it.
+
+**`nohup … &` inside `wsl` is not detached.** `wsl` tears the session down when
+the calling command returns and takes the child with it. An `apt-get install`
+launched that way wrote no log at all and installed nothing, while appearing to
+have started. Run long jobs as a background task from the harness instead, and
+verify by asking `pkg-config` whether the library arrived — not by whether
+`apt-get` returned 0.
+
+**`bzImage` is compressed, so `strings` on it lies.** It reports every display
+driver absent, including ones known to be present. The only trustworthy evidence
+about which driver bound is the **guest's own dmesg**. An earlier probe was
+discarded for this reason.
+
+**The kernel's framebuffer message is `fb0`, not `/dev/fb0`.** See the second
+false check above. A grep for the path reports a working framebuffer as missing.
+
+**`make O=… defconfig` fails on a dirty source tree and leaves a stub `.config`
+behind.** The message is *"The source tree is not clean, please run 'make
+mrproper'"*, and the leftover file is a few hundred bytes. Anything that reads
+symbols out of it will confidently report nonsense. `mrproper` first, and check
+the config is over 1000 lines.
+
+**pkg-config module names are not library file names.** `x11` not `libX11`,
+`epoxy` not `libepoxy`, `xfont2` not `libXfont2`, `pciaccess` not
+`libpciaccess`. Look them up with `pkg-config --list-all` instead of guessing;
+guessing stopped three builds on libraries that were already installed.
+
+**meson options must be read from the project's own `meson_options.txt`.**
+xorg-server 21.x is meson, not autotools, and the option sets differ —
+`-Dfbdev` and `-Dllvm` do not exist, and it is `systemd_logind` with an
+underscore. Guessing from the autotools build is what produced the failures.
+
+**`CC=…` is an environment variable, not a `meson setup` argument.** Passed as a
+trailing flag, meson reads it as a source directory and reports
+`ERROR: Neither source directory 'CC=gcc-13' … contain a build file meson.build`,
+which points at the project rather than at the misplaced flag.
+
+**This network cannot download 4.9 MB in five minutes.** `curl --max-time 300`
+failed partway. Use `-C -` to resume, and gate on `tar tf` rather than on the
+transfer appearing to succeed — a truncated tarball extracts halfway and then
+reports a build error against the source.
 
 **Any change to a cache-key file is a full kernel rebuild.** The CI cache key
 hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
@@ -583,13 +890,16 @@ iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|initra
 iso/live/init             initramfs: find the ISO, lay a writable overlay, switch_root
 iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1
-iso/firstboot/copper-firstboot.c   the OOBE wizard  (never executed)
+iso/gui/copper-gui.c      the framebuffer desktop  (verified 17/17 pixels)
+iso/gui/fbabi.h           the framebuffer ioctl/shm contract it draws through
+iso/gui/font8x8.h         its built-in 8x8 font
+iso/firstboot/copper-firstboot.c   the OOBE wizard  (full run now verified)
 iso/rootfs-overlay/       /etc and friends that land in the rootfs
 iso/rootfs-overlay/usr/share/udhcpc/default.script   our DHCP lease script
 src/                      copper-sh: main.c, builtins.c, builtins.h
 tests/smoke.sh            19-assertion shell smoke test
+tests/account-gate.sh     asserts the shipped account/answer path
 .github/workflows/build-iso.yml   per-stage CI steps + workspace cache
-PR.md                     drafted PR body
 ```
 
 ---

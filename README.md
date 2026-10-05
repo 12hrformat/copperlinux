@@ -31,11 +31,50 @@ general daily use.
 | `copper-sh` (shell) | Works. Arrow-key line editing, history, pipes, redirects. |
 | Networking | Works — wired only. DHCP on boot, `ping`/`nslookup`/`wget` present. |
 | `copper charge` / `copper rollback` | Ship in the ISO. Logic tested end to end off-ISO; not yet run on a booted system. |
-| First-boot wizard | Boots and asks its questions. Account creation fixed, but a full clean run is still unconfirmed. |
-| GUI | Not started — planned for later. |
+| First-boot wizard | Boots and asks its questions. A full run was verified: all six questions answered, nothing refused, no shell prompt. |
+| Desktop (`copper-gui`) | **Draws.** A framebuffer desktop, verified 17/17 exact pixel assertions. Booted to a shell on VMware — the kernel had one display driver and it bound to a different machine. Nine display drivers are now built in; see the driver table below. |
+| X server (Xorg) | **Builds.** 1.21.1.9 with `modesetting_drv.so` and `libfbdevhw.so` both present. Not yet booted inside Copper — a server that compiles is a server that links. |
+| XFCE | **Wanted, not started.** It is an X client, so it needs the server above plus glib, GTK3 and ~30 libraries, which means a glibc userspace alongside the static musl one. |
 | Base system (kernel, musl, userland) | Building from source, CI green end to end. |
 | Bootable ISO | Builds successfully. Boots in a VM. |
 | WiFi | **Not supported.** Wired drivers only, no `wpa_supplicant`, and a VM has no wireless NIC anyway. |
+
+### Display drivers, and what is actually proven
+
+The first framebuffer build enabled `DRM_BOCHS` alone. That driver binds to
+exactly one device — QEMU's Bochs VGA, PCI `1234:1111` — and every measurement
+behind it was taken under QEMU `-vga std`, which is that one adapter. It shipped
+and booted to a shell on any other machine, because nothing in the kernel matched
+its display hardware and `copper-init` correctly fell back.
+
+The kernel now builds in nine display options and asserts every one of them, so
+a silently dropped symbol stops the build instead of shipping a shell. Measured
+on one kernel, one boot per emulated device:
+
+| Emulated device | Driver that bound | `/dev/fb0` |
+|---|---|---|
+| `-vga std` | `bochs-drm` | yes |
+| `-vga virtio` | `virtio-gpu` | yes |
+| `-device qxl-vga` | `qxl` | yes |
+| `-device vmware-svga` | `vmwgfx` | **no, on QEMU** |
+| `-device cirrus-vga` | *nothing* | no |
+| VirtualBox | `vboxvideo` | **untestable** |
+
+Three honest limits on that table:
+
+- **VMware is unproven.** `vmwgfx` probes the adapter correctly and then prints
+  `*ERROR* vmwgfx seems to be running on an unsupported hypervisor` and stops.
+  It checks the hypervisor vendor, and QEMU is not VMware. The driver is the
+  right one; only a real VMware guest can confirm it delivers a framebuffer.
+- **VirtualBox cannot be tested at all.** QEMU has no VirtualBox display device
+  — `-device vboxvga` is rejected as an invalid model name. `DRM_VBOXVIDEO` is a
+  claim that it compiles, nothing more.
+- **`FB_VESA` and `FB_EFI` were never exercised.** The test boots with `-kernel`
+  directly, so no BIOS runs, and those two need a VGA BIOS. Only a real ISO boot
+  through GRUB reaches them.
+
+`cirrus-vga` has no driver and is a real gap. It is QEMU's legacy default rather
+than anything a current VM hands out, so it is recorded rather than fixed.
 
 ---
 
@@ -49,6 +88,7 @@ Copper Linux
 ├── copper-sh       — our shell
 ├── copper-init     — our init, lives at /sbin/init
 ├── copper-firstboot — first-boot setup wizard
+├── copper-gui      — the framebuffer desktop
 ├── copper          — copper charge / rollback front end
 ├── hotfixes.json   — the hotfix database `copper charge` reads
 └── copper.iso      — bootable live ISO (VMware / VirtualBox / QEMU)
@@ -250,12 +290,21 @@ PR.md                 PR notes/template
 
 ## What's next
 
+- **Boot an ISO on VMware and confirm the desktop appears.** The kernel now
+  carries `DRM_VMWGFX`, the driver for that adapter, and it probes correctly
+  under emulation. Whether it delivers `/dev/fb0` on real VMware hardware is the
+  one thing in the driver table that QEMU cannot answer.
+- **Boot Xorg inside Copper and check it over the wire protocol.** A screenshot
+  cannot tell a healthy server from one that drew something and then died; a
+  client connecting and being told the screen geometry can.
+- **XFCE.** The requested end state. It needs the server above, then glib, GTK3
+  and roughly thirty libraries, which means a glibc userspace alongside the
+  static musl one. This is a project, not a flag — see `HANDOFF.md`.
 - A confirmed clean first boot: wizard asks everything, creates the account,
   drops to a `dragon@copper` prompt
 - `copper charge` run against a real booted system, not just off-ISO
 - WiFi, if we decide a VM-testable target is possible at all
 - `copper charge --status` as a real dry run
-- GUI — no timeline yet, comes after the base system is solid
 - `~/.copperrc` init file for the shell
 - Shell history persisted to disk
 - Tab completion in `copper-sh`
