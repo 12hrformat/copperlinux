@@ -1,0 +1,212 @@
+#!/bin/sh
+# startxfce -- start the X server, then XFCE on it.
+#
+# XFCE is not in the image yet: there is no glib, no GTK3 and no XFCE here,
+# only an X server that has been compiled and never booted. So the useful
+# behaviour right now is to fail informatively. A command that simply exec'd
+# startxfce4 would print "not found", which is indistinguishable from a broken
+# PATH, a missing library, or a server that would not start. Every missing piece
+# therefore gets its own exit code and its own sentence naming the piece.
+#
+# POSIX sh, not bash: the image's shell is busybox ash, and build.sh checks these
+# scripts against /bin/sh. A bashism here is a script that works on the build
+# host and fails on the machine.
+#
+# Exit codes, which are a contract rather than decoration:
+#
+#   0   startxfce4 ran and exited cleanly
+#   20  no X server in the image
+#   21  XFCE is not in the image
+#   22  the X server started but never opened its display socket
+#   23  the X server exited while starting up
+#   24  usage error
+#
+# The X server's log goes to $COPPER_XLOG, else /tmp/xorg.log. When this fails
+# there is nothing on the screen to read, so the log is the only evidence.
+#
+# KNOWN LIMITS. None of these can be observed until the X server is in the
+# image, so they are recorded here rather than left to be found on a machine
+# that has it.
+#
+#   - Only DISPLAY_NUM is ever examined. If Xorg declines :0 because something
+#     else holds it and silently takes :1, the wait below expires and reports
+#     "never opened the display" about a server that is working. Learning which
+#     display the server chose means parsing its log or querying it, and POSIX
+#     sh can do neither.
+#   - Once xdpyinfo exists, the wait loop runs it every iteration, so a slow
+#     probe multiplies the timeout by its own runtime. Harmless now -- with no
+#     probe the loop only stats a socket -- and worth tightening when it lands.
+#   - The timeout is 10s where sleep accepts fractions and 100s where it does
+#     not, because of the fallback in the wait loop. Same image, a tenfold
+#     difference in how long a failure appears to hang.
+
+set -u
+
+XORG=${COPPER_XORG:-/usr/bin/Xorg}
+STARTXFCE4=${COPPER_STARTXFCE4:-/usr/bin/startxfce4}
+XLOG=${COPPER_XLOG:-/tmp/xorg.log}
+XSOCKDIR=${XSOCKDIR:-/tmp/.X11-unix}
+DISPLAY_NUM=${DISPLAY_NUM:-0}
+WAIT_TRIES=${WAIT_TRIES:-100}
+
+say() { printf 'startxfce: %s\n' "$1"; }
+
+usage() {
+    cat <<'EOF'
+startxfce -- start the X server, then XFCE on it
+
+  startxfce            start Xorg if it is not already running, then XFCE
+  startxfce --check    report what is installed and exit, starting nothing
+  startxfce --help     this text
+
+Environment, all optional:
+  COPPER_XORG        path to the X server        (default /usr/bin/Xorg)
+  COPPER_STARTXFCE4  path to the XFCE session    (default /usr/bin/startxfce4)
+  COPPER_XLOG        where the X server logs     (default /tmp/xorg.log)
+  COPPER_XPROBE      X client used to check whether a display really
+                     answers                         (default /usr/bin/xdpyinfo)
+  DISPLAY_NUM        which display to use        (default 0)
+
+Exit codes: 0 ok, 20 no X server, 21 no XFCE, 22 X gave no display,
+23 X exited while starting, 24 usage.
+EOF
+}
+
+# What is installed. Echoed as words so --check and the launch path agree, and
+# so there is exactly one place that knows what the image contains.
+have_xorg=0
+have_xfce=0
+[ -x "$XORG" ] && have_xorg=1
+[ -x "$STARTXFCE4" ] && have_xfce=1
+
+report() {
+    if [ "$have_xorg" = 1 ]; then
+        say "found the X server: $XORG"
+    else
+        say "NO X SERVER at $XORG"
+        say "  this is the glibc X stack, which is not in this image yet."
+        say "  nothing can start until it is built and installed."
+    fi
+    if [ "$have_xfce" = 1 ]; then
+        say "found XFCE: $STARTXFCE4"
+    else
+        say "NO XFCE at $STARTXFCE4"
+        say "  XFCE needs the X server above, then glib, GTK3 and about thirty"
+        say "  libraries, all built from source into a glibc rootfs."
+    fi
+}
+
+case "${1:-}" in
+--help|-h)   usage; exit 0 ;;
+--check)     report; exit 0 ;;
+'')          : ;;
+-*)          say "unknown option: $1"; usage >&2; exit 24 ;;
+*)           say "unexpected argument: $1"; usage >&2; exit 24 ;;
+esac
+
+# An X server already on this display is reused rather than replaced. Two
+# servers on one display is a confusing failure: the second refuses the socket,
+# or replaces the first, and the client ends up talking to whichever won.
+#
+# The socket's existence is not sufficient evidence. /tmp/.X11-unix/X0 is left
+# behind by any session that did not exit cleanly, and X does not remove it. A
+# startxfce that trusts the file alone reuses a dead display: XFCE starts,
+# connects to a server that is gone, and hangs with nothing to report. The file
+# records that a display number was once used, not that anything is listening.
+#
+# So ask the display, when there is something that can ask. xdpyinfo arrives
+# with the X server this image does not have yet, so the fallback is the socket
+# test. That fallback is the weaker of the two and is recorded as such above;
+# when the probe is present it is authoritative.
+XPROBE=${COPPER_XPROBE:-/usr/bin/xdpyinfo}
+
+display_live() {
+    [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] || return 1
+    if [ -x "$XPROBE" ]; then
+        DISPLAY=":$DISPLAY_NUM" "$XPROBE" >/dev/null 2>&1 && return 0
+        # The socket is there and nothing answers it: a stale socket from a
+        # session that did not clean up. Treated as no display, so a fresh
+        # server gets a chance to replace it.
+        return 1
+    fi
+    return 0
+}
+
+# What is installed decides this before anything else, and independently of
+# whether a server is already running. The checks cannot live inside the branch
+# that starts a server: a running server is not a desktop, so that path would
+# exec startxfce4 without ever asking whether it exists. Xorg up and XFCE absent
+# then gives
+#
+#     sh: /usr/bin/startxfce4: not found
+#
+# and exit 127, which names no missing piece. That combination is the state of
+# the image as soon as anyone starts a server by hand, and the state of every
+# machine once the X server lands and XFCE has not.
+if [ "$have_xfce" != 1 ]; then
+    if [ "$have_xorg" != 1 ]; then
+        # Name both paths. "It is not there" leaves the reader guessing where it
+        # looked; "it is not at /usr/bin/Xorg" does not.
+        report
+        say "the X stack is not in this image yet."
+        say "build and install the glibc userspace first; see HANDOFF.md, XFCE."
+        exit 20
+    fi
+    say "cannot start XFCE: there is no XFCE session at $STARTXFCE4"
+    say "the X server alone is not a desktop."
+    exit 21
+fi
+
+if display_live; then
+    say "an X server is already on :$DISPLAY_NUM, using it"
+else
+    if [ "$have_xorg" != 1 ]; then
+        say "cannot start XFCE: there is no X server at $XORG"
+        exit 20
+    fi
+
+    say "starting $XORG on :$DISPLAY_NUM, log in $XLOG"
+    # display_live() rejected this socket, so nothing is listening on it. Some
+    # servers refuse to bind over a socket file that already exists, so clear
+    # it before starting.
+    if [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] && [ -w "$XSOCKDIR" ]; then
+        rm -f "$XSOCKDIR/X$DISPLAY_NUM" 2>/dev/null
+    fi
+    "$XORG" ":$DISPLAY_NUM" > "$XLOG" 2>&1 &
+    xpid=$!
+
+    # Wait for the socket, which is the only thing that can be checked without
+    # an X client in the image. Bounded, so a server that starts and then
+    # wedges does not leave this hanging forever -- and it checks whether the
+    # process is still alive, because "still starting" and "already died" look
+    # identical if all you do is count to a limit.
+    i=0
+    while [ "$i" -lt "$WAIT_TRIES" ]; do
+        if display_live; then
+            break
+        fi
+        if ! kill -0 "$xpid" 2>/dev/null; then
+            say "the X server exited while starting up. Its log says:"
+            sed 's/^/  /' "$XLOG" 2>/dev/null
+            exit 23
+        fi
+        i=$((i + 1))
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+
+    if ! display_live; then
+        say "the X server is running but never opened :$DISPLAY_NUM."
+        say "its log says:"
+        sed 's/^/  /' "$XLOG" 2>/dev/null
+        exit 22
+    fi
+    say "X server is up on :$DISPLAY_NUM"
+fi
+
+# Hand the display over and become XFCE, so that when XFCE exits this command
+# exits with the same status. exec rather than run, so there is one process
+# between the user's keystrokes and the desktop rather than two.
+DISPLAY=":$DISPLAY_NUM"
+export DISPLAY
+say "starting XFCE on $DISPLAY"
+exec "$STARTXFCE4" "$@"

@@ -238,39 +238,64 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
-/* Should the graphical desktop be suppressed?
+/* Should the graphical desktop start by itself?
 
-   The kernel command line is the only switch available here. There is no
-   bootloader menu entry to add and no config file to read, because on a first
-   boot the wizard has not run and /etc is still whatever the initramfs left
-   behind. `nogui`, or `gui=0`, appears in /proc/cmdline.
+   The kernel command line is the switch. There is no config file to read,
+   because on a first boot the wizard has not run and /etc is still whatever
+   the initramfs left behind. `gui=1` appears in /proc/cmdline, and the GRUB
+   menu has an entry that sets it.
+
+   The default is the shell, which is a change. The end state is XFCE, and
+   XFCE is something the user starts with `startxfce` rather than something
+   handed to them: the X server builds but has never been booted on this
+   kernel, so an automatic start either works or leaves a blank screen, and
+   neither is worth it to someone who is about to type startxfce anyway. A
+   shell in front of it also means a failure in the X stack costs a shell
+   rather than the machine.
+
+   copper-gui is still reachable with gui=1, so the framebuffer desktop can be
+   compared against the shell on one ISO.
+
+   `nogui` and `gui=0` are still accepted and now mean the same as saying
+   nothing, so a command line written for an older build keeps working.
 
    This is not a nicety. copper-gui programs the VGA into a graphics mode, and
    on a machine whose framebuffer it cannot drive there is no way back to a text
    console once that has happened -- the shell exists, but there is no longer a
    screen to show it on. Being able to append one word at the GRUB prompt is the
    difference between "boot it with a flag" and "rebuild the ISO". */
-static int gui_suppressed(void) {
+static int gui_requested(void) {
     char line[512];
+    char *tok;
     FILE *f = fopen("/proc/cmdline", "r");
 
     if (!f)
-        return 0;                   /* no /proc: assume the normal case */
+        return 0;                   /* no /proc: the default is the shell */
     if (!fgets(line, sizeof line, f)) {
         fclose(f);
         return 0;
     }
     fclose(f);
-    return strstr(line, "nogui") != NULL || strstr(line, "gui=0") != NULL;
+
+    /* Whole tokens, not a substring. A bare "gui" is a word the user may type
+       at the GRUB prompt, and strstr would also match it inside any unrelated
+       argument that happens to contain those three letters. */
+    for (tok = strtok(line, " \t\n"); tok; tok = strtok(NULL, " \t\n")) {
+        if (strcmp(tok, "gui=1") == 0 || strcmp(tok, "gui") == 0)
+            return 1;
+    }
+    return 0;
 }
 
-/* Start the graphical desktop, if this machine has a framebuffer to put it on.
+/* Start the graphical desktop, if it was asked for and this machine has a
+   framebuffer to put it on.
 
-   Returns the child's pid, or 0 when the GUI is not wanted and the caller should
-   fall back to a shell. */
+   Returns the child's pid, or 0 when the desktop is not wanted and the caller
+   should fall back to a shell. */
 static pid_t start_gui(void) {
-    if (gui_suppressed()) {
-        say("copper: nogui on the kernel command line, starting the shell");
+    if (!gui_requested()) {
+        say("copper: gui=1 to start the desktop, otherwise a shell");
+        say("copper: type startxfce for XFCE");
         return 0;
     }
     if (access("/dev/fb0", R_OK) != 0) {
@@ -432,16 +457,16 @@ int main(void) {
         }
     }
 
-    /* The graphical desktop owns the screen once the wizard is out of the way.
+    /* The shell, unless the command line asked for the desktop.
 
-       It comes after the wizard rather than before it, because the wizard asks
-       questions on the text console and a desktop that takes the screen first
-       would leave those questions with nowhere to be seen or answered.
+       Either way it comes after the wizard rather than before it, because the
+       wizard asks questions on the text console and anything that takes the
+       screen first would leave those questions with nowhere to be seen.
 
-       start_gui() returns 0 whenever the desktop is not wanted -- nogui on the
-       command line, no /dev/fb0, or copper-gui absent from the image -- and this
-       then falls through to exactly the shell every earlier build gave you. A
-       machine with no graphics driver gets a shell, not a broken screen.
+       start_gui() returns 0 whenever the desktop is not wanted -- no gui=1, no
+       /dev/fb0, or copper-gui absent from the image -- and this then falls
+       through to exactly the shell every earlier build gave you. A machine with
+       no graphics driver gets a shell, not a broken screen.
 
        When the desktop does run and later exits, the shell is what comes up
        next. That is deliberate: copper-gui quits on Escape, and a desktop with

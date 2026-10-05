@@ -66,7 +66,7 @@ Two things about that cherry-pick, because they will confuse a re-run:
   `tools/gen-boot-art.py` and `tests/art-gate.sh` were all verified absent on
   `origin/main` — so the commit had nothing to remove. Not a compromise.
 - **`main`'s firstboot wizard is the old 240-line version**, with no
-  questions table, no terminal sizing and no splash. `untested` has a 529-line
+  questions table, no terminal sizing and no splash. `untested` has a 1033-line
   one. So `gui` has the simpler wizard, and that was accepted rather than
   re-landing six commits to get the other one.
 
@@ -284,6 +284,61 @@ Adding beside them means a failure in the X stack costs a shell, not the machine
 read-only ISO** (`lowerdir=/mnt/root`), not the initramfs, and `build_iso` runs
 `grub-mkrescue` over the whole staged tree. A few hundred megabytes of userspace
 costs ISO size and nothing else. The initramfs stays small.
+
+## `startxfce` — the command, and what it does today
+
+`iso/startxfce.sh` installs as `/usr/bin/startxfce`. It starts the X server if
+one is not already listening, then hands `DISPLAY` to `startxfce4` with `exec`,
+so when XFCE exits the command exits with the same status.
+
+**It ships before XFCE does**, and that is the point rather than a compromise.
+There is no X server and no XFCE in the image, so the only behaviour available
+to test is failure. It exits **20** for no X server, **21** for no XFCE, **22**
+for a server that never opened a display, **23** for a server that exited while
+starting, **24** for a usage error. `startxfce --check` reports what is present
+and starts nothing.
+
+Without that, the honest failure was `sh: /usr/bin/startxfce4: not found` and
+exit 127 — indistinguishable from a broken PATH, a missing library, or a server
+that would not start. Each missing piece now names itself.
+
+### What the launcher got wrong, and where the tests were no help
+
+- **A running X server hid the missing XFCE.** The installation checks were
+  inside the branch that starts a server, so the "a server is already running"
+  path skipped them and went straight to `exec`. Xorg up and XFCE absent — the
+  state of the image the moment anyone starts a server by hand — produced the
+  raw `not found` and exit 127. A running server is not a desktop. The checks
+  now run first and unconditionally.
+- **A stale socket was trusted.** `/tmp/.X11-unix/X0` survives any session that
+  did not exit cleanly, and X does not remove it. Checking that the file exists
+  means reusing a dead display: XFCE starts, connects to nothing, and hangs with
+  nothing to report. It now asks the display with `xdpyinfo` when that exists,
+  and falls back to the socket test when it does not.
+- **Both of those were found by reading, not by running.** The test suite had
+  nothing for them: case 6 reused a live server but also had a session present,
+  and no case had a live server with XFCE absent.
+
+### What is verified, precisely
+
+- **`startxfce` with nothing installed: measured.** Exit 20, correct message,
+  12 ms. That is the state of the image today.
+- **`gui=1` parsing: measured.** Nine command lines through the real parser —
+  the default gives a shell, `gui=1` and bare `gui` give the desktop, `nogui`
+  and `gui=0` give a shell, and `fpgui=1`, `rogui=1`, `xn--gui=1`, `foo=gui=1bar`
+  all give a shell. The last four are why the parser matches whole tokens rather
+  than substrings.
+- **`copper-init.c`: compiles clean** under `gcc -std=c11 -Wall -Wextra`.
+- **The rest of `startxfce-gate.sh`: not yet run to completion.** It has never
+  finished a pass. CI will be the first full run, on a runner with no desktop
+  for the stubs to disturb.
+
+### Root is not a problem for Xorg
+
+Worth recording because it looks like one. `hw/xfree86/xorg-wrapper.c` gates the
+console-user check on `if (getuid() != 0)`, so running as root skips it
+entirely. Copper's init is root, so Xorg can start — and root is what it needs
+anyway to open `/dev/dri/card*`.
 
 ## The honest scale
 
@@ -747,6 +802,26 @@ not a bug.
 ---
 
 # Traps that will cost you a day
+
+**Backgrounded test stubs inherit your desktop, and will use it.** WSLg runs a
+real X server on `:0` and exports `DISPLAY=:0` and `WAYLAND_DISPLAY=wayland-0`.
+A backgrounded process that inherits those makes WSLg start a notification
+daemon, which is a popup on the desktop of whoever is running the test — and it
+cost two interruptions and a `pkill` before it was identified. Any test that
+backgrounds something must unset `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`,
+`XDG_SESSION_DESKTOP`, `XDG_CURRENT_DESKTOP`, `XDG_RUNTIME_DIR` and
+`DBUS_SESSION_BUS_ADDRESS` first, and should use its own scratch directory so it
+never touches the real `/tmp/.X11-unix`.
+
+**A `trap` does not fire when the tool call is killed outright.** An interrupted
+run left a live instance behind, which then collided with the next run on the
+same scratch directory; both were found blocked for eight minutes with no
+children. One scratch directory per run (`mktemp -d`), a lock so a second copy
+refuses rather than races, and a cleanup step you can run by hand.
+
+**Two tests sharing one scratch directory will corrupt each other.** Each case
+above deletes and recreates the directory, so two copies are always racing on
+whatever the other is halfway through.
 
 **Never write an inline `wsl ... bash -c "..."` with pipes, `||`, `$(...)` or
 `$?`.** PowerShell parses them first and mangles them — `||` is not a statement

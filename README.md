@@ -32,8 +32,9 @@ general daily use.
 | Networking | Works — wired only. DHCP on boot, `ping`/`nslookup`/`wget` present. |
 | `copper charge` / `copper rollback` | Ship in the ISO. Logic tested end to end off-ISO; not yet run on a booted system. |
 | First-boot wizard | Boots and asks its questions. A full run was verified: all six questions answered, nothing refused, no shell prompt. |
-| Desktop (`copper-gui`) | **Draws.** A framebuffer desktop, verified 17/17 exact pixel assertions. Booted to a shell on VMware — the kernel had one display driver and it bound to a different machine. Nine display drivers are now built in; see the driver table below. |
+| Desktop (`copper-gui`) | **Draws.** A framebuffer desktop, verified 17/17 exact pixel assertions. No longer started automatically — boot lands on a shell instead, and `gui=1` brings the desktop back. |
 | X server (Xorg) | **Builds.** 1.21.1.9 with `modesetting_drv.so` and `libfbdevhw.so` both present. Not yet booted inside Copper — a server that compiles is a server that links. |
+| `startxfce` | **Ships, and says why it cannot start.** It names the missing piece and returns a distinct exit code, so "XFCE isn't built yet" is never confused with a broken PATH. |
 | XFCE | **Wanted, not started.** It is an X client, so it needs the server above plus glib, GTK3 and ~30 libraries, which means a glibc userspace alongside the static musl one. |
 | Base system (kernel, musl, userland) | Building from source, CI green end to end. |
 | Bootable ISO | Builds successfully. Boots in a VM. |
@@ -75,6 +76,38 @@ Three honest limits on that table:
 
 `cirrus-vga` has no driver and is a real gap. It is QEMU's legacy default rather
 than anything a current VM hands out, so it is recorded rather than fixed.
+
+## Boot, and starting a desktop
+
+The first boot asks its questions and then lands on a **`copper-sh` prompt**.
+That is the current default, and it is deliberate: the X server builds but has
+never been booted on this kernel, so starting a desktop automatically would
+either work or leave a blank screen. A shell in front of it means a failure in
+the X stack costs a shell rather than the machine.
+
+| Command | What it does |
+|---|---|
+| `startxfce` | Starts the X server if one is not already running, then XFCE on it. |
+| `startxfce --check` | Reports what is installed and exits, starting nothing. |
+| `copper-gui` | The framebuffer desktop, drawn straight into `/dev/fb0`. |
+
+`startxfce` exits **20** if there is no X server in the image, **21** if XFCE is
+missing, **22** if the server started but never opened a display, **23** if the
+server exited while starting, and **24** on a usage error. Those are a contract
+— a script can branch on them without parsing the message.
+
+Today it returns 20 or 21, because neither the X server nor XFCE is in the
+image yet. That is the useful behaviour: it names what is absent instead of
+printing `not found`, which is indistinguishable from a broken PATH.
+
+Boot entries in GRUB:
+
+| Entry | What you get |
+|---|---|
+| Copper Linux | Wizard if needed, then a shell |
+| Copper Linux (framebuffer desktop) | The same, with `gui=1` so the desktop starts instead |
+| Copper Linux (verbose) / (debug) | As above, with kernel messages |
+| Copper Linux (initramfs shell) | A shell inside the initramfs, skipping the overlay |
 
 ---
 
