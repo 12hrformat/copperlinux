@@ -14,7 +14,8 @@ make it *Copper* are written by hand.
 - real **Linux kernel** (6.12.10 LTS, from kernel.org) with **our `.config`**
 - userland **built from source**: musl, busybox, coreutils and friends
 - **our own** shell (`copper-sh`), **our own** PID 1 (`copper-init`), **our own**
-  first-boot wizard, **our own** framebuffer desktop (`copper-gui`)
+  first-boot wizard, and **XFCE** as the desktop — launched by `startxfce`,
+  which ships whether or not XFCE is installed yet
 - **all the standard Linux commands**, real tools — no stubs, no placeholders
 - **nine display drivers** built in, so a live image can bring up whatever
   machine it is put on
@@ -31,22 +32,27 @@ Upstream projects are reference material. Nothing gets packaged as-is.
 
 # Read this part: the branch, and why it isn't on upstream
 
-**Current work is on `gui`, locally only — nothing is pushed.**
+**Current work is on `gui`, and `gui` is pushed.**
 
 ```
-origin    https://github.com/Copper-linux/copper.git    (read-only here)
-dragon    https://github.com/12hrformat/copper.git      (works — push here)
-fork      https://github.com/farcrowx/copper.git        (push denied)
+origin    https://github.com/Copper-linux/copper.git    (push works — this is where gui lives)
+dragon    https://github.com/12hrformat/copper.git      (no gui branch)
+fork      https://github.com/farcrowx/copper.git        (never pushed to, do not start)
 ```
 
-**Use `dragon` as the push remote.** `fork` was the historical target and now
-answers `permission denied`; `origin` answers `push=False`. The credential on
-this machine has no write access to `Copper-linux/copper`, which is why
-everything lands on the fork first.
+`git ls-remote origin refs/heads/gui` answers `3d27857`, which is the tip of
+this branch. Earlier notes saying `origin` answers `push=False` are out of date.
 
-`gui` is five commits ahead of `origin/gui` and **has never been pushed**:
+`gui` is 12 commits ahead of `origin/main`:
 
 ```
+3d27857 remove copper-gui: it drew a picture of a desktop, it was not one
+9fcb04c gui: stop the pointer being dragged back to the centre
+71fbf64 tests: fix the startxfce gate, which was testing the wrong paths
+2c57c83 gui: boot to a shell, and add the startxfce command
+24bf586 iso: define REPO, so the build gates that use it can run at all
+187829b tests: restore the two test files this branch never had, and make them executable
+6939a1e docs: record the display driver matrix, and what it does not prove
 e64ee94 kernel: add the display drivers the desktop actually needs
 98bbc04 tests: make account-gate.sh executable, so CI can run it
 fdeb329 iso: turn the framebuffer on, so the desktop actually boots
@@ -54,11 +60,9 @@ fdeb329 iso: turn the framebuffer on, so the desktop actually boots
 86ec08a gui: a desktop that draws straight into /dev/fb0
 ```
 
-`origin/gui` was created as a copy of `main` and contained no GUI at all. The
-five commits above are cherry-picks of work from `untested`, onto `main`'s
+The first four of those are cherry-picks of work from `untested`, onto `main`'s
 tree — which had **diverged** from `untested`, so `iso/build.sh` and
 `iso/src-init/copper-init.c` both needed real merges rather than a clean apply.
-
 Two things about that cherry-pick, because they will confuse a re-run:
 
 - **`7ff1879` ("firstboot: remove the boot art") was skipped, correctly.**
@@ -78,8 +82,10 @@ To pick up the work:
 ```sh
 git fetch origin
 git checkout -B gui origin/gui
-git cherry-pick 86ec08a 7278290 fdeb329 98bbc04
 ```
+
+`origin/gui` already carries everything above, so there is nothing to
+cherry-pick. The conflict advice below still applies if `main` moves first:
 
 Expect conflicts in `iso/build.sh`, `iso/src-init/copper-init.c`,
 `iso/firstboot/copper-firstboot.c`, `HANDOFF.md`, `README.md` and
@@ -139,12 +145,19 @@ afterwards, and 17 of 17 exact pixel assertions on the resulting desktop.
 
 ## What happened
 
-`copper-gui` was written, wired into the boot, and verified — 17 of 17 exact
-colour assertions at fixed coordinates, including four corner markers, plus a
-text console that renders and accepts keystrokes with every glyph matched
+`iso/gui/copper-gui.c` was written, wired into the boot, and verified — 17 of 17
+exact colour assertions at fixed coordinates, including four corner markers,
+plus a text console that renders and accepts keystrokes with every glyph matched
 against the kernel's own `font_8x16`.
 
-Then it shipped, and booted to a shell:
+It has since been **deleted**, and the deletion is deliberate. Every string it
+drew was a constant — eight rows of `readme.txt`, a taskbar wired to nothing —
+and `compute_layout()` ran once, with no window manager behind it. It rendered
+pixels of a desktop rather than being one. `iso/gui/` is gone, along with the
+build stage that compiled it and the `gui=1` boot path. XFCE is the desktop.
+
+What remains worth keeping from that work is the kernel half. Then, it booted
+to a shell:
 
 ```
 copper: no /dev/fb0, starting the shell
@@ -229,13 +242,15 @@ which is the exact shell this work exists to stop, on the exact machine that
 reported it. The check caught it in one minute; nobody would have caught it
 otherwise.
 
-## The other half: `copper-gui` must not log to the screen
+## The other half: whatever draws must not log to the screen
 
-fbcon keeps painting `tty0`. If `copper-gui`'s stdout is the framebuffer
-console, its post-paint log line lands on top of the finished desktop. That was
-a real black band across the title bar, and it is why `start_gui()` now routes
-stdout to `/dev/ttyS0`..`ttyS3` and failing that to `/dev/null`, never to
-`/dev/console`.
+fbcon keeps painting `tty0`. If a program's stdout is the framebuffer console,
+every line it prints lands on top of whatever was just drawn. That was a real
+black band across the title bar, and the rule it established still holds for
+the XFCE side: a graphical process routes stdout to `/dev/ttyS0`..`ttyS3` and
+failing that to `/dev/null`, never to `/dev/console`. The path that did this for
+the old desktop was `start_gui()`, which went with the deletion; `startxfce`
+follows the same rule.
 
 ---
 
@@ -750,13 +765,11 @@ Being precise here matters, because it is easy to mistake "it compiles" for
 - **A complete, clean first-boot wizard run** — banner, all six questions
   answered, nothing refused, `Done — welcome`, and no shell prompt afterwards.
   G1 is closed.
-- **`copper-gui` drawing**, on the framebuffer kernel, by 17 of 17 exact pixel
-  assertions at fixed coordinates including four corner markers, plus a decoded
-  check of the text console underneath it.
-- **The framebuffer desktop on three different emulated adapters** — `bochs-drm`
+- **The framebuffer kernel**, on the emulated adapters — `bochs-drm`
   on `-vga std`, `virtio-gpu` on `-vga virtio`, `qxl` on `-device qxl-vga` —
   each confirmed from the guest's own dmesg showing that driver as fb0's primary
-  device.
+  device. (The 17/17 pixel assertions that sat alongside this went out with
+  `copper-gui`.)
 - **The whole CI build**, green end to end — kernel, musl, busybox, all eight
   GNU tools, Copper's three binaries, rootfs, initramfs, GRUB ISO.
 - **`sh -n`** on all three shipped shell scripts, plus at build time via
@@ -965,9 +978,8 @@ iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|initra
 iso/live/init             initramfs: find the ISO, lay a writable overlay, switch_root
 iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1
-iso/gui/copper-gui.c      the framebuffer desktop  (verified 17/17 pixels)
-iso/gui/fbabi.h           the framebuffer ioctl/shm contract it draws through
-iso/gui/font8x8.h         its built-in 8x8 font
+iso/startxfce.sh           the XFCE launcher: probe the display, exec startxfce4
+iso/x11/probe/xprobe.c     X server liveness probe, static, raw wire protocol
 iso/firstboot/copper-firstboot.c   the OOBE wizard  (full run now verified)
 iso/rootfs-overlay/       /etc and friends that land in the rootfs
 iso/rootfs-overlay/usr/share/udhcpc/default.script   our DHCP lease script
