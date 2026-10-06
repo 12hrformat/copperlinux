@@ -79,8 +79,9 @@ struct get_geometry_request {
 } __attribute__((packed));
 
 struct get_geometry_reply {
+    uint8_t  reply_type;     /* 1 = reply, 0 = error, in which case byte 1
+                                holds the error code rather than a depth */
     uint8_t  depth;
-    uint8_t  pad0;
     uint16_t sequence;
     uint32_t length;
     uint32_t root;
@@ -125,6 +126,20 @@ static int read_all(int fd, void *p, size_t n) {
 static uint32_t rd32(const unsigned char *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Read and throw away. The setup reply carries the vendor string, the pixmap
+   formats, and every screen; this probe only wants the first screen, and a
+   server is free to announce more of that than fits in any fixed buffer. */
+static int skip_bytes(int fd, uint32_t n) {
+    unsigned char buf[512];
+    while (n > 0) {
+        size_t want = n < (uint32_t)sizeof buf ? (size_t)n : sizeof buf;
+        if (read_all(fd, buf, want) < 0)
+            return -1;
+        n -= (uint32_t)want;
+    }
+    return 0;
 }
 
 static uint16_t rd16(const unsigned char *p) {
@@ -314,63 +329,100 @@ int main(int argc, char **argv) {
         return 1;
     }
     {
-        unsigned char tail[4096];
+        /* The setup reply is vendor string, then pixmap formats, then the
+           screens. Reading all of it into a fixed buffer to find one record
+           is what made this probe refuse healthy servers: XWayland announces
+           more than fits. Instead the parts before the screen are consumed
+           in order and the rest is drained, so only one SCREEN record is
+           ever held. */
+        unsigned char vendorbuf[512];
+        unsigned char screenbuf[40];
         uint32_t extra = (uint32_t)rd16((unsigned char *)&rep.length) * 4u;
         uint32_t bodybytes = (uint32_t)sizeof body;
         uint32_t rest = extra > bodybytes ? extra - bodybytes : 0;
         uint16_t vendor_len = rd16((unsigned char *)&body.vendor_len);
         uint8_t roots_len = body.roots_len;
+        uint32_t vendor_pad = ((uint32_t)vendor_len + 3u) & ~3u;
+        uint32_t formats_bytes = (uint32_t)body.pixmap_formats_len * 8u;
+        uint32_t want = vendor_pad + formats_bytes + (uint32_t)sizeof screenbuf;
+        uint32_t left;
         const unsigned char *p;
         const char *vendor;
-        uint32_t i2;
-
-        if (rest > sizeof tail) {
-            fprintf(stderr, "xprobe: setup reply is %u bytes, too big for this "
-                            "probe\n", rest);
-            close(fd);
-            return 1;
-        }
-        if (rest && read_all(fd, tail, rest) < 0) {
-            fprintf(stderr, "xprobe: truncated setup reply\n");
-            close(fd);
-            return 1;
-        }
+        uint32_t root;
 
         printf("resource_id_base=0x%x\n", rd32((unsigned char *)&body.resource_id_base));
         printf("resource_id_mask=0x%x\n", rd32((unsigned char *)&body.resource_id_mask));
         printf("max_request_length=%u\n",
                rd16((unsigned char *)&body.maximum_request_length));
 
-        vendor = (const char *)tail;
+        if (vendor_pad > sizeof vendorbuf || rest < want) {
+            fprintf(stderr, "xprobe: setup reply is malformed (%u bytes "
+                            "declared, %u needed for vendor, formats and one "
+                            "screen)\n", rest, want);
+            close(fd);
+            return 1;
+        }
+        memset(vendorbuf, 0, sizeof vendorbuf);
+        if (read_all(fd, vendorbuf, vendor_pad) < 0 ||
+            skip_bytes(fd, formats_bytes) < 0 ||
+            read_all(fd, screenbuf, sizeof screenbuf) < 0) {
+            fprintf(stderr, "xprobe: truncated setup reply\n");
+            close(fd);
+            return 1;
+        }
+        /* Drain to the end of the reply, so the next read on this socket is
+           the GetGeometry answer and not the tail of the handshake. */
+        left = rest - want;
+        if (left && skip_bytes(fd, left) < 0) {
+            fprintf(stderr, "xprobe: truncated setup reply\n");
+            close(fd);
+            return 1;
+        }
+
+        vendor = (const char *)vendorbuf;
         printf("vendor=%.*s\n", (int)vendor_len, vendor);
 
-        /* First screen: root at the head of the SCREEN record, 40 bytes of
-           fixed fields then the allowed-depths list. */
-        p = tail + ((vendor_len + 3u) & ~3u);
+        if (getenv("XPROBE_DUMP")) {
+            uint32_t z;
+            printf("dump.rest=%u\n", rest);
+            printf("dump.vendor_pad=%u\n", vendor_pad);
+            printf("dump.formats_bytes=%u\n", formats_bytes);
+            printf("dump.drained=%u\n", left);
+            printf("dump.screen=");
+            for (z = 0; z < (uint32_t)sizeof screenbuf; z++)
+                printf("%02x", screenbuf[z]);
+            printf("\n");
+        }
+
+        /* SCREEN record, 40 bytes: root, default-colormap, white, black,
+           input-masks, width, height, millimetres, map range, root-visual,
+           backing-store, save-unders, root-depth, number-of-allowed-depths.
+           Only the first screen is decoded; screen.count says how many there
+           are, and choosing between them belongs to a client. */
+        p = screenbuf;
+        root = rd32(p + 0);
         printf("screen.count=%u\n", roots_len);
-        for (i2 = 0; i2 < roots_len && p + 40 <= tail + rest; i2++) {
-            uint32_t root = rd32(p + 0);
+        {
             uint32_t white = rd32(p + 8);
             uint32_t black = rd32(p + 12);
-            uint32_t cmap = rd32(p + 16);
+            uint32_t cmap = rd32(p + 4);
             uint16_t w = rd16(p + 20);
             uint16_t h = rd16(p + 22);
             uint16_t mmw = rd16(p + 24);
             uint16_t mmh = rd16(p + 26);
-            uint8_t depths_len = p[38];
-            uint8_t root_depth = p[39];
+            uint8_t root_depth = p[38];
+            uint8_t depths_len = p[39];
 
-            printf("screen[%u].width=%u\n", i2, w);
-            printf("screen[%u].height=%u\n", i2, h);
-            printf("screen[%u].root=0x%x\n", i2, root);
-            printf("screen[%u].root_depth=%u\n", i2, root_depth);
-            printf("screen[%u].depths=%u\n", i2, depths_len);
-            printf("screen[%u].white_pixel=0x%x\n", i2, white);
-            printf("screen[%u].black_pixel=0x%x\n", i2, black);
-            printf("screen[%u].colormap=0x%x\n", i2, cmap);
-            printf("screen[%u].mm_width=%u\n", i2, mmw);
-            printf("screen[%u].mm_height=%u\n", i2, mmh);
-            p += 40u + ((uint32_t)depths_len * 8u);
+            printf("screen[0].width=%u\n", w);
+            printf("screen[0].height=%u\n", h);
+            printf("screen[0].root=0x%x\n", root);
+            printf("screen[0].root_depth=%u\n", root_depth);
+            printf("screen[0].depths=%u\n", depths_len);
+            printf("screen[0].white_pixel=0x%x\n", white);
+            printf("screen[0].black_pixel=0x%x\n", black);
+            printf("screen[0].colormap=0x%x\n", cmap);
+            printf("screen[0].mm_width=%u\n", mmw);
+            printf("screen[0].mm_height=%u\n", mmh);
         }
 
         /* ---- GetGeometry on the root, so this is a round trip and not
@@ -378,16 +430,15 @@ int main(int argc, char **argv) {
            live output, this returns the same numbers; if it accepted the
            connection and then died, this is where that shows. ---- */
         if (roots_len >= 1) {
-            uint32_t root;
             struct get_geometry_request g;
             struct get_geometry_reply gr;
 
-            p = tail + ((vendor_len + 3u) & ~3u);
-            root = rd32(p + 0);
-
             memset(&g, 0, sizeof g);
             g.opcode = 14;
-            g.length = 0;
+            /* The length counts the whole request in 4-byte units: 8 bytes
+               here. Zero makes the server answer BadLength before it looks
+               at the drawable. */
+            g.length = 2;
             g.drawable = root;
             if (write_all(fd, &g, sizeof g) < 0 ||
                 read_all(fd, &gr, sizeof gr) < 0) {
@@ -395,9 +446,16 @@ int main(int argc, char **argv) {
                 close(fd);
                 return 1;
             }
-            if (gr.sequence == 0) {
+            /* Byte 0 is the packet kind: 1 is a reply, 0 is an error whose
+               code is in byte 1. A sequence number is never zero, so testing
+               that for an error accepted an error packet as a good read --
+               which is how a BadDrawable on a bogus root came out as
+               getgeometry.status=ok with width 0. */
+            if (gr.reply_type != 1) {
                 printf("getgeometry.status=error\n");
-                fprintf(stderr, "xprobe: server sent an error for GetGeometry\n");
+                printf("getgeometry.error=%u\n", gr.depth);
+                fprintf(stderr, "xprobe: server sent error %u for GetGeometry\n",
+                        gr.depth);
                 close(fd);
                 return 1;
             }
