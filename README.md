@@ -16,11 +16,12 @@
 Copper is our own distro, not a rebrand of Debian or Arch. We build the
 kernel, the libc, and the userland from source, and we write the parts that
 make it *Copper* ourselves — the shell, the init system, the first-boot
-setup. Arch and Debian are reference material, nothing more.
+setup. Arch and debian are good but we wanted to do it *our* way.
 
-Copper has a twin: **Vortex**, a cybersecurity-focused distro built by the
-same team, sharing the Copper base but aimed at security work instead of
-general daily use.
+The source code of Arch linux and Debian was used for refrence, nothing more.
+
+Copper has a twin: **deadlight linux**, a cybersecurity-focused distro built by the
+same team, sharing the Copper base but aimed at security work instead of general daily use. Basically a reskin but preinstalled tools.
 
 ---
 
@@ -38,7 +39,7 @@ general daily use.
 | XFCE | **Wanted, not started.** It is an X client, so it needs the server above plus glib, GTK3 and ~30 libraries, which means a glibc userspace alongside the static musl one. |
 | Base system (kernel, musl, userland) | Building from source, CI green end to end. |
 | Bootable ISO | Builds successfully. Boots in a VM. |
-| WiFi | **Not supported.** Wired drivers only, no `wpa_supplicant`, and a VM has no wireless NIC anyway. |
+| WiFi | **Not supported. yet** Wired drivers only, no `wpa_supplicant`, and a VM has no wireless NIC anyway. |
 
 ### Display drivers, and what is actually proven
 
