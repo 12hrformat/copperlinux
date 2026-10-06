@@ -125,15 +125,27 @@ fetch() {                   # fetch url -> prints tarball path (stdout only)
   local f="$DL/${1##*/}"
   [ -s "$f" ] && { echo "$f"; return; }
   echo "  < $url" >&2
-  curl -fL --retry 3 --retry-delay 2 -o "$f" "$url"
-  [ -s "$f" ] || { echo "fetch failed: $url" >&2; exit 1; }
+  # Download to the side and rename: an interrupted curl leaves a partial
+  # file, and the existence test above would trust that file forever after.
+  curl -fL --retry 3 --retry-delay 2 -o "$f.part" "$url"
+  [ -s "$f.part" ] || { echo "fetch failed: $url" >&2; exit 1; }
+  mv "$f.part" "$f"
   echo "$f"
 }
 
 unpack() {                  # unpack tarball -> prints its dir
   local f="$1"
   local d="${f%.tar.*}"
-  [ -d "$d" ] || tar -xf "$f" -C "$DL"
+  [ "$d" != "$f" ] || { echo "build.sh: unexpected archive name: $f" >&2; exit 1; }
+  # A directory without the marker is an extraction that was interrupted --
+  # make then dies on the first file that is not there, far from the cause,
+  # and the half-tree gets reused on every following run because it exists.
+  # Throw it away and unpack it again instead.
+  if [ ! -f "$d/.unpacked" ]; then
+    if [ -d "$d" ]; then rm -rf "$d"; fi
+    tar -xf "$f" -C "$DL"
+    touch "$d/.unpacked"
+  fi
   echo "$d"
 }
 
