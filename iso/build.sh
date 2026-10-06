@@ -496,13 +496,13 @@ build_tools() {
     echo "tools: already built, skipping"; return
   fi
   echo "==> standard command suite"
-  build_gnu coreutils   "https://ftp.gnu.org/gnu/coreutils/coreutils-9.5.tar.xz"
-  build_gnu grep        "https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz"
-  build_gnu sed         "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz"
-  build_gnu findutils   "https://ftp.gnu.org/gnu/findutils/findutils-4.9.0.tar.xz"
-  build_gnu diffutils   "https://ftp.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
-  build_gnu tar         "https://ftp.gnu.org/gnu/tar/tar-1.35.tar.xz"
-  build_gnu gzip        "https://ftp.gnu.org/gnu/gzip/gzip-1.13.tar.xz"
+  build_gnu coreutils   "https://mirrors.kernel.org/gnu/coreutils/coreutils-9.5.tar.xz"
+  build_gnu grep        "https://mirrors.kernel.org/gnu/grep/grep-3.11.tar.xz"
+  build_gnu sed         "https://mirrors.kernel.org/gnu/sed/sed-4.9.tar.xz"
+  build_gnu findutils   "https://mirrors.kernel.org/gnu/findutils/findutils-4.9.0.tar.xz"
+  build_gnu diffutils   "https://mirrors.kernel.org/gnu/diffutils/diffutils-3.10.tar.xz"
+  build_gnu tar         "https://mirrors.kernel.org/gnu/tar/tar-1.35.tar.xz"
+  build_gnu gzip        "https://mirrors.kernel.org/gnu/gzip/gzip-1.13.tar.xz"
   build_gnu xz          "https://github.com/tukaani-project/xz/releases/download/v5.4.6/xz-5.4.6.tar.xz"
   stamp_set "$WORK/tools.stamp" "$SELF"
 }
