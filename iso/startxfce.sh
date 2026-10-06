@@ -114,15 +114,24 @@ esac
 # connects to a server that is gone, and hangs with nothing to report. The file
 # records that a display number was once used, not that anything is listening.
 #
-# So ask the display, when there is something that can ask. xdpyinfo arrives
-# with the X server this image does not have yet, so the fallback is the socket
-# test. That fallback is the weaker of the two and is recorded as such above;
-# when the probe is present it is authoritative.
-XPROBE=${COPPER_XPROBE:-/usr/bin/xdpyinfo}
+# So ask the display, when there is something that can ask.
+#
+# xprobe is ours: a static musl binary that completes the X11 handshake over the
+# socket and reads the geometry back, needing nothing but libc. xdpyinfo would do
+# the same job but arrives as part of x11-utils, which is another package to
+# build and stage before the display can be checked. Either is accepted, and the
+# probe found first is the one used; the socket test is the fallback when neither
+# is installed, and that fallback is the weaker of the three.
+XPROBE=${COPPER_XPROBE:-}
+if [ -z "$XPROBE" ]; then
+    for cand in /usr/bin/xprobe /usr/bin/xdpyinfo; do
+        if [ -x "$cand" ]; then XPROBE=$cand; break; fi
+    done
+fi
 
 display_live() {
     [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] || return 1
-    if [ -x "$XPROBE" ]; then
+    if [ -n "$XPROBE" ] && [ -x "$XPROBE" ]; then
         DISPLAY=":$DISPLAY_NUM" "$XPROBE" >/dev/null 2>&1 && return 0
         # The socket is there and nothing answers it: a stale socket from a
         # session that did not clean up. Treated as no display, so a fresh
