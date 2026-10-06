@@ -932,6 +932,22 @@ build_gui() {
 
   cp -a -n "$STAGE"/. "$TGT"/
 
+  # Every glibc ELF names /lib64/ld-linux-x86-64.so.2 as its interpreter, and
+  # the kernel resolves that exact path before a single instruction of the
+  # program runs. The loader itself did arrive -- it sits under
+  # /usr/lib/x86_64-linux-gnu -- but the symlink that exposes it at /lib64
+  # ships in base-files, which nothing in this closure pulls, and the base
+  # image is musl-built, so it never had a /lib64 of its own. Without the
+  # file exactly there, execve fails with ENOENT and the shell blames the
+  # program instead of the loader: "not found", for a binary sitting right
+  # there under /usr. Copy it to the one path the kernel will look at.
+  if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
+    if [ -L "$TGT/lib64" ]; then rm -f "$TGT/lib64"; fi
+    mkdir -p "$TGT/lib64"
+    cp -L "$TGT/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+         "$TGT/lib64/ld-linux-x86-64.so.2"
+  fi
+
   # Packages ship some files that are empty by nature -- X11 Compose tables,
   # module markers -- and the rootfs stage asserts on every later build over
   # this tree that no file in the image is zero bytes. Prune exactly the
@@ -957,7 +973,8 @@ build_gui() {
   # far clearer here than as a failed exec at the end of a boot.
   local f
   for f in usr/bin/Xorg usr/bin/startxfce4 usr/bin/xkbcomp \
-           usr/bin/dbus-daemon usr/bin/dbus-launch; do
+           usr/bin/dbus-daemon usr/bin/dbus-launch \
+           lib64/ld-linux-x86-64.so.2; do
     if [ ! -e "$TGT/$f" ]; then
       echo "gui: $f did not arrive from the packages" >&2
       exit 1
