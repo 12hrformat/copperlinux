@@ -1,14 +1,14 @@
 #!/bin/busybox sh
 # copper — Copper Linux system command.
-# handcrafted by 12hrformat
 #
 # A front end for the individual tools, so the commands people actually
 # want to type are short:
 #
-#   copper charge            apply hotfixes from the repo
+#   copper charge            back up, then apply hotfixes from the repo
 #   copper charge --status   show what is pending without changing anything
-#   copper rollback          list backups
-#   copper rollback <name>   restore one
+#   copper charge --backup   take a restore point and stop
+#   copper rollback          show what can be restored
+#   copper rollback --latest put the last restore point back
 #   copper version           what this build is
 #   copper help              this list
 #
@@ -17,11 +17,22 @@
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
+# Same override the tools use, so "COPPER_CONFIG=... copper charge" points at
+# one config rather than two different ones.
+COPPER_CONFIG="${COPPER_CONFIG:-/etc/copper/config}"
+export COPPER_CONFIG
+
 # Call the tools by absolute path rather than relying on PATH. A user whose
 # PATH is short or overridden would otherwise get "copper-charge: not found"
 # from a command that plainly exists in /usr/bin.
-CHARGE=/usr/bin/copper-charge
-ROLLBACK=/usr/bin/copper-rollback
+SELF_DIR=$(dirname "$0")
+CHARGE="$SELF_DIR/copper-charge"
+ROLLBACK="$SELF_DIR/copper-rollback"
+
+# Fall back to the installed location when the tools are not beside this one,
+# which is the case when copper itself has been copied somewhere else.
+[ -x "$CHARGE" ]   || CHARGE=/usr/bin/copper-charge
+[ -x "$ROLLBACK" ] || ROLLBACK=/usr/bin/copper-rollback
 
 die() {
     echo "copper: $*" >&2
@@ -29,12 +40,6 @@ die() {
 }
 
 cmd_charge() {
-    if [ "$1" = "--status" ]; then
-        # Handled by the charge script itself would be nicer, but it has no
-        # dry-run mode yet, so say so rather than pretend.
-        echo "copper: charge has no --status mode yet; running it for real."
-        echo ""
-    fi
     [ -x "$CHARGE" ] || die "copper-charge is missing from $CHARGE"
     exec "$CHARGE" "$@"
 }
@@ -55,11 +60,17 @@ cmd_help() {
     cat <<'EOF'
 usage: copper <command> [args...]
 
-  charge              fetch and apply hotfixes (needs root)
-  rollback            list available backups
-  rollback <name>     restore one backup over the live file
-  version             version and tool paths
-  help                this text
+  charge                back up, then apply hotfixes (needs root)
+  charge --status       say what would change, change nothing
+  charge --backup       take a restore point and stop
+  rollback              list restore points and the files in them
+  rollback --latest     restore the most recent one
+  rollback <name>       restore a named one
+  version               version and tool paths
+  help                  this text
+
+every charge takes a restore point first, so rollback works even when
+there was nothing to patch.
 
 config lives in /etc/copper/config
 EOF

@@ -832,16 +832,12 @@ assert_hotfix_db_readable() {
     # Reported and skipped rather than failed, and deliberately visible in the
     # build log so it cannot quietly rot.
     #
-    # This branch does not have the hotfix feature. iso/copper.sh is 76 lines
-    # with no fetch-and-fall-back-to-local logic, so there is no parser wired to
-    # anything for this gate to check -- restoring the gate file alone makes it
-    # fail on a feature that is not here. The feature, the gate and this check
-    # all come back together.
-    #
-    # tests/charge.sh covers the same missing feature and is handled the same
-    # way, by tests/branch-gate.sh classifying that one specific failure.
+    # The gate travels with the hotfix feature: it runs the same awk parser the
+    # live system uses against hotfixes.json. If this tree ever ships without
+    # the feature, the file goes with it, and skipping here is the honest
+    # answer -- reported, not passed.
     echo "build: no hotfix gate at $gate -- skipping the database parser check."
-    echo "       This branch has no hotfix feature to check. Not the same as passing."
+    echo "       This tree has no hotfix feature to check. Not the same as passing."
     return 0
   fi
   ( cd "$REPO" && "$gate" ) || {

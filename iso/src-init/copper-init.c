@@ -1,6 +1,5 @@
 /*
  * copper-init — Copper Linux PID 1.
- * handcrafted by 12hrformat
  *
  * No systemd, no init scripts: this IS the init. It mounts the basics
  * (the initramfs already did most of it), applies the hostname, brings the
@@ -240,6 +239,32 @@ static pid_t spawn_tty(int tty) {
 
 int main(void) {
     console_stdio();
+
+    /* PATH, set once, here, before anything is forked.
+
+       This was the cause of "ip: command not found" and "ifconfig: command
+       not found" on a booted system, and it is worth writing down properly
+       because the commands were never missing.
+
+       PID 1 starts with an environment the kernel builds, and it has no PATH
+       in it. When a program has no PATH, execvp() falls back to
+       confstr(_CS_PATH), which is the kernel's compiled-in default:
+
+           /bin:/usr/bin
+
+       Copper's networking applets are in sbin. So `ip`, `ifconfig`, `route`,
+       `arp` and everything else installed under /sbin and /usr/sbin were
+       unreachable by name, while `ping`, `grep`, `touch` and the rest worked
+       because they are in /bin and /usr/bin. The commands were present,
+       compiled in, and correctly linked the whole time -- the shell was
+       simply never told to look in sbin.
+
+       Setting it in start_dhcp() did not help, because that runs in a forked
+       child: the child got a PATH and the shell, which is what people
+       actually type at, did not. Anything that wants a PATH has to inherit
+       it from here. */
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+           1);
 
     signal(SIGINT, SIG_IGN);
     signal(SIGTERM, SIG_IGN);

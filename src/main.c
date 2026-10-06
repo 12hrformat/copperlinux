@@ -279,13 +279,39 @@ static void banner(void) {
 static char prompt_user[64] = "copper";
 static char prompt_host[64] = "copper";
 
-static void resolve_prompt_identity(void) {
-    /* the uid actually running us, not $USER -- $USER can be inherited stale */
-    uid_t uid = getuid();
+/* The login name the wizard created, or "" if there isn't one.
 
-    struct passwd *pw = getpwuid(uid);
-    if (pw && pw->pw_name && pw->pw_name[0])
-        snprintf(prompt_user, sizeof prompt_user, "%s", pw->pw_name);
+   /etc/copper-firstboot.done is written by copper-firstboot, line 1 being the
+   username and line 2 the display name. It is read here rather than guessed
+   because the shell genuinely does run as root: copper-init execs it directly,
+   there is no su and no login, so getuid() is 0 and getpwuid(0) says "root".
+   That is why the prompt said root@copper on a machine where the first-boot
+   wizard had just made an account and announced "Done -- welcome, <name>". */
+static void firstboot_user(char *buf, size_t cap) {
+    buf[0] = '\0';
+    FILE *m = fopen("/etc/copper-firstboot.done", "r");
+    if (!m) return;
+    if (fgets(buf, (int)cap, m)) {
+        char *nl = strpbrk(buf, "\r\n");
+        if (nl) *nl = '\0';
+    } else {
+        buf[0] = '\0';
+    }
+    fclose(m);
+}
+
+static void resolve_prompt_identity(void) {
+    char who[64] = "";
+    firstboot_user(who, sizeof who);
+
+    if (who[0]) {
+        snprintf(prompt_user, sizeof prompt_user, "%s", who);
+    } else {
+        /* No wizard has run. Fall back to the account actually running us. */
+        struct passwd *pw = getpwuid(getuid());
+        if (pw && pw->pw_name && pw->pw_name[0])
+            snprintf(prompt_user, sizeof prompt_user, "%s", pw->pw_name);
+    }
 
     const char *host = getenv("HOSTNAME");
     if (host && host[0]) {
@@ -315,32 +341,85 @@ static char *short_pwd(char *buf, size_t n) {
 /*
  * Split a line into argv. Handles single/double quotes and
  * backslash-escapes (enough for echo "hello world" to work).
- * Modifies the input line in place.
+ *
+ * Tokens are written into `out` rather than back into `line`. That is what
+ * makes tilde expansion possible: ~ expands to a home directory, which is
+ * almost always LONGER than the two characters it replaces, so writing it
+ * in place would run past the end of the source buffer. `~/test` is six
+ * characters and `/home/alice/test` is sixteen.
+ *
+ * A leading ~ is expanded only when it starts an unquoted word. That covers
+ * ~, ~/x and ~someone/x, and leaves "~ is a tilde" and '~/x' alone, which is
+ * what a shell is expected to do.
  */
-static char **tokenize_line(char *line, int *count) {
+static const char *home_for_user(const char *name) {
+    if (!name || !*name) return getenv("HOME");
+    struct passwd *pw = getpwnam(name);
+    return (pw && pw->pw_dir) ? pw->pw_dir : NULL;
+}
+
+static char **tokenize_line(const char *line, char *out, size_t outcap, int *count) {
     static char *argv[256];
     int n = 0, inw = 0;
-    char *dst = line;
+    char *dst = out;
+    char *const end = out + outcap - 1;   /* leave room for the final NUL */
 
-    for (char *src = line;; src++) {
+#define PUTC(ch) do { \
+        if (dst >= end) { \
+            fprintf(stderr, "copper-sh: line too long after expansion\n"); \
+            *count = 0; \
+            return argv; \
+        } \
+        *dst++ = (ch); \
+    } while (0)
+
+    for (const char *src = line;; src++) {
         char c = *src;
         if (!c) break;
         if (c == ' ' || c == '\t') {
-            if (inw) { *dst++ = '\0'; inw = 0; }
+            if (inw) { PUTC('\0'); inw = 0; }
             continue;
         }
-        if (c == '#') break;             /* comment to end of line */
-        if (!inw) { argv[n++] = dst; inw = 1; }
-        if (c == '\\' && src[1]) { *dst++ = src[1]; src++; continue; }
+        if (c == '#' && !inw) break;  /* a comment starts a line, not a word */
+        if (!inw) {
+            argv[n++] = dst;
+            inw = 1;
+            if (c == '~') {
+                /* The user name runs up to the next '/' or up to the end of
+                   the word. Whitespace has to stop it too: for "echo ~ /tmp"
+                   the character after the ~ is a space, and scanning only for
+                   '/' picked up " " as a user name, getpwnam(" ") failed, and
+                   the ~ was left unexpanded. */
+                const char *rest = src + 1;
+                size_t k = 0;
+                while (rest[k] && rest[k] != '/' &&
+                       rest[k] != ' ' && rest[k] != '\t' && k < 63) k++;
+                char name[64];
+                memcpy(name, rest, k);
+                name[k] = '\0';
+
+                const char *home = home_for_user(k ? name : NULL);
+                if (home) {
+                    for (const char *p = home; *p; p++) PUTC(*p);
+                    src += k;           /* skip the name we just consumed */
+                    continue;
+                }
+                /* No such user, or no HOME. Leave the ~ as a literal rather
+                   than expanding to nothing, which would silently change the
+                   meaning of the command. */
+            }
+        }
+        if (c == '\\' && src[1]) { PUTC(src[1]); src++; continue; }
         if (c == '\'' || c == '"') {     /* strip quotes */
-            for (src++; *src && *src != c; src++) *dst++ = *src;
+            for (src++; *src && *src != c; src++) PUTC(*src);
             continue;
         }
-        *dst++ = c;
+        PUTC(c);
     }
-    if (inw) *dst++ = '\0';
+    if (inw) PUTC('\0');
     argv[n] = NULL;
     *count = n;
+#undef PUTC
     return argv;
 }
 
@@ -600,12 +679,19 @@ char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
         }
 
         int argc;
-        char **argv = tokenize_line(line, &argc);
-        if (argc == 0) { free(line); continue; }
+        /* Two buffers: `line` is what was typed, `toks` is where the tokens
+           land. They must be separate because ~ expands to something longer
+           than itself -- see tokenize_line(). */
+        char *toks = malloc(EDIT_BUF_SIZE * 2);
+        if (!toks) { perror("malloc"); free(line); break; }
+        char **argv = tokenize_line(line, toks, EDIT_BUF_SIZE * 2, &argc);
+        if (argc == 0) { free(toks); free(line); continue; }
 
         struct cmdseg *cmds = NULL;
         int nsegs = 0;
-        if (parse_line(argv, argc, &cmds, &nsegs) != 0) { free(line); continue; }
+        if (parse_line(argv, argc, &cmds, &nsegs) != 0) {
+            free(toks); free(line); continue;
+        }
 
         int bye = 0;
         if (nsegs == 1 && !cmds[0].in && !cmds[0].out &&
@@ -614,6 +700,7 @@ char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
 
         run_segments(cmds, nsegs);
         free_cmds(cmds, nsegs);
+        free(toks);
 
         if (bye) { free(line); break; }
         free(line);
