@@ -152,6 +152,14 @@ jobs:
       - name: Rootfs config + timezone
         run: sudo bash iso/build.sh rootfs
 
+      # The display stack: Xorg + XFCE, downloaded as packages and unpacked
+      # into the rootfs. Build-time network, none at runtime -- which is also
+      # why it gets its own step instead of hiding inside "Make the ISO":
+      # 217 MB of downloads is a failure you want attributed to the line
+      # that asked for them.
+      - name: Stage Xorg + XFCE into the rootfs
+        run: sudo bash iso/build.sh gui
+
       - name: Live initramfs
         run: sudo bash iso/build.sh initramfs
 

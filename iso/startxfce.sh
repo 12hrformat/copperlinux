@@ -65,6 +65,8 @@ Environment, all optional:
   COPPER_XLOG        where the X server logs     (default /tmp/xorg.log)
   COPPER_XPROBE      X client used to check whether a display really
                      answers                         (default /usr/bin/xdpyinfo)
+  COPPER_XORGCONF    where the generated input config is written
+                     (default /etc/X11/xorg.conf)
   DISPLAY_NUM        which display to use        (default 0)
 
 Exit codes: 0 ok, 20 no X server, 21 no XFCE, 22 X gave no display,
@@ -182,11 +184,93 @@ else
     if [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] && [ -w "$XSOCKDIR" ]; then
         rm -f "$XSOCKDIR/X$DISPLAY_NUM" 2>/dev/null
     fi
+
+    # Input devices, and the config that names them.
+    #
+    # This image has no udev, which decides how the server gets its keyboard
+    # and mouse. libinput cannot work here even with a device path handed to
+    # it: it builds its view of a device from udev's, and says so ("udev
+    # device never initialized"). evdev opens the node and asks the kernel
+    # what the device can do with plain ioctls, which needs no daemon -- but
+    # neither driver can find the node, so which event node is the keyboard
+    # and which is the mouse is answered here, by name, out of sysfs.
+    #
+    # The config must also declare the two devices the CORE keyboard and
+    # pointer. Without that the server treats them as mere additions and goes
+    # hunting for core devices itself, which ends with it closing the devices
+    # it was just handed while the screen keeps working. AutoAddDevices off
+    # goes with it: hotplug would send it down the same udev path that does
+    # not exist here.
+    xorgconf=${COPPER_XORGCONF:-/etc/X11/xorg.conf}
+    kb=
+    pt=
+    for e in /sys/class/input/event*; do
+        [ -e "$e" ] || continue
+        n=${e##*/}
+        name=$(cat "$e/device/name" 2>/dev/null) || name=
+        case "$name" in
+            *Keyboard*|*keyboard*|*kbd*|*AT\ Translated*) kb=$n ;;
+            *Mouse*|*mouse*|*Explorer*|*ImExPS*)          pt=$n ;;
+        esac
+    done
+    if [ -n "$kb" ] || [ -n "$pt" ]; then
+        if mkdir -p "${xorgconf%/*}" 2>/dev/null &&
+           { : > "$xorgconf" 2>/dev/null; }; then
+            {
+                echo 'Section "ServerFlags"'
+                echo '    Option "AutoAddDevices"    "false"'
+                echo '    Option "AutoEnableDevices" "false"'
+                echo 'EndSection'
+                if [ -n "$kb" ]; then
+                    echo ''
+                    echo 'Section "InputDevice"'
+                    echo '    Identifier  "Keyboard0"'
+                    echo '    Driver      "evdev"'
+                    printf '    Option      "Device"       "/dev/input/%s"\n' "$kb"
+                    echo '    Option      "CoreKeyboard" "on"'
+                    echo 'EndSection'
+                fi
+                if [ -n "$pt" ]; then
+                    echo ''
+                    echo 'Section "InputDevice"'
+                    echo '    Identifier  "Pointer0"'
+                    echo '    Driver      "evdev"'
+                    printf '    Option      "Device"       "/dev/input/%s"\n' "$pt"
+                    echo '    Option      "CorePointer"  "on"'
+                    echo 'EndSection'
+                fi
+                echo ''
+                echo 'Section "ServerLayout"'
+                echo '    Identifier "Default"'
+                [ -n "$kb" ] && echo '    InputDevice "Keyboard0"'
+                [ -n "$pt" ] && echo '    InputDevice "Pointer0"'
+                echo 'EndSection'
+            } > "$xorgconf"
+            say "input devices: keyboard=${kb:-none} pointer=${pt:-none}"
+        fi
+    fi
+
+    # Where the drivers live is a packaging detail that differs between
+    # distributions, so ask the image instead of assuming: -modulepath is
+    # passed only when evdev is actually found in the directory, and the
+    # server's own compiled-in default is the answer when it is not.
+    modpath=
+    for d in /usr/lib/x86_64-linux-gnu/xorg/modules /usr/lib/xorg/modules; do
+        if [ -e "$d/input/evdev_drv.so" ]; then
+            modpath=$d
+            break
+        fi
+    done
+
     # -noreset: without it the server resets itself when the last client
     # disconnects, and that reset closes every input device in the process.
     # Any gap with no clients -- between sessions, after a probe -- would
     # leave the next login with no keyboard and no mouse.
-    "$XORG" ":$DISPLAY_NUM" -noreset > "$XLOG" 2>&1 &
+    if [ -n "$modpath" ]; then
+        "$XORG" ":$DISPLAY_NUM" -noreset -modulepath "$modpath" > "$XLOG" 2>&1 &
+    else
+        "$XORG" ":$DISPLAY_NUM" -noreset > "$XLOG" 2>&1 &
+    fi
     xpid=$!
 
     # Wait for the socket, which is the only thing that can be checked without
@@ -215,6 +299,51 @@ else
         exit 22
     fi
     say "X server is up on :$DISPLAY_NUM"
+fi
+
+# What the session needs prepared around it. Two directories, neither of
+# which exists on this image until something makes them:
+#
+#   /dev/shm  glibc's shm_open() puts its files here. devtmpfs does not
+#             create the directory on its own -- on a normal system the init
+#             that mounts tmpfs on top of it makes it -- and without it,
+#             shared memory users fall back or fail. It only has to be a
+#             directory; the files are plain files on devtmpfs.
+#
+#   XDG runtime dir  the session bus and the settings daemons expect a
+#             private 0700 directory of the user's own. Nothing here has
+#             logged in through pam, so /run/user was never made for
+#             anybody.
+#
+# Both are best effort: a test run as oneself may find no /run to write to,
+# and a missing runtime directory is a warning inside the session rather
+# than a reason not to start it.
+mkdir -p /dev/shm 2>/dev/null || :
+uid=$(id -u 2>/dev/null) || uid=
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -n "$uid" ]; then
+    if mkdir -p "/run/user/$uid" 2>/dev/null &&
+       chmod 700 "/run/user/$uid" 2>/dev/null; then
+        XDG_RUNTIME_DIR=/run/user/$uid
+        export XDG_RUNTIME_DIR
+    fi
+fi
+
+# Caches that a package manager's postinst would have built, but no
+# maintainer script runs on this image, so they are built here instead --
+# once, when absent. Missing they do not stop the session: fonts are looked
+# up slowly and repeatedly, and pixbuf loaders are simply never found, which
+# is how a desktop ends up drawing boxes where icons should be. Both tools
+# are quiet by force: a cache build prints progress that has nothing to say
+# to whoever just asked for a desktop.
+if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
+    if [ -z "$(find /usr/lib -name loaders.cache -print -quit 2>/dev/null)" ]; then
+        gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || :
+    fi
+fi
+if command -v fc-cache >/dev/null 2>&1; then
+    if [ -z "$(find /var/cache/fontconfig -name '*.cache' -print -quit 2>/dev/null)" ]; then
+        fc-cache -f >/dev/null 2>&1 || :
+    fi
 fi
 
 # Hand the display over and become XFCE, so that when XFCE exits this command

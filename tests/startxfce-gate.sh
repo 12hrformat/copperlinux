@@ -115,6 +115,7 @@ run_sut() {
     # The trailing "$@" carries options like --check through to the launcher.
     COPPER_XORG="$xorg" COPPER_STARTXFCE4="$session" COPPER_XLOG="$TMP/xorg.log" \
     COPPER_XPROBE="$PROBE" XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES="$tries" \
+    COPPER_XORGCONF="$TMP/xorg.conf" \
     sh "$SUT" "$@" 2>&1
 }
 
@@ -341,6 +342,7 @@ PROBE_EOF
 chmod +x "$TMP/probe"
 out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
       COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$TMP/probe" \
+      COPPER_XORGCONF="$TMP/xorg.conf" \
       XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
 pkill -f "$TMP/Xorg" 2>/dev/null
 eq "  a dead display is not reused; a fresh server was started" 0 "$rc"

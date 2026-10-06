@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Copper Linux
 # build.sh — assemble Copper Linux, a from-source Linux distro, into a
-# bootable live ISO. No Debian/Arch packages: every shipped binary is built
-# from upstream source in this script (kernel, musl, busybox, coreutils and
-# friends) plus Copper's own pieces (copper-sh, copper-init, first-boot
-# wizard).
+# bootable live ISO. The base system is built from upstream source in this
+# script (kernel, musl, busybox, coreutils and friends) plus Copper's own
+# pieces (copper-sh, copper-init, first-boot wizard). The display stack is
+# the one exception: Xorg and XFCE are real distributions' packages,
+# downloaded and unpacked into the rootfs by the gui stage, because
+# building a desktop and the glibc toolchain behind it here would be a
+# distribution of its own. That happens at build time; the image itself
+# never asks the network for anything.
 #
 # Usage:
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | initramfs | iso
+# Stages: kernel | base | tools | copper | rootfs | gui | initramfs | iso
 #
 # Stages share iso/work/, so CI can run them one step at a time and each
 # step skips straight past whatever is already built.
@@ -849,6 +853,116 @@ assert_hotfix_db_readable() {
 }
 
 # ---------------------------------------------------------------
+# 6e. the display stack: Xorg + XFCE, unpacked from packages
+# ---------------------------------------------------------------
+# Copper builds its own base system from source, and a desktop is not part of
+# that: XFCE is dozens of packages sitting on GTK and glibc, and rebuilding a
+# toolchain and a desktop environment here would be a distribution of its own.
+# So the display stack arrives the way distributions ship it -- as packages,
+# downloaded and unpacked at BUILD time. The image itself never asks the
+# network for anything; what this costs is space in the ISO, and that is the
+# trade that was made.
+#
+# The dependency closure is computed by apt against an EMPTY dpkg status
+# file: every library the desktop needs counts as missing, including the
+# dynamic loader those binaries are linked against, so nothing arrives
+# half-installed. --download-only, no recommends: what comes down is a pile
+# of .deb files, unpacked with dpkg-deb -x into a staging tree and then
+# merged into the rootfs WITHOUT overwriting anything already in it. The
+# busybox applet links, the static musl tools and the overlay's /etc come
+# first and win; a package that ships the same path loses. That is what keeps
+# /bin/sh busybox's and keeps `ls` the musl binary on PATH.
+#
+# Nothing is configured: maintainer scripts never run, no postinst triggers
+# fire, and the caches they would generate (fonts, icons, pixbuf loaders) are
+# simply absent until something on the target generates them. A missing
+# fontconfig cache costs a slow first font lookup; a missing pixbuf loader
+# cache costs image formats, and is the first thing to look at if the
+# session comes up drawing boxes instead of icons.
+build_gui() {
+  if [ -e "$TGT/usr/bin/Xorg" ] && [ -e "$TGT/usr/bin/startxfce4" ] \
+     && stamped_skip "$WORK/gui.stamp" "$SELF"; then
+    echo "gui: already staged, skipping"; return
+  fi
+  echo "==> display stack (Xorg + XFCE)"
+  local DG="$DL/gui" status="$WORK/gui-status" STAGE="$WORK/gui-root" deb n
+  mkdir -p "$DG/partial"
+  : > "$status"
+
+  # Package lists, refreshed when something is about to be downloaded
+  # anyway. A cold runner has none; a warm one re-reads them in seconds.
+  apt-get update -qq
+  # The pixbuf cache generator ships in a separate package from the library,
+  # and only as a recommendation -- so --no-install-recommends would drop it
+  # and the session would have loaders with nothing to find them from, which
+  # draws no images. Its name changed between releases, so ask the host which
+  # one it carries rather than naming one and hoping.
+  local pixbuf="" p
+  for p in libgdk-pixbuf2.0-bin libgdk-pixbuf-2.0-bin; do
+    if apt-cache show "$p" >/dev/null 2>&1; then pixbuf=$p; break; fi
+  done
+  set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
+         dbus dbus-x11 xfce4 fonts-dejavu-core hicolor-icon-theme \
+         adwaita-icon-theme librsvg2-common
+  [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
+  apt-get \
+    -o Dir::State::status="$status" \
+    -o Dir::Cache::archives="$DG" \
+    -o APT::Sandbox::User=root \
+    --download-only --no-install-recommends -y install "$@"
+
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  for deb in "$DG"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  n=$(ls "$DG"/*.deb | wc -l)
+  echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
+
+  cp -a -n "$STAGE"/. "$TGT"/
+
+  # Packages ship some files that are empty by nature -- X11 Compose tables,
+  # module markers -- and the rootfs stage asserts on every later build over
+  # this tree that no file in the image is zero bytes. Prune exactly the
+  # empties the packages brought, matched against the staging tree so that
+  # an empty file the base image has a name for is left where it is.
+  find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/gui-empties"
+  while IFS= read -r rel; do
+    rm -f "$TGT/$rel"
+  done < "$WORK/gui-empties"
+  echo "  $(wc -l < "$WORK/gui-empties") empty package files pruned"
+
+  # The session bus wants a machine identity even on a live system, and with
+  # no maintainer script running here, nothing else is going to make one.
+  if [ ! -s "$TGT/etc/machine-id" ]; then
+    head -c 16 /dev/urandom | od -A n -t x1 | tr -d ' \n' > "$TGT/etc/machine-id"
+  fi
+
+  # Two directories Xorg writes into at runtime, whose absence is reported
+  # only after the server has already started drawing.
+  mkdir -p "$TGT/var/lib/xkb" "$TGT/usr/share/X11/xkb/compiled"
+
+  # Every one of these missing means the session cannot start, and each is
+  # far clearer here than as a failed exec at the end of a boot.
+  local f
+  for f in usr/bin/Xorg usr/bin/startxfce4 usr/bin/xkbcomp \
+           usr/bin/dbus-daemon usr/bin/dbus-launch; do
+    if [ ! -e "$TGT/$f" ]; then
+      echo "gui: $f did not arrive from the packages" >&2
+      exit 1
+    fi
+  done
+  # The input driver specifically: without it the server starts, draws, and
+  # has no keyboard and no mouse, which is a machine nobody can use.
+  if ! find "$TGT/usr" -name evdev_drv.so 2>/dev/null | grep -q .; then
+    echo "gui: evdev_drv.so is missing; the server would have no input" >&2
+    exit 1
+  fi
+
+  echo "  display stack staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
+  stamp_set "$WORK/gui.stamp" "$SELF"
+}
+
+# ---------------------------------------------------------------
 # 7. live initramfs (busybox + our /init, drivers built into kernel)
 # ---------------------------------------------------------------
 build_initramfs() {
@@ -909,6 +1023,7 @@ full() {
   build_tools
   build_copper
   build_rootfs
+  build_gui
   build_initramfs
   build_iso
 }
@@ -919,10 +1034,11 @@ case "$STAGE" in
   tools)      build_musl; build_tools ;;
   copper)     build_musl; build_copper ;;
   rootfs)     build_rootfs ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_initramfs; build_iso ;;
+  gui)        build_rootfs; build_gui ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|initramfs|iso|all)"; exit 2 ;;
 esac
 
 echo "==> done"
