@@ -953,7 +953,10 @@ build_gui() {
   done
   # The input driver specifically: without it the server starts, draws, and
   # has no keyboard and no mouse, which is a machine nobody can use.
-  if ! find "$TGT/usr" -name evdev_drv.so 2>/dev/null | grep -q .; then
+  # -print -quit stops after the first hit: grep -q closes the pipe on its
+  # first match, and a second write from find would arrive as SIGPIPE, which
+  # under pipefail reads as "not found" no matter what was found.
+  if ! find "$TGT/usr" -name evdev_drv.so -print -quit 2>/dev/null | grep -q .; then
     echo "gui: evdev_drv.so is missing; the server would have no input" >&2
     exit 1
   fi
