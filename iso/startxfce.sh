@@ -182,7 +182,11 @@ else
     if [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] && [ -w "$XSOCKDIR" ]; then
         rm -f "$XSOCKDIR/X$DISPLAY_NUM" 2>/dev/null
     fi
-    "$XORG" ":$DISPLAY_NUM" > "$XLOG" 2>&1 &
+    # -noreset: without it the server resets itself when the last client
+    # disconnects, and that reset closes every input device in the process.
+    # Any gap with no clients -- between sessions, after a probe -- would
+    # leave the next login with no keyboard and no mouse.
+    "$XORG" ":$DISPLAY_NUM" -noreset > "$XLOG" 2>&1 &
     xpid=$!
 
     # Wait for the socket, which is the only thing that can be checked without
