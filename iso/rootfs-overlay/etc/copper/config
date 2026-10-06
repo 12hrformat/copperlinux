@@ -1,5 +1,4 @@
 # Copper Linux configuration
-# handcrafted by 12hrformat
 
 # Where to fetch hotfixes from
 HOTFIX_URL="https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json"

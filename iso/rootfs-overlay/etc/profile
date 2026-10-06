@@ -1,4 +1,4 @@
-# Copper Linux — handcrafted by 12hrformat
+# Copper Linux
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 if [ -n "$PS1" ]; then

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copper Linux — handcrafted by 12hrformat
+# Copper Linux
 #
 # default.script — what udhcpc runs every time the lease changes state.
 # Same job as busybox's examples/udhcp/simple.script: take the address the
