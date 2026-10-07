@@ -108,7 +108,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential gcc-13 bison flex bc cpio rsync curl wget \
             xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
-            python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
+            python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin \
+            libssl-dev zlib1g-dev libbz2-dev liblzma-dev libzstd-dev meson ninja-build
 
       # build.sh pins the kernel compiler itself, and says why: gcc 15 rejects
       # this kernel's ACPI signature table under -Werror, so an unpinned runner
@@ -133,7 +134,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**') }}
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**','iso/pacman/**','iso/sudo/**') }}
           restore-keys: |
             copper-work-
 
@@ -160,6 +161,12 @@ jobs:
       - name: Stage Xorg + XFCE into the rootfs
         run: sudo bash iso/build.sh gui
 
+      # pacman (and its runtime library stack) compiled into the rootfs, so
+      # packages can be installed at runtime. Build-time network like the GUI
+      # stage; the pacman.stamp gate proves it works offline once the ISO boots.
+      - name: Build pacman into the rootfs
+        run: sudo bash iso/build.sh pacman
+
       - name: Live initramfs
         run: sudo bash iso/build.sh initramfs
 
@@ -180,4 +187,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**') }}
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**','iso/pacman/**','iso/sudo/**') }}
