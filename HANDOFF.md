@@ -23,8 +23,9 @@ make it *Copper* are written by hand.
 - first boot personalizes like a real distro OOBE
 - speaks to **drivers** (wifi, bluetooth, firmware) and reaches the **internet**
 
-XFCE is the requested end state and is not built. It needs an X server, and the
-X server builds but has never been booted on Copper's kernel. See "XFCE" below.
+XFCE is packaged into the ISO and paints a desktop under QEMU; the VMware case
+has one open bug. See "Working in parallel" below for the current status;
+"XFCE" is the history of how it got here.
 
 Upstream projects are reference material. Nothing gets packaged as-is.
 
@@ -968,6 +969,113 @@ Each of these cost a wrong turn once. All were checked against real sources.
   `/sbin`. It does **not** install a lease script, which is why we ship one.
 - `wget`'s `https://` is busybox's internal TLS. It encrypts but does **not**
   verify certificates. Fine for pulling a tarball, not for a login.
+
+---
+
+# Working in parallel: GUI and pacman — read the ownership lines before editing
+
+Status written 2026-10-07. Work is on **`main`**, tip `92bc0f5`, CI green.
+The `gui`-branch narrative at the top of this file is history — the display
+commits live on `main` now.
+
+Verified at this tip:
+
+- **XFCE reaches a desktop.** Under QEMU (`-vga std`): boot → shell →
+  `startxfce --check` reports `found the X server: /usr/bin/Xorg` and
+  `found XFCE` → `startxfce` → the screen becomes the session, and OCR of the
+  screendump read the xfdesktop icons ("Home", "File System"). It paints.
+- **The guest sees input devices** — `/proc/bus/input/devices` lists the
+  keyboard and mouse under QEMU.
+
+**Open bug, unverified: on VMware, `startxfce` starts X but the screen is
+blank with a frozen cursor that will not move.** Not reproduced under QEMU yet.
+First line to read when it happens: the launcher prints
+`input devices: keyboard=<node> pointer=<node>` (`iso/startxfce.sh:249`). The
+nodes come from sysfs *name* matching (`startxfce.sh:207-215`); VMware's USB
+HID names may match neither pattern, leaving the pointer empty — no core
+pointer, cursor stuck where the server put it. `pointer=none` → widen the case
+patterns. Line never appears → the server died before config generation;
+`/tmp/xorg.log` and the launcher's exit 22/23 paths say why.
+
+## Pacman is being added — these files are reserved for it
+
+We are putting **pacman** on the ISO so Arch's repos can install apps at the
+prompt. Deliberate, temporary exception to the "Arch is reference material"
+rule (owner's call, "for now"). **No pacman code is in the tree yet** — only
+the feasibility below is done. Until it lands, do not restructure these:
+
+- **`iso/build.sh`** — will gain one `build_pacman()` stage and its call. The
+  insertion point is between `gui` and `initramfs` in the stage list; leave
+  that list and the stamp helpers alone meanwhile.
+- **`iso/pacman/`** (new) — `pacman.conf`, mirrorlist, local-db stub generator.
+- **`iso/rootfs-overlay/etc/pacman*`** (new) — runtime config.
+- **`tests/pacman-gate.sh`** (new) — when it appears, its name goes into the
+  workflow's test list in the same commit.
+
+Feasibility, measured on the build host and against the real mirrors:
+
+- The rootfs already carries what the stack links against: `libssl.so.3`,
+  `libcrypto.so.3`, `libz.so.1`, `liblzma.so.5`, `libzstd.so.1`,
+  `libbz2.so.1.0`, and the host has the matching dev headers.
+- Must be built and staged: **curl, libarchive, the gpgme chain, pacman itself,
+  bash, and a CA bundle** — none are in the rootfs (nor is `ca-certificates`;
+  busybox wget's TLS does not verify certificates).
+- URLs that answered **200**: pacman `v6.1.0` source from
+  `gitlab.archlinux.org`, `curl-8.11.1.tar.xz` (curl.se), libarchive `v3.7.7`
+  (GitHub releases), `bash-5.2.37` (mirrors.kernel.org), `cacert.pem`
+  (curl.se). **Failed**: `ftp.archlinux.org` (blocked like ftp.gnu.org — do
+  not wait on it) and three guessed gpg release URLs on GitHub (re-probe
+  against gnupg.org before coding).
+- Arch mirrors work: `mirror.rackspace.com` and `geo.mirror.pkgbuild.com`
+  both served `core.db` with 200. Runtime network is proven — DHCP and DNS are
+  in every serial log.
+- Design: `SigLevel = Never` (no gpg in the image), plus a **stub local db**
+  in `/var/lib/pacman/local/` claiming `glibc`, `gcc-libs`, `bash`,
+  `filesystem`, `coreutils`, `ncurses`, `readline`, `zlib`, `openssl` at high
+  versions, so app dependency chains resolve without pacman dragging Arch's
+  base over the musl+glibc hybrid rootfs. `IgnorePkg` holds the same list so
+  `pacman -Syu` cannot replace the working base.
+- Host note: the Kali box has no `libtoolize` (CI installs libtool — workflow
+  ~line 110), and the gitlab archive ships no `configure`; install libtool for
+  autoreconf.
+- First end-to-end check once it lands: boot, `pacman -Sy tree`, run `tree`,
+  read it off a screendump.
+
+## GUI: the files that matter, and the lines not to cross
+
+For whoever picks up the display work:
+
+**Yours:**
+
+- `iso/startxfce.sh` — the launcher: device detection (207-215), generated
+  xorg.conf (204-251), server start (269-273), session exec (355).
+- `iso/build.sh` **gui stage only** (~895-995) — apt package list at 916,
+  unpack, loader copy, gates.
+- `tests/startxfce-gate.sh` — CI runs it every push; keep it green.
+
+**Not yours — do not restructure:**
+
+- `iso/build.sh` outside the gui stage: stamp helpers (~89-111),
+  kernel/base/tools/copper/rootfs/initramfs/iso, the stage list at the bottom.
+  Pacman inserts there; two-way edits in one file are how merges go wrong.
+- `src/`, `iso/live/init/`, `iso/src-init/`, `iso/firstboot/` — the verified
+  boot path. The GUI does not need them; a regression there costs a boot.
+- `.github/workflows/build-iso.yml` — shared; touch only to add your own test
+  name, in the same commit as the test.
+- `iso/out/` — build output, stays untracked.
+
+**Harness facts that will otherwise cost you a day** (each verified the hard
+way):
+
+- copper-sh rejects `2>&1` and `&`: the tokenizer splits them and `parse_line`
+  errors with `only one '>' per command`. Plain commands, at most one of
+  `< > >>`.
+- QEMU's monitor `sendkey` has **no `greater` key** and rejects uppercase
+  names (`shift-D` → `invalid parameter: D`). A typed `>` silently never
+  arrives — this bought a full debug round of "the serial output is empty".
+- The shell runs on tty1; serial carries only init's chatter. Read the guest
+  by screendump + tesseract (installed in the WSL box) instead of redirecting
+  to `/dev/ttyS0`; `diag2-xfce.sh` is the working pattern.
 
 ---
 
