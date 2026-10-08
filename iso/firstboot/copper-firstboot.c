@@ -976,7 +976,7 @@ int main(void) {
             return 1;
         }
     }
-    const char *supp[] = {"users", "audio", "video", "dialout", "cdrom", NULL};
+    const char *supp[] = {"wheel", "users", "audio", "video", "dialout", "cdrom", NULL};
     for (const char **g = supp; *g; g++) {
         /* A missing supplementary group is not worth aborting the boot for --
            the account itself already exists and works. And the output is

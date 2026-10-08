@@ -1,6 +1,6 @@
 # sigh so this are like my um todo list for the future of copper and deadlight linux:
 
-- as of now i dont have a package manager so ill use pacman (sorry arch)
+- as of now i dont have a package manager so im building my own (ingot), hosted on github pages, not pacman
 - make a gui for copper and deadlight linux
 - make a package manager
 - update the website and make it (actually) good

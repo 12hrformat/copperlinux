@@ -972,7 +972,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 
 ---
 
-# Working in parallel: GUI and pacman — read the ownership lines before editing
+# Working in parallel: GUI and the package paths — read the ownership lines before editing
 
 Status written 2026-10-07. Work is on **`main`**, tip `92bc0f5`, CI green.
 The `gui`-branch narrative at the top of this file is history — the display
@@ -997,49 +997,47 @@ pointer, cursor stuck where the server put it. `pointer=none` → widen the case
 patterns. Line never appears → the server died before config generation;
 `/tmp/xorg.log` and the launcher's exit 22/23 paths say why.
 
-## Pacman is being added — these files are reserved for it
+## Pacman is GONE — Copper grows its own package manager (ingot) instead
 
-We are putting **pacman** on the ISO so Arch's repos can install apps at the
-prompt. Deliberate, temporary exception to the "Arch is reference material"
-rule (owner's call, "for now"). **No pacman code is in the tree yet** — only
-the feasibility below is done. Until it lands, do not restructure these:
+Pacman was removed on 2026-10-08 (owner's call): no `iso/pacman/`, no
+`build_pacman` stage, no pacman step in the workflow, no Arch stub db. Chasing
+Arch's stub-db/readline/ncurses compatibility was the wrong shape of the job —
+the image is a musl base, and glibc-closure games buy a fragile hybrid. Replaced
+by:
 
-- **`iso/build.sh`** — will gain one `build_pacman()` stage and its call. The
-  insertion point is between `gui` and `initramfs` in the stage list; leave
-  that list and the stamp helpers alone meanwhile.
-- **`iso/pacman/`** (new) — `pacman.conf`, mirrorlist, local-db stub generator.
-- **`iso/rootfs-overlay/etc/pacman*`** (new) — runtime config.
-- **`tests/pacman-gate.sh`** (new) — when it appears, its name goes into the
+**ingot** — our own package manager, distributed through **GitHub Pages**:
+
+1. `ingot install nmap` goes to a GitHub Pages URL that looks like
+   `https://<pages>/iso/copper/pkg/hacking/nmap` — one JSON file per package
+   (no binary on Pages at all).
+2. ingot downloads that JSON to `/tmp`, reads it, and finds the **real url**
+   where the actual package payload lives (Releases/CDN — anywhere that can
+   hold big files).
+3. ingot downloads the payload from that url, checks its **sha256** against the
+   hash stored in the JSON (mismatch → refuse), installs it, and **deletes the
+   JSON from `/tmp`**.
+
+Pages carries only tiny index files; heavy payloads live behind the "real url".
+This is the design dragon specified — write NO other package path without asking.
+
+Status: **design agreed, nothing built yet.** Reserved names/paths when it lands:
+
+- **`iso/ingot/`** (new) — `ingot` client script, stub repo layout, package
+  metadata JSON schema.
+- **`iso/sudo/`** — stays; sudo is the elevation step for ingot (wheel
+  group + `%wheel ALL=(ALL:ALL) ALL` sudoers already in place).
+- **`tests/ingot-gate.sh`** (new) — when it appears, its name goes into the
   workflow's test list in the same commit.
 
-Feasibility, measured on the build host and against the real mirrors:
+Carried over from the pacman work, still true and still needed:
 
-- The rootfs already carries what the stack links against: `libssl.so.3`,
-  `libcrypto.so.3`, `libz.so.1`, `liblzma.so.5`, `libzstd.so.1`,
-  `libbz2.so.1.0`, and the host has the matching dev headers.
-- Must be built and staged: **curl, libarchive, the gpgme chain, pacman itself,
-  bash, and a CA bundle** — none are in the rootfs (nor is `ca-certificates`;
-  busybox wget's TLS does not verify certificates).
-- URLs that answered **200**: pacman `v6.1.0` source from
-  `gitlab.archlinux.org`, `curl-8.11.1.tar.xz` (curl.se), libarchive `v3.7.7`
-  (GitHub releases), `bash-5.2.37` (mirrors.kernel.org), `cacert.pem`
-  (curl.se). **Failed**: `ftp.archlinux.org` (blocked like ftp.gnu.org — do
-  not wait on it) and three guessed gpg release URLs on GitHub (re-probe
-  against gnupg.org before coding).
-- Arch mirrors work: `mirror.rackspace.com` and `geo.mirror.pkgbuild.com`
-  both served `core.db` with 200. Runtime network is proven — DHCP and DNS are
-  in every serial log.
-- Design: `SigLevel = Never` (no gpg in the image), plus a **stub local db**
-  in `/var/lib/pacman/local/` claiming `glibc`, `gcc-libs`, `bash`,
-  `filesystem`, `coreutils`, `ncurses`, `readline`, `zlib`, `openssl` at high
-  versions, so app dependency chains resolve without pacman dragging Arch's
-  base over the musl+glibc hybrid rootfs. `IgnorePkg` holds the same list so
-  `pacman -Syu` cannot replace the working base.
-- Host note: the Kali box has no `libtoolize` (CI installs libtool — workflow
-  ~line 110), and the gitlab archive ships no `configure`; install libtool for
-  autoreconf.
-- First end-to-end check once it lands: boot, `pacman -Sy tree`, run `tree`,
-  read it off a screendump.
+- The GUI stage's glibc closure gives the rootfs libssl/libcrypto/libz/liblzma/
+  libzstd/libbz2 and `/lib64/ld-linux-x86-64.so.2`, so glibc-linked payloads
+  run.
+- Runtime network is proven (DHCP + DNS in every serial log); busybox wget's
+  TLS encrypts but does not verify certificates — note it in ingot's docs.
+- First end-to-end check once ingot lands: boot, `ingot install tree`, run
+  `tree`, read it off a screendump.
 
 ## GUI: the files that matter, and the lines not to cross
 
@@ -1057,7 +1055,8 @@ For whoever picks up the display work:
 
 - `iso/build.sh` outside the gui stage: stamp helpers (~89-111),
   kernel/base/tools/copper/rootfs/initramfs/iso, the stage list at the bottom.
-  Pacman inserts there; two-way edits in one file are how merges go wrong.
+  The ingot/sudo stages will insert there; two-way edits in one file are how
+  merges go wrong.
 - `src/`, `iso/live/init/`, `iso/src-init/`, `iso/firstboot/` — the verified
   boot path. The GUI does not need them; a regression there costs a boot.
 - `.github/workflows/build-iso.yml` — shared; touch only to add your own test
