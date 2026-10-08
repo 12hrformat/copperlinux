@@ -12,6 +12,7 @@
 - custom artwork (wallpapers, icons, etc)
 - make a discord?
 - make some custom tools for deadlight linux
+- make a plymouth boot splash for copper (frames are in `iso/plymouth/plymouth-frames.zip`; needs a hand-rolled integration since copper-init is PID 1, not systemd)
 
 ##### thats it for now i think but ill add things in the future
 
