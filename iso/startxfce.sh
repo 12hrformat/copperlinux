@@ -45,6 +45,7 @@ set -u
 XORG=${COPPER_XORG:-/usr/bin/Xorg}
 STARTXFCE4=${COPPER_STARTXFCE4:-/usr/bin/startxfce4}
 XLOG=${COPPER_XLOG:-/tmp/xorg.log}
+SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/session.log}
 XSOCKDIR=${XSOCKDIR:-/tmp/.X11-unix}
 DISPLAY_NUM=${DISPLAY_NUM:-0}
 WAIT_TRIES=${WAIT_TRIES:-100}
@@ -63,10 +64,12 @@ Environment, all optional:
   COPPER_XORG        path to the X server        (default /usr/bin/Xorg)
   COPPER_STARTXFCE4  path to the XFCE session    (default /usr/bin/startxfce4)
   COPPER_XLOG        where the X server logs     (default /tmp/xorg.log)
+  COPPER_SESSIONLOG  where XFCE's output goes    (default /tmp/session.log)
   COPPER_XPROBE      X client used to check whether a display really
                      answers                         (default /usr/bin/xdpyinfo)
   COPPER_XORGCONF    where the generated input config is written
-                     (default /etc/X11/xorg.conf)
+                     (default /etc/X11/xorg.conf; falls back to /tmp/xorg.conf
+                     when the login cannot write there)
   DISPLAY_NUM        which display to use        (default 0)
 
 Exit codes: 0 ok, 20 no X server, 21 no XFCE, 22 X gave no display,
@@ -213,42 +216,65 @@ else
             *Mouse*|*mouse*|*Explorer*|*ImExPS*)          pt=$n ;;
         esac
     done
-    if [ -n "$kb" ] || [ -n "$pt" ]; then
-        if mkdir -p "${xorgconf%/*}" 2>/dev/null &&
-           { : > "$xorgconf" 2>/dev/null; }; then
-            {
-                echo 'Section "ServerFlags"'
-                echo '    Option "AutoAddDevices"    "false"'
-                echo '    Option "AutoEnableDevices" "false"'
-                echo 'EndSection'
-                if [ -n "$kb" ]; then
-                    echo ''
-                    echo 'Section "InputDevice"'
-                    echo '    Identifier  "Keyboard0"'
-                    echo '    Driver      "evdev"'
-                    printf '    Option      "Device"       "/dev/input/%s"\n' "$kb"
-                    echo '    Option      "CoreKeyboard" "on"'
-                    echo 'EndSection'
-                fi
-                if [ -n "$pt" ]; then
-                    echo ''
-                    echo 'Section "InputDevice"'
-                    echo '    Identifier  "Pointer0"'
-                    echo '    Driver      "evdev"'
-                    printf '    Option      "Device"       "/dev/input/%s"\n' "$pt"
-                    echo '    Option      "CorePointer"  "on"'
-                    echo 'EndSection'
-                fi
-                echo ''
-                echo 'Section "ServerLayout"'
-                echo '    Identifier "Default"'
-                [ -n "$kb" ] && echo '    InputDevice "Keyboard0"'
-                [ -n "$pt" ] && echo '    InputDevice "Pointer0"'
-                echo 'EndSection'
-            } > "$xorgconf"
-            say "input devices: keyboard=${kb:-none} pointer=${pt:-none}"
+    # The config is written even when nothing was found. An empty config is
+    # still load-bearing: it pins AutoAddDevices off so the server does not
+    # wander down the udev path that does not exist here, and it makes "I
+    # found nothing" a visible file rather than an absent one that looks like
+    # a bug in the writing code. And the summary line is printed either way:
+    # mouse-dead-on-VMware was diagnosed by reading this exact line, and it
+    # simply never printed on a machine where nothing matched.
+    #
+    # Where it goes needs care. The default /etc/X11/xorg.conf is owned by
+    # root, and the login that starts a desktop is not root by design. A
+    # config that cannot be written is the same failure as no devices: X
+    # runs, draws a cursor, and hunts for input through udev, which is not
+    # there. So the write tries the requested path and falls back to /tmp,
+    # and says which one won. X is then handed the file explicitly with
+    # -config, so it uses what was written instead of hoping the default
+    # search path found it.
+    cfg=
+    for cand in "$xorgconf" /tmp/xorg.conf; do
+        if mkdir -p "${cand%/*}" 2>/dev/null && { : > "$cand" 2>/dev/null; }; then
+            cfg=$cand
+            break
         fi
+    done
+    if [ -n "$cfg" ]; then
+        {
+            echo 'Section "ServerFlags"'
+            echo '    Option "AutoAddDevices"    "false"'
+            echo '    Option "AutoEnableDevices" "false"'
+            echo 'EndSection'
+            if [ -n "$kb" ]; then
+                echo ''
+                echo 'Section "InputDevice"'
+                echo '    Identifier  "Keyboard0"'
+                echo '    Driver      "evdev"'
+                printf '    Option      "Device"       "/dev/input/%s"\n' "$kb"
+                echo '    Option      "CoreKeyboard" "on"'
+                echo 'EndSection'
+            fi
+            if [ -n "$pt" ]; then
+                echo ''
+                echo 'Section "InputDevice"'
+                echo '    Identifier  "Pointer0"'
+                echo '    Driver      "evdev"'
+                printf '    Option      "Device"       "/dev/input/%s"\n' "$pt"
+                echo '    Option      "CorePointer"  "on"'
+                echo 'EndSection'
+            fi
+            echo ''
+            echo 'Section "ServerLayout"'
+            echo '    Identifier "Default"'
+            [ -n "$kb" ] && echo '    InputDevice "Keyboard0"'
+            [ -n "$pt" ] && echo '    InputDevice "Pointer0"'
+            echo 'EndSection'
+        } > "$cfg"
+        say "input config written: $cfg"
+    else
+        say "no writable xorg.conf path; X will hunt its own input (no udev here)"
     fi
+    say "input devices: keyboard=${kb:-none} pointer=${pt:-none}"
 
     # Where the drivers live is a packaging detail that differs between
     # distributions, so ask the image instead of assuming: -modulepath is
@@ -267,9 +293,11 @@ else
     # Any gap with no clients -- between sessions, after a probe -- would
     # leave the next login with no keyboard and no mouse.
     if [ -n "$modpath" ]; then
-        "$XORG" ":$DISPLAY_NUM" -noreset -modulepath "$modpath" > "$XLOG" 2>&1 &
+        "$XORG" ":$DISPLAY_NUM" -noreset -modulepath "$modpath" \
+            ${cfg:+-config "$cfg"} > "$XLOG" 2>&1 &
     else
-        "$XORG" ":$DISPLAY_NUM" -noreset > "$XLOG" 2>&1 &
+        "$XORG" ":$DISPLAY_NUM" -noreset \
+            ${cfg:+-config "$cfg"} > "$XLOG" 2>&1 &
     fi
     xpid=$!
 
@@ -349,7 +377,16 @@ fi
 # Hand the display over and become XFCE, so that when XFCE exits this command
 # exits with the same status. exec rather than run, so there is one process
 # between the user's keystrokes and the desktop rather than two.
+#
+# The session's output goes to $SESSIONLOG, not to the console. The console
+# is the VT the X server just took over -- anything the session prints there
+# is invisible to a user looking at the screen, and the screen is exactly the
+# thing that is broken when a diagnosis is needed. Inside the X server's VT
+# nothing a session says reaches a human; on the log it does. Redirecting
+# does not cost a process (it is a file descriptor, not a pipe) and it does
+# not touch the exit status.
 DISPLAY=":$DISPLAY_NUM"
 export DISPLAY
 say "starting XFCE on $DISPLAY"
-exec "$STARTXFCE4" "$@"
+say "session output goes to $SESSIONLOG"
+exec "$STARTXFCE4" "$@" >"$SESSIONLOG" 2>&1

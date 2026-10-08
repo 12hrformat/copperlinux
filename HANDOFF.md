@@ -993,12 +993,34 @@ Verified at this tip:
 **Open bug, unverified: on VMware, `startxfce` starts X but the screen is
 blank with a frozen cursor that will not move.** Not reproduced under QEMU yet.
 First line to read when it happens: the launcher prints
-`input devices: keyboard=<node> pointer=<node>` (`iso/startxfce.sh:249`). The
-nodes come from sysfs *name* matching (`startxfce.sh:207-215`); VMware's USB
-HID names may match neither pattern, leaving the pointer empty — no core
-pointer, cursor stuck where the server put it. `pointer=none` → widen the case
-patterns. Line never appears → the server died before config generation;
-`/tmp/xorg.log` and the launcher's exit 22/23 paths say why.
+`input devices: keyboard=<node> pointer=<node>`. The nodes come from sysfs
+*name* matching; VMware's HID names may match neither pattern, leaving the
+pointer empty — no core pointer. If the screen is *black*, that is a second,
+separate failure: X's own cursor renders even when nothing from the session
+ever lands, so a black screen plus cursor means XFCE never painted, whose
+reason has been invisible (the session's stderr went to the VT X owns).
+
+The launcher is now buildable evidence rather than a black box:
+
+- the `input devices:` line prints **always**, empty or not (`kb=${kb:-none}`)
+- the config file is written **always** (even empty — ServerFlags-only configs
+  are still load-bearing because they pin AutoAddDevices off) and X is handed
+  it explicitly with `-config`
+- `/etc/X11/xorg.conf` is root-owned, and the login that starts a desktop is
+  not root by design, so the write falls back to `/tmp/xorg.conf` when the
+  requested path is not writable, and says which one won
+- the session's output is captured to `$COPPER_SESSIONLOG` (default
+  `/tmp/session.log`) instead of being thrown at the VT the server took over,
+  so a session that dies now leaves its reason on disk
+
+Read, in order: the launcher's lines ("input devices:", "input config
+written:"), then `/tmp/xorg.log` (server side), then `/tmp/session.log`
+(session side). On the current VM without the new build: `tail /tmp/xorg.log`
+after the black screen, and re-run the session by hand to capture its error:
+
+    Ctrl+Alt+F1                # leaves the X VT, back to the console login
+    DISPLAY=:0 startxfce4 2>&1 | tee /tmp/session2.log
+    cat /tmp/session2.log
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 

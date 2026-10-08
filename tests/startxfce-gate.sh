@@ -234,6 +234,15 @@ if [ -s "$TMP/session.env" ]; then
 else
     bad "  the session actually ran" "no session.env, so startxfce4 was never exec'd"
 fi
+# The input line and the config are contract: a machine whose devices match
+# nothing ahead of the login still has to tell its user that, and the config
+# file has to exist so the server is pinned away from udev even when empty.
+has "  reports what it found (or found nothing)" "input devices:" "$out"
+if [ -f "$TMP/xorg.conf" ]; then
+    ok "  the input config was written"
+else
+    bad "  the input config was written" "no $TMP/xorg.conf"
+fi
 
 echo
 echo "=== case 6: a live X server on the display is reused, not replaced ==="
