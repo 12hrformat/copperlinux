@@ -990,27 +990,37 @@ Verified at this tip:
 - **The guest sees input devices** — `/proc/bus/input/devices` lists the
   keyboard and mouse under QEMU.
 
-**Open bug: on VMware, `startxfce` starts X but the screen is blank.** Status
-as of the 1bf9a4f build, diagnosed from the VM's own reports:
+**Bug: on VMware, `startxfce` starts X but the screen is blank — ROOT CAUSE
+FOUND, fix shipped.** The full `/tmp/session.log` was recovered (via the
+owner's screenshot-OCR round trip) and it is conclusive — this was never
+VMware's fault:
 
-- **Input theory is dead.** The launcher printed
-  `input devices: keyboard=event1 pointer=event3` on VMware — devices are
-  found and named, the config is written, X is handed it. Not a name-matching
-  problem. (The write also works: `/etc/X11/xorg.conf` was writable.)
-- **Xorg starts clean.** `/tmp/xorg.log` on VMware ends with xkbcomp keysym
-  warnings only ("Errors from xkbcomp are not fatal"); no `(EE)` lines, no
-  driver crash. The vmwgfx/DRM path is healthy.
-- **The session exits within seconds.** `startxfce` returns to the shell
-  prompt, which it cannot do while a live session holds its stdout. The
-  session's crash message is in `/tmp/session.log` (the launcher captures it
-  since 1bf9a4f) — **read that file first** on any recurrence.
-- **`startxfce4` alone is broken separately**: it execs `xinit`, which the gui
-  stage never installs (`xinit` package is absent from the download list), so
-  running it by hand dies with `exec: line 126: xinit: not found`. Our
-  launcher sets `DISPLAY=:0` before exec, so it skips the xinit branch — this
-  is why `startxfce` gets further. Possibly add `xinit` to the gui list; the
-  session failure it may hide from `startxfce` has yet to be read from
-  `/tmp/session.log`, and that is the thing to fix first.
+- The session **starts**: `xfce4-session`, `xfwm4`, `xfsettingsd`,
+  `xfce4-panel`, `Thunar`, `xfdesktop` all launch.
+- Then every component dies on **missing GdkPixbuf loaders**:
+  `Gtk-WARNING: Could not load a pixbuf from icon theme`,
+  `could not load a pixbuf from /org/gtk/libgtk/icons/...png. This may
+  indicate that pixbuf loaders or the mime database could not be found`,
+  then `Wnck:ERROR ... default_icon_at_size: assertion failed: (base)`,
+  `Gtk:ERROR ... ensure_surface_for_gicon: assertion failed (error == NULL)`,
+  each ending in `Bail out!` (GLib's g_error → abort).
+- `xfdesktop` is respawned by the session manager and dies again — PIDs
+  climbing in the log (268 -> 279 -> 297 -> 304). The session repeatedly
+  aborts before painting anything; X itself is fine.
+- **Why no loaders:** `loaders.cache` is only ever written by the gdk-pixbuf
+  package's postinst, and this build runs no postinsts (pure `dpkg-deb -x`).
+  The boot-time fallback in `startxfce.sh` (`gdk-pixbuf-query-loaders
+  --update-cache`) runs, but as a normal user against a read-only squashfs
+  `/usr` it cannot write, and the `>/dev/null 2>&1 || :` swallows the failure.
+- **Fix (shipped in the gui stage):** `build_gui()` now runs
+  `chroot "$TGT" gdk-pixbuf-query-loaders --update-cache` at build time —
+  where the staged glibc closure and loader modules are available — and gates
+  the stage on `loaders.cache` actually existing afterward. The image now
+  ships the cache; the runtime fallback becomes an inert no-op.
+- **Unrelated leftover:** plain `startxfce4` by hand dies with
+  `exec: line 126: xinit: not found` because the gui list never installs
+  `xinit`. Harmless for `startxfce` (it sets DISPLAY, skipping the xinit
+  branch) but a papercut for interactive use; consider adding `xinit` later.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 

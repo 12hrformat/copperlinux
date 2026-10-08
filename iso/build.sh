@@ -983,6 +983,35 @@ build_gui() {
   # only after the server has already started drawing.
   mkdir -p "$TGT/var/lib/xkb" "$TGT/usr/share/X11/xkb/compiled"
 
+  # gdk-pixbuf refuses to know any image format without loaders.cache, and on
+  # an installed system only the package postinst writes it -- which never
+  # runs here. Without it every icon lookup returns NULL, GTK's g_error()
+  # ("Bail out!") aborts each XFCE component as it starts, and the session
+  # respawns them in an endless crash-loop that never paints a desktop.
+  # First seen on VMware: xfdesktop PIDs 268 -> 279 -> 297 -> 304 climbing in
+  # /tmp/session.log while the screen stayed dark. The generator package was
+  # added to the download list above for exactly this; run it inside the
+  # staged rootfs, where the glibc closure and the loader modules it has to
+  # dlopen both live.
+  if [ -x "$TGT/usr/bin/gdk-pixbuf-query-loaders" ]; then
+    if chroot "$TGT" gdk-pixbuf-query-loaders --update-cache \
+        >"$WORK/gui-pixbuf.log" 2>&1; then
+      echo "  pixbuf loaders.cache written"
+    else
+      echo "gui: gdk-pixbuf-query-loaders --update-cache failed" >&2
+      cat "$WORK/gui-pixbuf.log" >&2 2>/dev/null || :
+      exit 1
+    fi
+  else
+    echo "gui: gdk-pixbuf-query-loaders did not arrive from the packages" >&2
+    exit 1
+  fi
+  if ! find "$TGT/usr/lib" -path '*gdk-pixbuf*' -name loaders.cache \
+      -print -quit 2>/dev/null | grep -q .; then
+    echo "gui: loaders.cache still missing after generation" >&2
+    exit 1
+  fi
+
   # Every one of these missing means the session cannot start, and each is
   # far clearer here than as a failed exec at the end of a boot.
   local f
