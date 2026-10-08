@@ -54,7 +54,8 @@ jobs:
           set -eu
           bad=0
           for s in tests/smoke.sh tests/charge.sh tests/account-gate.sh \
-                   tests/branch-gate.sh tests/startxfce-gate.sh tests/account.sh; do
+                   tests/branch-gate.sh tests/startxfce-gate.sh tests/account.sh \
+                   tests/ingot-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1

@@ -67,10 +67,11 @@ mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
 # here, where failing costs a second instead of a boot.
 lint_scripts() {
   local s
-  for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script"; do
+  for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
+           "$ROOT/rootfs-overlay/usr/bin/ingot"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init and the udhcpc lease script parse clean"
+  echo "scripts: live/init, the udhcpc lease script and ingot parse clean"
 }
 
 lint_scripts
@@ -583,10 +584,20 @@ build_rootfs() {
   [ -x "$TGT/usr/share/udhcpc/default.script" ] || {
     echo "rootfs: udhcpc lease script is not executable"; exit 1; }
 
+  # ingot is Copper's package manager; the live user runs `ingot ...` from a
+  # shell prompt, so it must be executable too. Same git-exec-bit caveat.
+  chmod 0755 "$TGT/usr/bin/ingot"
+  [ -x "$TGT/usr/bin/ingot" ] || {
+    echo "rootfs: ingot is not executable"; exit 1; }
+
   # A CR anywhere in this file makes busybox ash fail every line of it, and
   # the machine has no shell to fix that with. Cheap to prove here.
   if LC_ALL=C grep -q $'\r' "$TGT/usr/share/udhcpc/default.script"; then
     echo "rootfs: udhcpc lease script has CRLF line endings" >&2
+    exit 1
+  fi
+  if LC_ALL=C grep -q $'\r' "$TGT/usr/bin/ingot"; then
+    echo "rootfs: ingot has CRLF line endings" >&2
     exit 1
   fi
 
@@ -790,7 +801,9 @@ assert_shell_scripts_parse() {
   # are executed by busybox ash, not by bash. Grammar the POSIX shell does not
   # have -- array assignment, the `function` keyword, process substitution --
   # would fail on the machine this ISO is for, which is the only place it
-  # matters. So check those against a POSIX shell too, when one is available.
+  # matters. ingot (usr/bin) runs there too: `#!/bin/sh` on the live image is
+  # /bin/busybox, so it gets the same check. So check those against a POSIX
+  # shell too, when one is available.
   #
   # What this does NOT catch: bash builtins that happen to be spelled like
   # ordinary commands. dash -n accepts `[[ -n "$1" ]]`, because to its parser
@@ -804,7 +817,8 @@ assert_shell_scripts_parse() {
 
   if [ -n "$posix" ]; then
     local n_posix=0
-    for f in iso/copper.sh iso/copper-charge.sh iso/copper-rollback.sh; do
+    for f in iso/copper.sh iso/copper-charge.sh iso/copper-rollback.sh \
+             iso/rootfs-overlay/usr/bin/ingot; do
       [ -f "$REPO/$f" ] || {
         echo "build: $f is missing, so the POSIX check cannot run on it" >&2
         bad=1; continue; }
@@ -820,8 +834,8 @@ assert_shell_scripts_parse() {
     # check at all, because it reads like the busybox tools were verified.
     # This loop was skipping all three over a wrong path, and `[ -f ] ||
     # continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 3 ] || {
-      echo "build: the POSIX check covered $n_posix of 3 busybox tools" >&2; exit 1; }
+    [ "$n_posix" -eq 4 ] || {
+      echo "build: the POSIX check covered $n_posix of 4 busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"

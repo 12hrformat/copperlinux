@@ -974,11 +974,12 @@ Each of these cost a wrong turn once. All were checked against real sources.
 
 # Working in parallel: GUI and the package paths — read the ownership lines before editing
 
-Status written 2026-10-08. Work is on **`main`**. pacman is **gone**; in the
-queue: **sudo** (stage landed, CI pending) and **ingot** (our own package
-manager, sketch in the rootfs overlay). GUI is done (XFCE desktop under QEMU).
-The `gui`-branch narrative at the top of this file is history — the display
-commits live on `main` now.
+Status written 2026-10-08. Work is on **`main`**. pacman is **gone**; the
+queue is now just **GUI polish** (display under QEMU, verified). **sudo** is
+built by its own stage and CI-green; **ingot** is shipped, busybox-clean, and
+gated by `tests/ingot-gate.sh` (20 assertions, green in WSL) — the release
+step (real Pages repo) is what remains. The `gui`-branch narrative at the top
+of this file is history — the display commits live on `main` now.
 
 Verified at this tip:
 
@@ -1022,14 +1023,32 @@ by:
 Pages carries only tiny index files; heavy payloads live behind the "real url".
 This is the design dragon specified — write NO other package path without asking.
 
-Status: **design agreed, nothing built yet.** Reserved names/paths when it lands:
+Status (2026-10-08): **built and gated, not yet released.** What landed:
 
-- **`iso/ingot/`** (new) — `ingot` client script, stub repo layout, package
-  metadata JSON schema.
-- **`iso/sudo/`** — stays; sudo is the elevation step for ingot (wheel
-  group + `%wheel ALL=(ALL:ALL) ALL` sudoers already in place).
-- **`tests/ingot-gate.sh`** (new) — when it appears, its name goes into the
-  workflow's test list in the same commit.
+- **`iso/rootfs-overlay/usr/bin/ingot`** — the shipped client. POSIX sh,
+  busybox-ash clean (`sh -n` + `busybox sh -n` both pass). install/remove/
+  info/search. Reads the one-key-per-line JSON shape documented in its own
+  header (index: `{"nmap": "hacking"}` one entry per line; package pages: flat
+  string values, `depends` the only array). Recursion runs dep installs in a
+  subshell — there is no `local` in POSIX sh, so an inline call would let the
+  dep's fetch clobber the outer install's `name`/`url`/`want` and silently
+  re-install the dep under the dep's own name. The gate test found exactly that.
+- **`iso/rootfs-overlay/etc/ingot.conf`** — default Pages url, overridable by
+  `INGOT_REPO` (which is how the gate points it at a scratch server).
+- **`tests/ingot-gate.sh`** — 20 assertions, green in WSL: serves a fake Pages
+  repo over localhost + busybox httpd, proves files land, dep installs first,
+  sha256 mismatch refuses, /tmp stays clean after every path, remove deletes
+  exactly what the manifest recorded (and does not recurse into deps), unknown
+  names fail by name, info/search behave. Wired into `tests/branch-gate.sh`
+  and the workflow test list.
+- **`iso/build.sh`** — `build_rootfs` chmods ingot + CRLF-guards it; the
+  POSIX parse audit now covers 4 busybox tools (ingot joins copper.sh,
+  copper-charge.sh, copper-rollback.sh).
+- **`iso/sudo/`** — sudo built by its own stage, CI-green: `ingot install`
+  runs as `sudo` from a wheel user (wheel group + `%wheel ALL=(ALL:ALL) ALL`).
+
+Still to do for release: build the real Copper Pages repo, publish payload
+hashes, and boot `ingot install nmap` off a screendump.
 
 Carried over from the pacman work, still true and still needed:
 
@@ -1037,9 +1056,10 @@ Carried over from the pacman work, still true and still needed:
   libzstd/libbz2 and `/lib64/ld-linux-x86-64.so.2`, so glibc-linked payloads
   run.
 - Runtime network is proven (DHCP + DNS in every serial log); busybox wget's
-  TLS encrypts but does not verify certificates — note it in ingot's docs.
-- First end-to-end check once ingot lands: boot, `ingot install tree`, run
-  `tree`, read it off a screendump.
+  TLS encrypts but does not verify certificates — noted in ingot's docs and in
+  `futureplans.md`.
+- First end-to-end check once the Pages repo exists: boot, `ingot install
+  tree`, run `tree`, read it off a screendump.
 
 ## GUI: the files that matter, and the lines not to cross
 
@@ -1085,7 +1105,9 @@ way):
 ```
 iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|gui|sudo|initramfs|iso|all
 iso/sudo/sudoers          root ALL and %wheel ALL — the elevation contract for ingot
-iso/rootfs-overlay/usr/bin/ingot   our package manager (WIP sketch, not wired)
+iso/rootfs-overlay/usr/bin/ingot   the package manager (shipped; gated by ingot-gate)
+iso/rootfs-overlay/etc/ingot.conf  default Pages repo url, INGOT_REPO overrides
+tests/ingot-gate.sh       20 assertions against a fake Pages repo (localhost)
 iso/live/init             initramfs: find the ISO, lay a writable overlay, switch_root
 iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1

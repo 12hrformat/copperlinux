@@ -1,0 +1,237 @@
+#!/bin/sh
+# ingot — Copper's own package manager.
+#
+# Packages are NOT binaries on a server with a fancy API. GitHub Pages cannot
+# hold huge files comfortably, so Pages holds only the metadata, and it holds
+# them as plain JSON. Every package is one file at
+#
+#     <repo>/iso/copper/pkg/<category>/<name>
+#
+# whose entire contents are JSON. The JSON carries the REAL download url of
+# the payload (a Release, a CDN, anywhere big files can live) and the sha256
+# the payload must match. Nothing on Pages is a package. That indirection is
+# the whole design, on purpose:
+#
+#   1. <name> is looked up in <repo>/iso/copper/pkg/index.json (name -> category)
+#   2. the package's JSON page is downloaded to /tmp/<name>
+#   3. the real url and the sha256 are read out of that JSON
+#   4. the payload is downloaded from the real url
+#   5. its sha256 is compared to the one in the JSON — mismatch refuses
+#   6. the payload is unpacked into /
+#   7. the JSON in /tmp is deleted
+#
+# The JSON we author, so the layout is fixed and documented here, and the
+# parsers below are written to that exact shape (not to JSON in general).
+#
+# index.json — one entry per line, so a plain sed line can find a name:
+#
+#   {
+#     "nmap": "hacking",
+#     "tree": "tools"
+#   }
+#
+# a package page — one key per line, flat string values:
+#
+#   {
+#     "name": "nmap",
+#     "version": "7.95-1",
+#     "category": "hacking",
+#     "url": "https://<somewhere-big>/nmap-7.95.tar.gz",
+#     "sha256": "0123...",
+#     "depends": ["libpcap"]
+#   }
+#
+# Only `depends` is an array; the rest are strings. Keep it that way when you
+# author packages, or the sed parsers here will be wrong where you are not.
+#
+# Everything here is POSIX sh and runs under busybox ash on the live image.
+# No bashisms, no curl-only flags, no JSON library: the fields above are
+# one-key-per-line in the files we publish, and jget() trims that shape.
+
+# POSIX sh note: no `local` (dash rejects it), no arrays, no bashisms. This
+# must parse under /bin/sh and run under busybox ash on the live image.
+
+set -u
+
+# ---- config ---------------------------------------------------------------
+# /etc/ingot.conf may override the repo url; INGOT_REPO beats both. This is
+# how the gate test points ingot at a scratch server, and how a live user
+# points it at an unofficial mirror.
+DEFAULT_REPO='https://copper-linux.github.io/copper-pages'
+repo_url=$DEFAULT_REPO
+[ -r /etc/ingot.conf ] && . /etc/ingot.conf
+[ -n "${INGOT_REPO:-}" ] && repo_url=$INGOT_REPO
+
+# Where packages land. Empty means the real /, so a live install writes into
+# the image's writable overlay. Tests set this to a scratch tree and install
+# without touching the host.
+ROOT=${INGOT_ROOT:-/}
+MAN="$ROOT/var/lib/ingot"
+
+# ---- helpers --------------------------------------------------------------
+
+# fetch url -> file. busybox wget and GNU wget both accept -O and -q.
+# busybox wget's TLS encrypts but does not verify certificates: fine for
+# fetching from our own Pages repo, worth knowing before trusting a mirror.
+dl() { # dl <file> <url>
+  wget -q -O "$1" "$2" || { echo "ingot: download failed ($2)" >&2; return 1; }
+}
+
+# jget <key> <json-file> -> the value of "key": "value" (first match, no \n).
+# Works because our JSON is one key per line with flat string values.
+jget() {
+  sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -n1
+}
+
+# category of a package name, from the one-entry-per-line index.
+category_for() { # category_for <name> <index-file>
+  sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -n1
+}
+
+# the depends line -> names, space separated. "depends": ["a","b"] is an
+# array, so this reaches past jget: strip to the bracket contents, drop
+# quotes, split on commas.
+depends_of() { # depends_of <json-file> -> names, space separated
+  sed -n 's/^[[:space:]]*"depends"[[:space:]]*:[[:space:]]*\[\(.*\)\].*/\1/p' "$1" \
+    | head -n1 | tr -d '"' | tr ',' ' '
+}
+
+fetch_meta() { # fetch_meta <name> -> prints its JSON file path, or nothing
+  fetch_name=$1
+  fetch_tmp="/tmp/$1.index.$$"
+  dl "$fetch_tmp" "$repo_url/iso/copper/pkg/index.json" || return 1
+  fetch_cat=$(category_for "$fetch_name" "$fetch_tmp")
+  rm -f "$fetch_tmp"
+  [ -n "$fetch_cat" ] || { echo "ingot: no package named '$fetch_name' in the index" >&2; return 1; }
+  dl "/tmp/$fetch_name" "$repo_url/iso/copper/pkg/$fetch_cat/$fetch_name" || return 1
+  echo "/tmp/$fetch_name"
+}
+
+# ---- commands -------------------------------------------------------------
+
+cmd_install() { # cmd_install <name>
+  name=$1
+  if [ -f "$MAN/$name.installed" ]; then
+    echo "ingot: $name is already installed"
+    return 0
+  fi
+  mkdir -p "$MAN"
+
+  meta=$(fetch_meta "$name") || return 1
+  # $meta lives at /tmp/<name> per the design; every exit path below removes
+  # it, so a half-finished install cannot leave a package page behind.
+
+  url=$(jget url "$meta")
+  [ -n "$url" ] || { echo "ingot: $name metadata has no 'url'" >&2; rm -f "/tmp/$name"; return 1; }
+  want=$(jget sha256 "$meta")
+  [ -n "$want" ] || { echo "ingot: $name metadata has no 'sha256'; refusing to install an unverified payload" >&2; rm -f "/tmp/$name"; return 1; }
+
+  # Dependencies first, depth-first. Recursion is fine: the index is small
+  # and the already-installed check above stops the loop. The subshell is
+  # load-bearing: POSIX sh here has no `local`, so calling cmd_install inline
+  # would let the dependency's fetch overwrite THIS install's name/url/want/
+  # meta globals and the outer install would silently install the dep again
+  # under the dep's own name. A subshell keeps the outer frame intact --
+  # files churn on disk (fine, that is the point), variables do not.
+  deps=$(depends_of "$meta")
+  if [ -n "$deps" ]; then
+    for dep in $deps; do
+      [ -n "$dep" ] || continue
+      ( cmd_install "$dep" ) || { rm -f "/tmp/$name"; return 1; }
+    done
+  fi
+
+  # The real payload, from the REAL url in the JSON.
+  payload="/tmp/$name.payload.$$"
+  dl "$payload" "$url" || { rm -f "/tmp/$name" "$payload"; return 1; }
+
+  # The whole point of carrying the hash: a corrupted or replaced download
+  # must not install. Compare before touching the tree.
+  got=$(sha256sum "$payload" | awk '{print $1}')
+  if [ "$got" != "$want" ]; then
+    echo "ingot: sha256 mismatch for $name" >&2
+    echo "  metadata says $want" >&2
+    echo "  download is  $got" >&2
+    rm -f "/tmp/$name" "$payload"
+    return 1
+  fi
+
+  # Payload tar paths must stay inside the target root. An absolute path or
+  # a .. entry would walk out of it; refuse before unpacking.
+  if tar -tzf "$payload" 2>/dev/null | grep -E '(^/|(^|/)\.\.(/|$))' -q; then
+    echo "ingot: $name payload contains an absolute or '..' path; refusing" >&2
+    rm -f "/tmp/$name" "$payload"
+    return 1
+  fi
+
+  # Manifest before unpack: the exact file list, plus the record that will
+  # make `remove` possible. Written to a .tmp and renamed so an interrupted
+  # install cannot claim to be installed.
+  {
+    echo "$name|$(jget version "$meta")|$url|$want"
+    tar -tzf "$payload" 2>/dev/null
+  } > "$MAN/$name.installed.tmp"
+
+  ( cd "$ROOT" && tar -xzf "$payload" ) || {
+    echo "ingot: unpacking $name failed; nothing was recorded as installed" >&2
+    rm -f "/tmp/$name" "$payload" "$MAN/$name.installed.tmp"
+    return 1
+  }
+
+  mv "$MAN/$name.installed.tmp" "$MAN/$name.installed"
+  rm -f "/tmp/$name" "$payload"
+  echo "ingot: installed $name"
+}
+
+cmd_remove() { # cmd_remove <name>
+  name=$1
+  mf="$MAN/$name.installed"
+  [ -f "$mf" ] || { echo "ingot: $name is not installed" >&2; return 1; }
+  # Skip the header line (the first line, name|version|url|sha256); the rest
+  # are payload paths. Reverse purpose: files before the dirs that held them.
+  # tar lists dirs with a trailing slash; those are left, along with any dir
+  # that still has other packages' files in it.
+  sed -n '2,$p' "$mf" | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in */) continue ;; esac
+    rm -f "$ROOT/$line"
+  done
+  rm -f "$mf"
+  echo "ingot: removed $name"
+}
+
+cmd_info() { # cmd_info <name> — show the package's JSON then clean /tmp
+  name=$1
+  meta=
+  meta=$(fetch_meta "$name") || return 1
+  cat "$meta"
+  rm -f "/tmp/$name"
+}
+
+cmd_search() { # cmd_search <term> — names+groups matching, straight from index.json
+  term=$1
+  tmp="/tmp/$term.search.$$"
+  dl "$tmp" "$repo_url/iso/copper/pkg/index.json" || return 1
+  grep -i "$term" < "$tmp" | sed 's/[{}",:]//g' || true
+  rm -f "$tmp"
+}
+
+usage() {
+  echo "usage: ingot <install|remove|info|search> <name>"
+  echo "  install <name>  fetch its JSON from the repo, download the real"
+  echo "                  payload, verify sha256, unpack into $ROOT"
+  echo "  remove  <name>  delete the files the install recorded"
+  echo "  info    <name>  print the package's JSON"
+  echo "  search  <term>  grep the package index"
+  echo
+  echo "repo: $repo_url"
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+case "$1" in
+  install) [ $# -eq 2 ] || { usage; exit 1; }; cmd_install "$2" ;;
+  remove)  [ $# -eq 2 ] || { usage; exit 1; }; cmd_remove "$2" ;;
+  info)    [ $# -eq 2 ] || { usage; exit 1; }; cmd_info "$2" ;;
+  search)  [ $# -eq 2 ] || { usage; exit 1; }; cmd_search "$2" ;;
+  *)       usage; exit 1 ;;
+esac
