@@ -974,7 +974,9 @@ Each of these cost a wrong turn once. All were checked against real sources.
 
 # Working in parallel: GUI and the package paths — read the ownership lines before editing
 
-Status written 2026-10-07. Work is on **`main`**, tip `92bc0f5`, CI green.
+Status written 2026-10-08. Work is on **`main`**. pacman is **gone**; in the
+queue: **sudo** (stage landed, CI pending) and **ingot** (our own package
+manager, sketch in the rootfs overlay). GUI is done (XFCE desktop under QEMU).
 The `gui`-branch narrative at the top of this file is history — the display
 commits live on `main` now.
 
@@ -1081,7 +1083,9 @@ way):
 # Repo map
 
 ```
-iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|initramfs|iso|all
+iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|gui|sudo|initramfs|iso|all
+iso/sudo/sudoers          root ALL and %wheel ALL — the elevation contract for ingot
+iso/rootfs-overlay/usr/bin/ingot   our package manager (WIP sketch, not wired)
 iso/live/init             initramfs: find the ISO, lay a writable overlay, switch_root
 iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1

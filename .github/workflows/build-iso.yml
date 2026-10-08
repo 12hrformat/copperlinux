@@ -160,6 +160,12 @@ jobs:
       - name: Stage Xorg + XFCE into the rootfs
         run: sudo bash iso/build.sh gui
 
+      # sudo is a glibc binary against the gui closure's runtime, staged into
+      # the rootfs so a normal user can run `ingot install` through it.
+      # The sudo.stamp gate runs `sudo -V` inside the staged rootfs.
+      - name: Build sudo into the rootfs
+        run: sudo bash iso/build.sh sudo
+
       - name: Live initramfs
         run: sudo bash iso/build.sh initramfs
 

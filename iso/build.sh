@@ -14,7 +14,7 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | initramfs | iso
+# Stages: kernel | base | tools | copper | rootfs | gui | sudo | initramfs | iso
 #
 # Stages share iso/work/, so CI can run them one step at a time and each
 # step skips straight past whatever is already built.
@@ -995,6 +995,69 @@ build_gui() {
 }
 
 # ---------------------------------------------------------------
+# 6b. sudo — real privilege elevation, staged with the glibc closure
+# ---------------------------------------------------------------
+# sudo is a glibc binary and the base image is musl, so it gets built on the
+# build host (which has the same-family glibc the gui closure brings in) and
+# staged whole into the rootfs. It is what lets a normal user run
+# `ingot install`: copper-firstboot puts the account in the wheel group, the
+# overlay's sudoers grants wheel full rights, and sudo (setuid root) is the
+# elevation step. fetch/unpack come from the top of this file; the URL and
+# flags below are the ones proven on the Kali box in sudo-dev.sh.
+build_sudo() {
+  if [ -e "$TGT/usr/bin/sudo" ] \
+     && stamped_skip "$WORK/sudo.stamp" "$SELF" "$ROOT/sudo/sudoers"; then
+    echo "sudo: already staged, skipping"; return
+  fi
+  echo "==> sudo"
+  local SD SDD
+  SD=$(fetch "https://www.sudo.ws/dist/sudo-1.9.15p5.tar.gz")
+  SDD=$(unpack "$SD")
+  if [ ! -x "$TGT/usr/bin/sudo" ]; then
+    pushd "$SDD" >/dev/null
+      # Dynamic against the host glibc (the gui closure ships the matching
+      # runtime), no PAM (the image has no pam stack), plugins under
+      # /usr/lib/sudo where RUNPATH points, and a secure default PATH.
+      ./configure --prefix=/usr --sysconfdir=/etc \
+        --libexecdir=/usr/lib/sudo --docdir=/usr/share/doc/sudo \
+        --without-pam --with-secure-path \
+        CFLAGS="-O2 -Wno-error=incompatible-pointer-types"
+      make -j"$JOBS"; make DESTDIR="$TGT" install
+    popd >/dev/null
+  fi
+  # make install drops an example sudoers; ours is authoritative and the
+  # gates below compare byte-for-byte, so ours goes in last and wins.
+  chmod 4755 "$TGT/usr/bin/sudo"
+  mkdir -p "$TGT/run/sudo" "$TGT/etc/sudoers.d"
+  install -m 0440 "$ROOT/sudo/sudoers" "$TGT/etc/sudoers"
+
+  # ---- gates -------------------------------------------------------------
+  # The chroot gate is the honest test: the loader resolves, the glibc
+  # closure supplies libc, and libsudo_util.so.0 comes from the RUNPATH
+  # /usr/lib/sudo that configure baked in. No LD_LIBRARY_PATH, exactly like
+  # the booted image.
+  if ! chroot "$TGT" /usr/bin/sudo -V 2>&1 | grep -q "Sudo version"; then
+    echo "sudo: 'sudo -V' failed inside the staged rootfs" >&2
+    exit 1
+  fi
+  # Setuid is the elevation mechanism; without the bit sudo runs, but as the
+  # caller, which is nothing.
+  if [ ! -u "$TGT/usr/bin/sudo" ]; then
+    echo "sudo: /usr/bin/sudo is not setuid root" >&2
+    exit 1
+  fi
+  # The shipped sudoers is the contract the wheels rely on; silently serving
+  # a stale one would grant or deny rights nobody has agreed to.
+  if ! cmp -s "$ROOT/sudo/sudoers" "$TGT/etc/sudoers"; then
+    echo "sudo: staged sudoers does not match iso/sudo/sudoers" >&2
+    exit 1
+  fi
+
+  echo "  sudo staged, setuid, sudoers verified"
+  stamp_set "$WORK/sudo.stamp" "$SELF" "$ROOT/sudo/sudoers"
+}
+
+# ---------------------------------------------------------------
 # 7. live initramfs (busybox + our /init, drivers built into kernel)
 # ---------------------------------------------------------------
 build_initramfs() {
@@ -1056,6 +1119,7 @@ full() {
   build_copper
   build_rootfs
   build_gui
+  build_sudo
   build_initramfs
   build_iso
 }
@@ -1067,10 +1131,11 @@ case "$STAGE" in
   copper)     build_musl; build_copper ;;
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_initramfs; build_iso ;;
+  sudo)       build_rootfs; build_gui; build_sudo ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_sudo; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|sudo|initramfs|iso|all)"; exit 2 ;;
 esac
 
 echo "==> done"
