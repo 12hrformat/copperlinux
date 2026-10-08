@@ -990,37 +990,27 @@ Verified at this tip:
 - **The guest sees input devices** — `/proc/bus/input/devices` lists the
   keyboard and mouse under QEMU.
 
-**Open bug, unverified: on VMware, `startxfce` starts X but the screen is
-blank with a frozen cursor that will not move.** Not reproduced under QEMU yet.
-First line to read when it happens: the launcher prints
-`input devices: keyboard=<node> pointer=<node>`. The nodes come from sysfs
-*name* matching; VMware's HID names may match neither pattern, leaving the
-pointer empty — no core pointer. If the screen is *black*, that is a second,
-separate failure: X's own cursor renders even when nothing from the session
-ever lands, so a black screen plus cursor means XFCE never painted, whose
-reason has been invisible (the session's stderr went to the VT X owns).
+**Open bug: on VMware, `startxfce` starts X but the screen is blank.** Status
+as of the 1bf9a4f build, diagnosed from the VM's own reports:
 
-The launcher is now buildable evidence rather than a black box:
-
-- the `input devices:` line prints **always**, empty or not (`kb=${kb:-none}`)
-- the config file is written **always** (even empty — ServerFlags-only configs
-  are still load-bearing because they pin AutoAddDevices off) and X is handed
-  it explicitly with `-config`
-- `/etc/X11/xorg.conf` is root-owned, and the login that starts a desktop is
-  not root by design, so the write falls back to `/tmp/xorg.conf` when the
-  requested path is not writable, and says which one won
-- the session's output is captured to `$COPPER_SESSIONLOG` (default
-  `/tmp/session.log`) instead of being thrown at the VT the server took over,
-  so a session that dies now leaves its reason on disk
-
-Read, in order: the launcher's lines ("input devices:", "input config
-written:"), then `/tmp/xorg.log` (server side), then `/tmp/session.log`
-(session side). On the current VM without the new build: `tail /tmp/xorg.log`
-after the black screen, and re-run the session by hand to capture its error:
-
-    Ctrl+Alt+F1                # leaves the X VT, back to the console login
-    DISPLAY=:0 startxfce4 2>&1 | tee /tmp/session2.log
-    cat /tmp/session2.log
+- **Input theory is dead.** The launcher printed
+  `input devices: keyboard=event1 pointer=event3` on VMware — devices are
+  found and named, the config is written, X is handed it. Not a name-matching
+  problem. (The write also works: `/etc/X11/xorg.conf` was writable.)
+- **Xorg starts clean.** `/tmp/xorg.log` on VMware ends with xkbcomp keysym
+  warnings only ("Errors from xkbcomp are not fatal"); no `(EE)` lines, no
+  driver crash. The vmwgfx/DRM path is healthy.
+- **The session exits within seconds.** `startxfce` returns to the shell
+  prompt, which it cannot do while a live session holds its stdout. The
+  session's crash message is in `/tmp/session.log` (the launcher captures it
+  since 1bf9a4f) — **read that file first** on any recurrence.
+- **`startxfce4` alone is broken separately**: it execs `xinit`, which the gui
+  stage never installs (`xinit` package is absent from the download list), so
+  running it by hand dies with `exec: line 126: xinit: not found`. Our
+  launcher sets `DISPLAY=:0` before exec, so it skips the xinit branch — this
+  is why `startxfce` gets further. Possibly add `xinit` to the gui list; the
+  session failure it may hide from `startxfce` has yet to be read from
+  `/tmp/session.log`, and that is the thing to fix first.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 
