@@ -1012,11 +1012,16 @@ VMware's fault:
   The boot-time fallback in `startxfce.sh` (`gdk-pixbuf-query-loaders
   --update-cache`) runs, but as a normal user against a read-only squashfs
   `/usr` it cannot write, and the `>/dev/null 2>&1 || :` swallows the failure.
-- **Fix (shipped in the gui stage):** `build_gui()` now runs
-  `chroot "$TGT" gdk-pixbuf-query-loaders --update-cache` at build time —
-  where the staged glibc closure and loader modules are available — and gates
-  the stage on `loaders.cache` actually existing afterward. The image now
-  ships the cache; the runtime fallback becomes an inert no-op.
+- **Fix (shipped in the gui stage):** `build_gui()` now mirrors the gdk-pixbuf
+  postinst at build time: it locates `gdk-pixbuf-query-loaders` in the staged
+  tree (the tool moved out of `/usr/bin` into the libdir in gdk-pixbuf 2.42 —
+  first attempt hardcoded `/usr/bin` and the build gate caught it), feeds it
+  every loader `.so` under the module dir as arguments (PNG/JPEG are compiled
+  into the library now and need no entry), and writes its stdout to
+  `.../2.10.0/loaders.cache` — all chrooted into `$TGT`, where the glibc
+  closure and modules are available. The stage aborts if the cache comes out
+  empty. The image now ships the cache; the runtime fallback in `startxfce.sh`
+  becomes an inert no-op.
 - **Unrelated leftover:** plain `startxfce4` by hand dies with
   `exec: line 126: xinit: not found` because the gui list never installs
   `xinit`. Harmless for `startxfce` (it sets DISPLAY, skipping the xinit

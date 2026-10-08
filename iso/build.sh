@@ -989,28 +989,46 @@ build_gui() {
   # ("Bail out!") aborts each XFCE component as it starts, and the session
   # respawns them in an endless crash-loop that never paints a desktop.
   # First seen on VMware: xfdesktop PIDs 268 -> 279 -> 297 -> 304 climbing in
-  # /tmp/session.log while the screen stayed dark. The generator package was
-  # added to the download list above for exactly this; run it inside the
-  # staged rootfs, where the glibc closure and the loader modules it has to
-  # dlopen both live.
-  if [ -x "$TGT/usr/bin/gdk-pixbuf-query-loaders" ]; then
-    if chroot "$TGT" gdk-pixbuf-query-loaders --update-cache \
-        >"$WORK/gui-pixbuf.log" 2>&1; then
-      echo "  pixbuf loaders.cache written"
-    else
-      echo "gui: gdk-pixbuf-query-loaders --update-cache failed" >&2
-      cat "$WORK/gui-pixbuf.log" >&2 2>/dev/null || :
-      exit 1
-    fi
-  else
+  # /tmp/session.log while the screen stayed dark.
+  #
+  # Mirror the gdk-pixbuf postinst here. Layout moved between releases: the
+  # generator lives beside the library (newer builds) or in /usr/bin (older);
+  # in 2.42 it takes the loader modules as arguments instead of scanning, and
+  # PNG/JPEG are compiled into the library so they need no entry. So locate
+  # the tool in the staged tree, feed it every loader .so under the module
+  # dir it arrived with, ordered with LC_ALL=C for a byte-deterministic
+  # cache, and take its stdout as loaders.cache next to the module dir. Run
+  # it chrooted into the staged rootfs, where the glibc closure and the
+  # modules it dlopens both live. PNG and JPEG ship in the library itself;
+  # the SVG loader module arrives in librsvg2-common (in the list above).
+  local ql="" m0="" cache="" mods="" m=""
+  ql=$(find "$TGT/usr" -path '*gdk-pixbuf*' -name gdk-pixbuf-query-loaders \
+       -print -quit 2>/dev/null)
+  if [ -z "$ql" ]; then
     echo "gui: gdk-pixbuf-query-loaders did not arrive from the packages" >&2
     exit 1
   fi
-  if ! find "$TGT/usr/lib" -path '*gdk-pixbuf*' -name loaders.cache \
-      -print -quit 2>/dev/null | grep -q .; then
-    echo "gui: loaders.cache still missing after generation" >&2
+  m0=$(find "$TGT/usr/lib" -path '*gdk-pixbuf*/2.10.0/loaders' \
+       -name '*.so' -type f -print -quit 2>/dev/null)
+  if [ -z "$m0" ]; then
+    echo "gui: no gdk-pixbuf loader modules arrived; nothing to register" >&2
     exit 1
   fi
+  for m in $(find "$TGT/usr/lib" -path '*gdk-pixbuf*/2.10.0/loaders' \
+             -name '*.so' -type f 2>/dev/null | LC_ALL=C sort); do
+    mods="$mods ${m#"$TGT"}"
+  done
+  cache="$(dirname "$m0")/../loaders.cache"
+  if ! chroot "$TGT" "${ql#"$TGT"}" $mods \
+      >"$cache" 2>"$WORK/gui-pixbuf.log"; then
+    echo "  pixbuf-query-loaders exited nonzero; its stderr follows" >&2
+    cat "$WORK/gui-pixbuf.log" >&2 2>/dev/null || :
+  fi
+  if [ ! -s "$cache" ]; then
+    echo "gui: loaders.cache is empty after generation" >&2
+    exit 1
+  fi
+  echo "  pixbuf loaders.cache written ($(wc -l <"$cache") entries)"
 
   # Every one of these missing means the session cannot start, and each is
   # far clearer here than as a failed exec at the end of a boot.
