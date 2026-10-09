@@ -929,7 +929,7 @@ build_gui() {
   done
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 fonts-dejavu-core hicolor-icon-theme \
-         adwaita-icon-theme librsvg2-common
+         adwaita-icon-theme librsvg2-common libasound2
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \
     -o Dir::State::status="$status" \
