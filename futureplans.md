@@ -1,20 +1,24 @@
 # sigh so this are like my um todo list for the future of copper and deadlight linux:
-
-- as of now i dont have a package manager so im building my own (ingot), hosted on github pages, not pacman
-- make a gui for copper and deadlight linux
-- make a package manager
-- update the website and make it (actually) good
-- make documentation site
-- buy a custom domain
-- gain attention from linux users, and convince people to contribut
-- improve the tty
-- fastfetch logo
-- custom artwork (wallpapers, icons, etc)
-- make a discord?
-- make some custom tools for deadlight linux
-- make a plymouth boot splash for copper (frames are in `iso/plymouth/plymouth-frames.zip`; needs a hand-rolled integration since copper-init is PID 1, not systemd)
+[x] as of now i dont have a package manager so im building my own (ingot), hosted on github pages, not pacman
+[x] make a gui for copper and deadlight linux
+[x] make a package manager
+[x] update the website and make it (actually) good
+[] make documentation site
+[] buy a custom domain
+[] gain attention from linux users, and convince people to contribut
+[] improve the tty
+[] fastfetch logo
+[] custom artwork (wallpapers, icons, etc)
+[x] make a discord?
+[] make some custom tools for deadlight linux
+[x] make a plymouth boot splash for copper (frames are in `iso/plymouth/plymouth-frames.zip`)
+[] update: Now that the gui is working make it so gui automatically starts as soon as user enters
+[] add persistence
+[] add more packages in ingot repo
+[] add a 'archinstall' type installation / debians installer / custom made (<-- preffered)
 
 ##### thats it for now i think but ill add things in the future
+##### list below is made by ai i was busy
 
 ---
 
