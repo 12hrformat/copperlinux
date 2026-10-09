@@ -1025,7 +1025,27 @@ VMware's fault:
   loader `find` used `-path '.../2.10.0/loaders'` without a trailing `/*`,
   which matches only the directory and so (with `-name '*.so'`) matched
   nothing — the gate failed with "no loader modules" on a tree full of them.
-  Fixed with a trailing `/*` and a comment explaining why.
+  Fixed with a trailing `/*` and a comment explaining why. **Final CI for the
+  loaders fix: run 37881707295 (commit `6ebc11a`) is green** — the log shows
+  `pixbuf loaders.cache written (93 entries)` and the `copper-iso` artifact is
+  downloadable.
+- **Owner retested 2026-10-09; icons still fail.** Fresh session log with the
+  loaders-cache image still shows `Could not load a pixbuf from icon theme.
+  This may indicate that pixbuf loaders or the mime database could not be
+  found` and the crash loop. Two new leads from that log:
+  1. The GTK message explicitly names the **mime database** — `shared-mime-info`
+     ships `/usr/bin/update-mime-database` but (like `loaders.cache`) only its
+     postinst ever runs it; this build runs no postinsts.
+  2. The fatal icon is `Adwaita/scalable/status/*.svg` — an **SVG**, which in
+     gdk-pixbuf 2.42 is a *module* in `librsvg2-common` (PNG/JPEG are compiled
+     in, SVG is not). If that module failed to dlopen in the chroot, the
+     cache can exist with 93 entries and still carry no SVG entry.
+  Next build (in flight): `build_gui()` now (a) gates on `image/svg+xml`
+  actually appearing in `loaders.cache`, (b) runs `update-mime-database
+  /usr/share/mime` chrooted, aborting unless `mime.cache` is produced, and
+  (c) runs `gtk-update-icon-cache -f -t` over every staged icon theme.
+  Also to confirm with the owner: whether the retest actually booted the
+  `6ebc11a` artifact and not the older local `copper.iso`.
 - **Unrelated leftover:** plain `startxfce4` by hand dies with
   `exec: line 126: xinit: not found` because the gui list never installs
   `xinit`. Harmless for `startxfce` (it sets DISPLAY, skipping the xinit

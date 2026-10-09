@@ -1034,6 +1034,62 @@ build_gui() {
   fi
   echo "  pixbuf loaders.cache written ($(wc -l <"$cache") entries)"
 
+  # Adwaita resolves panel/status icons to scalable SVGs, and the crash log
+  # dies exactly there (ensure_surface_for_gicon on .../scalable/status/).
+  # If librsvg2-common's loader module failed to dlopen in the chroot it is
+  # silently absent from the cache -- the file looks fine but SVG icons go
+  # NULL. Verify the entry here, where a missing module is cheap to fix,
+  # instead of on a dark screen.
+  if ! grep -q 'image/svg+xml' "$cache"; then
+    echo "gui: loaders.cache has no SVG entry (librsvg module did not load)" >&2
+    exit 1
+  fi
+
+  # The same GTK message names the mime database: without /usr/share/mime/
+  # mime.cache, g_content_type_guess() cannot identify image files, and
+  # gdk-pixbuf's content-type loader selection fails for formats not covered
+  # by filename. shared-mime-info ships the generator (verified: /usr/bin/
+  # update-mime-database in the file list) but only its postinst ever runs
+  # it. Mirror that here, chrooted where its glib/libxml2 live.
+  if [ ! -x "$TGT/usr/bin/update-mime-database" ]; then
+    echo "gui: update-mime-database did not arrive from the packages" >&2
+    exit 1
+  fi
+  if ! chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
+      >"$WORK/gui-mime.log" 2>&1; then
+    echo "gui: update-mime-database failed inside the stage:" >&2
+    cat "$WORK/gui-mime.log" >&2 2>/dev/null || :
+    exit 1
+  fi
+  if [ ! -s "$TGT/usr/share/mime/mime.cache" ]; then
+    echo "gui: update-mime-database produced no mime.cache" >&2
+    exit 1
+  fi
+  echo "  mime database compiled ($(wc -c <"$TGT/usr/share/mime/mime.cache") bytes)"
+
+  # Icon-theme directory caches (icon-theme.cache) are another postinst
+  # artifact; GTK can scan without them, but Adwaita's per-size icon aliases
+  # resolve far more reliably with the cache present. gtk-update-icon-cache
+  # rode in the closure (51.9 kB package, verified in the CI download log);
+  # run it over every staged theme, mirroring the icon-theme postinst.
+  local tdir="" themedir=""
+  if [ ! -x "$TGT/usr/bin/gtk-update-icon-cache" ]; then
+    echo "gui: gtk-update-icon-cache did not arrive from the packages" >&2
+    exit 1
+  fi
+  for tdir in "$TGT"/usr/share/icons/*/index.theme; do
+    [ -f "$tdir" ] || continue
+    themedir=$(dirname "$tdir")
+    if chroot "$TGT" /usr/bin/gtk-update-icon-cache -f -t \
+        "${themedir#"$TGT"}" >"$WORK/gui-icontheme.log" 2>&1; then
+      echo "  icon theme cached: ${themedir#"$TGT"}"
+    else
+      echo "gui: gtk-update-icon-cache failed for ${themedir#"$TGT"}:" >&2
+      cat "$WORK/gui-icontheme.log" >&2 2>/dev/null || :
+      exit 1
+    fi
+  done
+
   # Every one of these missing means the session cannot start, and each is
   # far clearer here than as a failed exec at the end of a boot.
   local f
