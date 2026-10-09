@@ -1067,6 +1067,17 @@ build_gui() {
   fi
   echo "  mime database compiled ($(wc -c <"$TGT/usr/share/mime/mime.cache") bytes)"
 
+  # update-mime-database also emits a legacy /usr/share/mime/icons mapping.
+  # On the minimal database this image carries there are no icon mappings to
+  # write, so the file is zero bytes -- and every later stage re-runs the
+  # whole-tree "no empty regular file" check, so it would fail the build two
+  # stages after we made it. An empty icons file carries no information, so
+  # prune it; keep a non-empty one, which means real mappings landed.
+  if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
+    rm -f "$TGT/usr/share/mime/icons"
+    echo "  pruned empty mime icons map (no icon mappings in the database)"
+  fi
+
   # Icon-theme directory caches (icon-theme.cache) are another postinst
   # artifact; GTK can scan without them, but Adwaita's per-size icon aliases
   # resolve far more reliably with the cache present. gtk-update-icon-cache
