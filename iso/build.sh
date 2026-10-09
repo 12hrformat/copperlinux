@@ -415,7 +415,7 @@ set_bb_config_off() {
 require_bb_config() {
   local cfg="$1" sym missing=""
   for sym in \
-      STATIC ASH \
+      STATIC ASH ID \
       UDHCPC FEATURE_UDHCPC_ARPING IP IFCONFIG ROUTE PING \
       WGET FEATURE_WGET_HTTPS NSLOOKUP \
       MOUNT SWITCH_ROOT HOSTNAME \
