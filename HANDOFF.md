@@ -1046,6 +1046,16 @@ VMware's fault:
   (c) runs `gtk-update-icon-cache -f -t` over every staged icon theme.
   Also to confirm with the owner: whether the retest actually booted the
   `6ebc11a` artifact and not the older local `copper.iso`.
+- **Owner confirmed 2026-10-09:** the VM has `loaders.cache` (so the fixed ISO
+  was booted) and `/usr/share/mime/mime.cache` is **absent** — the missing
+  half is exactly the mime database. Commit `12e7c86` added it. CI went red a
+  different way: `update-mime-database` emits a legacy `/usr/share/mime/icons`
+  map that is zero bytes on this minimal database, and the sudo stage's
+  whole-tree empty-file gate tripped (`./usr/share/mime/icons`). The gui stage
+  (SVG gate, mime db, icon themes) had all passed. Fix in `0770d98`: prune the
+  generated `icons` file when empty (keeping non-empty ones, which carry real
+  mappings). Next data point is the `0770d98` artifact (its gui stage already
+  proved green on the run before).
 - **Unrelated leftover:** plain `startxfce4` by hand dies with
   `exec: line 126: xinit: not found` because the gui list never installs
   `xinit`. Harmless for `startxfce` (it sets DISPLAY, skipping the xinit
