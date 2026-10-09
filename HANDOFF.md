@@ -1021,7 +1021,11 @@ VMware's fault:
   `.../2.10.0/loaders.cache` — all chrooted into `$TGT`, where the glibc
   closure and modules are available. The stage aborts if the cache comes out
   empty. The image now ships the cache; the runtime fallback in `startxfce.sh`
-  becomes an inert no-op.
+  becomes an inert no-op. CI caught a second bug in the next iteration: the
+  loader `find` used `-path '.../2.10.0/loaders'` without a trailing `/*`,
+  which matches only the directory and so (with `-name '*.so'`) matched
+  nothing — the gate failed with "no loader modules" on a tree full of them.
+  Fixed with a trailing `/*` and a comment explaining why.
 - **Unrelated leftover:** plain `startxfce4` by hand dies with
   `exec: line 126: xinit: not found` because the gui list never installs
   `xinit`. Harmless for `startxfce` (it sets DISPLAY, skipping the xinit

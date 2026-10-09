@@ -1008,13 +1008,17 @@ build_gui() {
     echo "gui: gdk-pixbuf-query-loaders did not arrive from the packages" >&2
     exit 1
   fi
-  m0=$(find "$TGT/usr/lib" -path '*gdk-pixbuf*/2.10.0/loaders' \
+  # The trailing /* is load-bearing: -path matches the WHOLE path, so without
+  # it the pattern only ever matches the loaders directory itself, which the
+  # -name *.so guard then rejects, and the stage dies with "no loader
+  # modules" for a tree that is full of them. Measured, not guessed.
+  m0=$(find "$TGT/usr/lib" -path '*gdk-pixbuf*/2.10.0/loaders/*' \
        -name '*.so' -type f -print -quit 2>/dev/null)
   if [ -z "$m0" ]; then
     echo "gui: no gdk-pixbuf loader modules arrived; nothing to register" >&2
     exit 1
   fi
-  for m in $(find "$TGT/usr/lib" -path '*gdk-pixbuf*/2.10.0/loaders' \
+  for m in $(find "$TGT/usr/lib" -path '*gdk-pixbuf*/2.10.0/loaders/*' \
              -name '*.so' -type f 2>/dev/null | LC_ALL=C sort); do
     mods="$mods ${m#"$TGT"}"
   done
