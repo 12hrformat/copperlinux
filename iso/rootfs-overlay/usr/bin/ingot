@@ -216,22 +216,100 @@ cmd_search() { # cmd_search <term> — names+groups matching, straight from inde
   rm -f "$tmp"
 }
 
+# Installed manifests record name|version|url|sha256 on their first line, so
+# the recorded version and sha256 come straight out with one sed per field.
+mf_ver() { sed -n '1s/^[^|]*|\([^|]*\)|.*$/\1/p' "$1" | head -n1; }
+mf_sha() { sed -n '1s/^[^|]*|[^|]*|[^|]*|\(.*\)$/\1/p' "$1" | head -n1; }
+
+update_one() { # update_one <name> — reinstall if the repo's sha256 changed
+  name=$1
+  mf="$MAN/$name.installed"
+  [ -f "$mf" ] || { echo "ingot: $name is not installed" >&2; return 1; }
+  meta=$(fetch_meta "$name") || return 1
+  want=$(jget sha256 "$meta")
+  have=$(mf_sha "$mf")
+  rm -f "/tmp/$name" "$meta"
+  if [ "$have" = "$want" ]; then
+    echo "ingot: $name is up to date"
+    return 0
+  fi
+  echo "ingot: updating $name"
+  cmd_remove "$name" || return 1
+  cmd_install "$name"
+}
+
+cmd_update() { # cmd_update [name] — update one installed package, or all
+  if [ $# -eq 1 ]; then
+    update_one "$1" || return 1
+    return 0
+  fi
+  found=0
+  for mf in "$MAN"/*.installed; do
+    [ -e "$mf" ] || continue
+    found=1
+    update_one "$(basename "$mf" .installed)" || return 1
+  done
+  [ "$found" -eq 1 ] || { echo "ingot: nothing installed"; return 0; }
+}
+
+cmd_reinstall() { # cmd_reinstall <name> — remove then install again, fresh
+  name=$1
+  if [ -f "$MAN/$name.installed" ]; then
+    cmd_remove "$name" || return 1
+  fi
+  cmd_install "$name"
+}
+
+cmd_inspect() { # cmd_inspect <name> — show the installed record, not the repo page
+  name=$1
+  mf="$MAN/$name.installed"
+  [ -f "$mf" ] || { echo "ingot: $name is not installed" >&2; return 1; }
+  echo "ingot: $name $(mf_ver "$mf")"
+  echo "  url:    $(sed -n '1s/^[^|]*|[^|]*|\([^|]*\)|.*$/\1/p' "$mf" | head -n1)"
+  echo "  sha256: $(mf_sha "$mf")"
+  echo "  files:"
+  sed -n '2,$p' "$mf" | while IFS= read -r f; do
+    [ -n "$f" ] && echo "    $f"
+  done
+}
+
+cmd_list() { # cmd_list — installed packages and their versions
+  n=0
+  for mf in "$MAN"/*.installed; do
+    [ -e "$mf" ] || continue
+    echo "$(basename "$mf" .installed) $(mf_ver "$mf")"
+    n=$((n + 1))
+  done
+  if [ "$n" -eq 0 ]; then echo "ingot: nothing installed"; fi
+  return 0
+}
+
 usage() {
-  echo "usage: ingot <install|remove|info|search> <name>"
-  echo "  install <name>  fetch its JSON from the repo, download the real"
-  echo "                  payload, verify sha256, unpack into $ROOT"
-  echo "  remove  <name>  delete the files the install recorded"
-  echo "  info    <name>  print the package's JSON"
-  echo "  search  <term>  grep the package index"
+  echo "usage: ingot <install|remove|update|reinstall|inspect|info|search|list> <name>"
+  echo "  install  <name>  fetch its JSON from the repo, download the real"
+  echo "                   payload, verify sha256, unpack into $ROOT"
+  echo "  remove   <name>  delete the files the install recorded"
+  echo "  update   [name]  reinstall any installed package whose payload"
+  echo "                   changed; all of them if no name is given"
+  echo "  reinstall <name> remove then install again, fresh"
+  echo "  inspect  <name>  show the installed record: version, url, sha256, files"
+  echo "  info     <name>  print the package's JSON from the repo"
+  echo "  search   <term>  grep the package index"
+  echo "  list             list installed packages and versions"
   echo
   echo "repo: $repo_url"
 }
 
 [ $# -ge 1 ] || { usage; exit 1; }
 case "$1" in
-  install) [ $# -eq 2 ] || { usage; exit 1; }; cmd_install "$2" ;;
-  remove)  [ $# -eq 2 ] || { usage; exit 1; }; cmd_remove "$2" ;;
-  info)    [ $# -eq 2 ] || { usage; exit 1; }; cmd_info "$2" ;;
-  search)  [ $# -eq 2 ] || { usage; exit 1; }; cmd_search "$2" ;;
-  *)       usage; exit 1 ;;
+  install)    [ $# -eq 2 ] || { usage; exit 1; }; cmd_install "$2" ;;
+  remove)     [ $# -eq 2 ] || { usage; exit 1; }; cmd_remove "$2" ;;
+  reinstall)  [ $# -eq 2 ] || { usage; exit 1; }; cmd_reinstall "$2" ;;
+  update)     [ $# -ge 1 ] && [ $# -le 2 ] || { usage; exit 1; }
+              if [ $# -eq 2 ]; then cmd_update "$2"; else cmd_update; fi ;;
+  inspect)    [ $# -eq 2 ] || { usage; exit 1; }; cmd_inspect "$2" ;;
+  info)       [ $# -eq 2 ] || { usage; exit 1; }; cmd_info "$2" ;;
+  search)     [ $# -eq 2 ] || { usage; exit 1; }; cmd_search "$2" ;;
+  list)       [ $# -eq 1 ] || { usage; exit 1; }; cmd_list ;;
+  *)          usage; exit 1 ;;
 esac

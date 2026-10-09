@@ -35,7 +35,7 @@ url, wherever that points.
 - [x] **rough sketch** — first `ingot` script is in `iso/rootfs-overlay/usr/bin/ingot` (install/remove/info/search), not wired in yet
 - [x] **start working on it** — hammered out: dep recursion, index lookup, sha256 gate, /tmp cleanup, error paths. Two real bugs found and fixed by the gate test (index temp written to cwd instead of /tmp; recursion clobbering the outer install's globals, no `local` in POSIX sh). It is now a package manager, not a downloader
 - [x] **add it into the iso** — ships as `usr/bin/ingot` + `/etc/ingot.conf` in the rootfs overlay; `build_rootfs` chmods it, `assert_shell_scripts_parse` audits it as a busybox tool, and `sh -n`/`busybox sh -n` both parse it clean
-- [x] **test** — `tests/ingot-gate.sh` serves a fake Pages repo over localhost, installs with a sha256, and proves: right files land, dep installs first, hash mismatch refuses, /tmp stays clean, remove deletes, unknown/info/search behave. 20 assertions, all green in WSL; wired into `branch-gate.sh` and the workflow test list
+- [x] **test** — `tests/ingot-gate.sh` serves a fake Pages repo over localhost, installs with a sha256, and proves: right files land, dep installs first, hash mismatch refuses, /tmp stays clean, remove deletes, unknown/info/search/list behave, inspect shows the installed record, reinstall removes then reinstalls, update reinstalls when the page's sha256 moves. 29 assertions, all green in WSL as root and non-root; wired into `branch-gate.sh` and the workflow test list
 - [ ] **release** — make the real Copper packages repo on GitHub pages, drop our packages with their sha256s in, publish the ISO, and boot it: `ingot install nmap`, run nmap, read it off a screendump
 
 Also on the pile (not blockers, noted for later):

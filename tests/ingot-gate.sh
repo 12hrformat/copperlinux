@@ -15,6 +15,11 @@
 #   - unknown names fail with a name, not a stack trace
 #   - info prints the package JSON and cleans /tmp
 #   - search greps the index
+#   - list names the installed packages
+#   - inspect shows the installed record (version + files)
+#   - reinstall removes then installs again
+#   - update reinstalls a package whose page sha256 moved, and reports
+#     "up to date" when nothing changed
 #
 # Needs: python3 (to serve), wget, tar, sha256sum. No root: it never writes
 # outside its own temp tree. CI runs it via tests/branch-gate.sh alongside
@@ -189,6 +194,69 @@ if out=$( sh "$INGOT" search cog 2>&1 ); then
   printf '%s' "$out" | grep -q "cog" && note_ok "search finds cog" || note_bad "search missed cog: $out"
 else
   note_bad "search failed: $out"
+fi
+
+# ---- list: the still-installed dependency shows up --------------------------
+if out=$( sh "$INGOT" list 2>&1 ); then
+  printf '%s' "$out" | grep -q "cog" && note_ok "list shows installed cog" || note_bad "list missed cog: $out"
+else
+  note_bad "list failed: $out"
+fi
+
+# ---- inspect: show the installed record, not the repo page ------------------
+if out=$( sh "$INGOT" inspect cog 2>&1 ); then
+  printf '%s' "$out" | grep -q "cog 1.0"      && note_ok "inspect shows version"  || note_bad "inspect version odd: $out"
+  printf '%s' "$out" | grep -q "usr/lib/libcog.so" && note_ok "inspect lists files" || note_bad "inspect files odd: $out"
+else
+  note_bad "inspect cog failed: $out"
+fi
+
+# ---- reinstall: remove + install again, files land again --------------------
+if out=$( sh "$INGOT" reinstall cog 2>&1 ); then
+  [ -f "$ROOT/usr/lib/libcog.so" ] && note_ok "reinstall put the lib back" || note_bad "reinstall lost the lib: $out"
+else
+  note_bad "reinstall cog failed: $out"
+fi
+
+# ---- update with nothing changed: up to date, no re-download -----------------
+if out=$( sh "$INGOT" update cog 2>&1 ); then
+  printf '%s' "$out" | grep -q "up to date" && note_ok "unchanged package reports up to date" || note_bad "update all odd: $out"
+else
+  note_bad "update cog (unchanged) failed: $out"
+fi
+
+# ---- update with a newer payload on the page: reinstalls fresh ---------------
+# Bump cog's page to 1.1 with a *new* payload tarball that has the same paths
+# but different bytes. update must notice the sha256 moved and reinstall.
+mkdir -p "$WORK/stage4/usr/lib"
+printf 'cog lib 1.1\n' > "$WORK/stage4/usr/lib/libcog.so"
+( cd "$WORK/stage4" && tar -czf "$REPO_ROOT/payloads/cog-1.1.tar.gz" usr )
+SHA_COG_11=$(sha256sum "$REPO_ROOT/payloads/cog-1.1.tar.gz" | awk '{print $1}')
+cat > "$REPO_ROOT/iso/copper/pkg/fun/cog" <<EOF
+{
+  "name": "cog",
+  "version": "1.1",
+  "category": "fun",
+  "url": "http://127.0.0.1:$PORT/payloads/cog-1.1.tar.gz",
+  "sha256": "$SHA_COG_11"
+}
+EOF
+
+if out=$( sh "$INGOT" update cog 2>&1 ); then
+  printf '%s' "$out" | grep -q "updating cog" && note_ok "update reports the upgrade" || note_bad "update message odd: $out"
+  grep -q "cog lib 1.1" "$ROOT/usr/lib/libcog.so" 2>/dev/null \
+    && note_ok "updated payload bytes landed" || note_bad "old payload bytes remain"
+  grep -q "cog|1.1|" "$ROOT/var/lib/ingot/cog.installed" \
+    && note_ok "manifest records the new version" || note_bad "manifest not refreshed: $(sed -n '1p' "$ROOT/var/lib/ingot/cog.installed")"
+else
+  note_bad "update cog (newer) failed: $out"
+fi
+
+# ---- update all: cog is current again, reports up to date --------------------
+if out=$( sh "$INGOT" update 2>&1 ); then
+  printf '%s' "$out" | grep -q "up to date" && note_ok "update-all sees nothing to do" || note_bad "update-all odd: $out"
+else
+  note_bad "update (all) failed: $out"
 fi
 
 echo "    summary: pass=$pass fail=$fail"

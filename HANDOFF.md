@@ -1134,20 +1134,23 @@ Status (2026-10-08): **built and gated, not yet released.** What landed:
 
 - **`iso/rootfs-overlay/usr/bin/ingot`** — the shipped client. POSIX sh,
   busybox-ash clean (`sh -n` + `busybox sh -n` both pass). install/remove/
-  info/search. Reads the one-key-per-line JSON shape documented in its own
-  header (index: `{"nmap": "hacking"}` one entry per line; package pages: flat
-  string values, `depends` the only array). Recursion runs dep installs in a
-  subshell — there is no `local` in POSIX sh, so an inline call would let the
-  dep's fetch clobber the outer install's `name`/`url`/`want` and silently
-  re-install the dep under the dep's own name. The gate test found exactly that.
+  update/reinstall/inspect/info/search/list. Reads the one-key-per-line JSON
+  shape documented in its own header (index: `{"nmap": "hacking"}` one entry
+  per line; package pages: flat string values, `depends` the only array).
+  Recursion runs dep installs in a subshell — there is no `local` in POSIX sh,
+  so an inline call would let the dep's fetch clobber the outer install's
+  `name`/`url`/`want` and silently re-install the dep under the dep's own
+  name. The gate test found exactly that.
 - **`iso/rootfs-overlay/etc/ingot.conf`** — default Pages url, overridable by
   `INGOT_REPO` (which is how the gate points it at a scratch server).
-- **`tests/ingot-gate.sh`** — 20 assertions, green in WSL: serves a fake Pages
-  repo over localhost + busybox httpd, proves files land, dep installs first,
-  sha256 mismatch refuses, /tmp stays clean after every path, remove deletes
-  exactly what the manifest recorded (and does not recurse into deps), unknown
-  names fail by name, info/search behave. Wired into `tests/branch-gate.sh`
-  and the workflow test list.
+- **`tests/ingot-gate.sh`** — 29 assertions, green in WSL as root and
+  non-root: serves a fake Pages repo over localhost + busybox httpd, proves
+  files land, dep installs first, sha256 mismatch refuses, /tmp stays clean
+  after every path, remove deletes exactly what the manifest recorded (and
+  does not recurse into deps), unknown names fail by name, info/search/list
+  behave, inspect shows the installed record, reinstall removes then
+  reinstalls, update notices a moved sha256 and reinstalls else reports up to
+  date. Wired into `tests/branch-gate.sh` and the workflow test list.
 - **`iso/build.sh`** — `build_rootfs` chmods ingot + CRLF-guards it; the
   POSIX parse audit now covers 4 busybox tools (ingot joins copper.sh,
   copper-charge.sh, copper-rollback.sh).
