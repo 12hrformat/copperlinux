@@ -977,7 +977,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 Status written 2026-10-08. Work is on **`main`**. pacman is **gone**; the
 queue is now just **GUI polish** (display under QEMU, verified). **sudo** is
 built by its own stage and CI-green; **ingot** is shipped, busybox-clean, and
-gated by `tests/ingot-gate.sh` (20 assertions, green in WSL) — the release
+gated by `tests/ingot-gate.sh` (31 assertions, green in WSL) — the release
 step (real Pages repo) is what remains. The `gui`-branch narrative at the top
 of this file is history — the display commits live on `main` now.
 
@@ -1143,7 +1143,7 @@ Status (2026-10-08): **built and gated, not yet released.** What landed:
   name. The gate test found exactly that.
 - **`iso/rootfs-overlay/etc/ingot.conf`** — default Pages url, overridable by
   `INGOT_REPO` (which is how the gate points it at a scratch server).
-- **`tests/ingot-gate.sh`** — 29 assertions, green in WSL as root and
+- **`tests/ingot-gate.sh`** — 31 assertions, green in WSL as root and
   non-root: serves a fake Pages repo over localhost + busybox httpd, proves
   files land, dep installs first, sha256 mismatch refuses, /tmp stays clean
   after every path, remove deletes exactly what the manifest recorded (and
@@ -1217,7 +1217,7 @@ iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|gui|su
 iso/sudo/sudoers          root ALL and %wheel ALL — the elevation contract for ingot
 iso/rootfs-overlay/usr/bin/ingot   the package manager (shipped; gated by ingot-gate)
 iso/rootfs-overlay/etc/ingot.conf  default Pages repo url, INGOT_REPO overrides
-tests/ingot-gate.sh       20 assertions against a fake Pages repo (localhost)
+tests/ingot-gate.sh       31 assertions against a fake Pages repo (localhost)
 iso/live/init             initramfs: find the ISO, lay a writable overlay, switch_root
 iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1

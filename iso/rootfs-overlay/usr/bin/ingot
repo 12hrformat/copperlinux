@@ -68,6 +68,21 @@ repo_url=$DEFAULT_REPO
 ROOT=${INGOT_ROOT:-/}
 MAN="$ROOT/var/lib/ingot"
 
+# ---- privilege --------------------------------------------------------------
+# install/remove/update/reinstall write into the target root. On the live
+# system that root is the real /, and a normal user is not root: the elevation
+# contract is `sudo ingot install ...` (sudoers + wheel are staged for exactly
+# this). The gate tests point INGOT_ROOT at a scratch tree and stay rootless by
+# design, so only the real / demands elevation.
+require_root() { # require_root <verb>
+  [ "$ROOT" = "/" ] || return 0
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "ingot: $1 writes into / and needs root; run it with sudo" >&2
+    return 1
+  fi
+  return 0
+}
+
 # ---- helpers --------------------------------------------------------------
 
 # fetch url -> file. busybox wget and GNU wget both accept -O and -q.
@@ -111,6 +126,7 @@ fetch_meta() { # fetch_meta <name> -> prints its JSON file path, or nothing
 
 cmd_install() { # cmd_install <name>
   name=$1
+  require_root install || return 1
   if [ -f "$MAN/$name.installed" ]; then
     echo "ingot: $name is already installed"
     return 0
@@ -185,6 +201,7 @@ cmd_install() { # cmd_install <name>
 
 cmd_remove() { # cmd_remove <name>
   name=$1
+  require_root remove || return 1
   mf="$MAN/$name.installed"
   [ -f "$mf" ] || { echo "ingot: $name is not installed" >&2; return 1; }
   # Skip the header line (the first line, name|version|url|sha256); the rest
@@ -239,6 +256,7 @@ update_one() { # update_one <name> — reinstall if the repo's sha256 changed
 }
 
 cmd_update() { # cmd_update [name] — update one installed package, or all
+  require_root update || return 1
   if [ $# -eq 1 ]; then
     update_one "$1" || return 1
     return 0
@@ -254,6 +272,7 @@ cmd_update() { # cmd_update [name] — update one installed package, or all
 
 cmd_reinstall() { # cmd_reinstall <name> — remove then install again, fresh
   name=$1
+  require_root reinstall || return 1
   if [ -f "$MAN/$name.installed" ]; then
     cmd_remove "$name" || return 1
   fi
@@ -297,6 +316,9 @@ usage() {
   echo "  search   <term>  grep the package index"
   echo "  list             list installed packages and versions"
   echo
+  echo "install/remove/update/reinstall write into / and need root:"
+  echo "    sudo ingot install <name>"
+  echo "with INGOT_ROOT set to a scratch tree they run unprivileged."
   echo "repo: $repo_url"
 }
 

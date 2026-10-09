@@ -20,6 +20,8 @@
 #   - reinstall removes then installs again
 #   - update reinstalls a package whose page sha256 moved, and reports
 #     "up to date" when nothing changed
+#   - install/remove/update/reinstall on the real / refuse for a non-root
+#     user with a sudo hint (INGOT_ROOT is the rootless test path)
 #
 # Needs: python3 (to serve), wget, tar, sha256sum. No root: it never writes
 # outside its own temp tree. CI runs it via tests/branch-gate.sh alongside
@@ -257,6 +259,29 @@ if out=$( sh "$INGOT" update 2>&1 ); then
   printf '%s' "$out" | grep -q "up to date" && note_ok "update-all sees nothing to do" || note_bad "update-all odd: $out"
 else
   note_bad "update (all) failed: $out"
+fi
+
+# ---- the root contract: mutating commands on the real / need root ----------
+# On the live image the target root is the real / and the user is not root, so
+# install/remove/update/reinstall must refuse with a sudo hint instead of
+# half-writing. INGOT_ROOT is the sanctioned rootless path (which is exactly
+# how the rest of this test runs), so the refusal itself can only be produced
+# from an unprivileged gate run. A root gate run (CI executes branch-gate.sh
+# through sudo) cannot fairly exercise it, and says so rather than faking it.
+if [ "$(id -u)" -ne 0 ]; then
+  if out=$( env -u INGOT_ROOT sh "$INGOT" install pinwheel 2>&1 ); then
+    note_bad "install succeeded on real / without root!"
+  else
+    printf '%s' "$out" | grep -q "sudo" \
+      && note_ok "install on real / refused for non-root, with a sudo hint" \
+      || note_bad "unprivileged refusal message unexpected: $out"
+  fi
+  [ ! -e /var/lib/ingot/pinwheel.installed ] \
+    && note_ok "refused real-/ install wrote nothing" \
+    || note_bad "refused install still touched /var/lib/ingot!"
+else
+  note_ok "root gate run: real-/ refusal is covered by the unprivileged WSL runs"
+  note_ok "root gate run: root installing into / is the sudo contract itself"
 fi
 
 echo "    summary: pass=$pass fail=$fail"
