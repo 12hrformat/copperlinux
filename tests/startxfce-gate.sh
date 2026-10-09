@@ -108,13 +108,20 @@ run_sut() {
     # its default XSOCKDIR is the real /tmp/.X11-unix. So the test drove the
     # machine's actual X display instead of its own, which is both why every case
     # failed and why running it started notification daemons on a desktop.
+    #
+    # COPPER_SESSIONLOG and COPPER_XLOG are forced into TMP for the same reason
+    # as the socket directory: their defaults (/tmp/session.log, /tmp/xorg.log)
+    # are fixed names in the shared /tmp, and a file left there by an unrelated
+    # or earlier run -- owned by another user -- makes the exec's redirection
+    # fail with exit 2 and the case report a bug that is not there.
     xorg=$1
     session=$2
     tries=$3
     shift 3
     # The trailing "$@" carries options like --check through to the launcher.
     COPPER_XORG="$xorg" COPPER_STARTXFCE4="$session" COPPER_XLOG="$TMP/xorg.log" \
-    COPPER_XPROBE="$PROBE" XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES="$tries" \
+    COPPER_SESSIONLOG="$TMP/session.log" COPPER_XPROBE="$PROBE" \
+    XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES="$tries" \
     COPPER_XORGCONF="$TMP/xorg.conf" \
     sh "$SUT" "$@" 2>&1
 }
@@ -142,10 +149,12 @@ PY
 echo "=== it has to parse as POSIX sh, not just as bash ==="
 # The live image's shell is busybox ash. A bashism here works on the build host
 # and dies on the machine, so the parse check is against /bin/sh explicitly.
-if sh -n "$SUT" 2>/tmp/sfg.err; then
+# The error file lives in TMP, not /tmp: a fixed /tmp/sfg.err owned by another
+# user turns a clean parse into "Permission denied" and a false FAIL.
+if sh -n "$SUT" 2>"$TMP/sfg.err"; then
     ok "parses under /bin/sh"
 else
-    bad "parses under /bin/sh" "$(cat /tmp/sfg.err)"
+    bad "parses under /bin/sh" "$(cat "$TMP/sfg.err" 2>/dev/null)"
 fi
 
 echo
@@ -350,7 +359,8 @@ sys.exit(0)
 PROBE_EOF
 chmod +x "$TMP/probe"
 out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
-      COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$TMP/probe" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$TMP/probe" \
       COPPER_XORGCONF="$TMP/xorg.conf" \
       XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
 pkill -f "$TMP/Xorg" 2>/dev/null
@@ -403,7 +413,8 @@ EOF
 chmod +x "$TMP/Xorg"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
 out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
-      COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$PROBE" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$PROBE" \
       COPPER_XORGCONF="$TMP/xorg.conf" COPPER_SYSINPUT="$TMP/sys/class/input" \
       XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
 pkill -f "$TMP/Xorg" 2>/dev/null
@@ -444,7 +455,8 @@ EOF
 chmod +x "$TMP/Xorg"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
 out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
-      COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$PROBE" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$PROBE" \
       COPPER_XORGCONF="$TMP/xorg.conf" COPPER_SYSINPUT="$TMP/sys/class/input" \
       XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
 pkill -f "$TMP/Xorg" 2>/dev/null
