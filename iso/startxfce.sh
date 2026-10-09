@@ -205,17 +205,35 @@ else
     # goes with it: hotplug would send it down the same udev path that does
     # not exist here.
     xorgconf=${COPPER_XORGCONF:-/etc/X11/xorg.conf}
+    sysinput=${COPPER_SYSINPUT:-/sys/class/input}
     kb=
     pt=
-    for e in /sys/class/input/event*; do
+    pt_ps2=
+    for e in "$sysinput"/event*; do
         [ -e "$e" ] || continue
         n=${e##*/}
         name=$(cat "$e/device/name" 2>/dev/null) || name=
         case "$name" in
             *Keyboard*|*keyboard*|*kbd*|*AT\ Translated*) kb=$n ;;
-            *Mouse*|*mouse*|*Explorer*|*ImExPS*)          pt=$n ;;
+            *ImPS/2*|*ImExPS*|*Explorer*|*PS/2*)          [ -z "$pt_ps2" ] && pt_ps2=$n ;;
+            *Mouse*|*mouse*)                              [ -z "$pt" ] && pt=$n ;;
         esac
     done
+    # The pointer is chosen by how VMware feeds its virtual mice, which was
+    # measured with a blocking read on the machine, not guessed:
+    #
+    #   - ImPS/2 / Explorer / *PS/2* is the emulated PS/2 mouse. VMware feeds
+    #     it relative motion on every Linux guest, tools or not.
+    #   - The "VMware Virtual USB Mouse" is an absolute-pointer tablet. It is
+    #     only fed when the guest speaks the vmmouse protocol, whose X driver
+    #     package was retired from Ubuntu in 2018 (xenial) -- so it will never
+    #     report here. Sorting later in sysfs, its generic "*mouse" name used
+    #     to beat the real mouse under last-match-wins.
+    #
+    # So the PS/2-named device wins the pointer, and a plain USB "*mouse" is
+    # only the answer when no PS/2 device exists. Either way the first match
+    # in its class wins, no matter where it sorts in sysfs.
+    pt=${pt_ps2:-$pt}
     # The config is written even when nothing was found. An empty config is
     # still load-bearing: it pins AutoAddDevices off so the server does not
     # wander down the udev path that does not exist here, and it makes "I

@@ -1060,6 +1060,46 @@ VMware's fault:
   `exec: line 126: xinit: not found` because the gui list never installs
   `xinit`. Harmless for `startxfce` (it sets DISPLAY, skipping the xinit
   branch) but a papercut for interactive use; consider adding `xinit` later.
+- **Bug: on VMware, the mouse cursor is stuck (no input reaches X) — ROOT
+  CAUSE FOUND and fixed (commit pending push), the two candidates narrowed to
+  one by a blocking-read test on the machine.** Sequence of diagnosis:
+  - **Xorg was exonerated first:** `/var/log/Xorg.0.log` shows evdev opened and
+    registered both devices — `XINPUT: Adding extended input device
+    "Keyboard0" id 6` and `"Pointer0" id 7`, "initialized for relative axes".
+    `ps w` shows the single Xorg is ours (`-config /etc/X11/xorg.conf`), so
+    there is no stale third-party server holding the devices.
+  - **The `od` result was a red herring.** `busybox od -x -N 96` on both mouse
+    nodes printed an instant `read error` — not "the node is broken". busybox
+    `od` reads nonblocking, so "read error" means "no events available right
+    now". It said nothing about VMware or the kernel.
+  - **The decisive test was a blocking read:** `busybox dd if=/dev/input/eventX
+    of=/dev/null bs=24 count=2`. In the VMware VM on 2026-10-09:
+    - `event1` (AT keyboard): **1+0 records in** — delivers events (the user
+      types at the console through it).
+    - `event2` (ImPS/2 Generic Wheel Mouse): **2+0 records in** — delivers
+      relative motion. This is the working mouse.
+    - `event3` (VMware Virtual USB Mouse): **hangs forever** — the kernel gets
+      zero events from it.
+  - **Why event3 is dead:** it is VMware's absolute-pointer/tablet device,
+    which is only fed when the guest speaks the vmmouse protocol. The
+    `xserver-xorg-input-vmmouse` driver was **retired from Ubuntu in 2018
+    (xenial)** and does not exist in noble, so the tablet can never report
+    here. VMware feeds the emulated PS/2 mouse relative motion on every Linux
+    guest, tools or not — event2 is the pointer.
+  - **The bug was the launcher, not the VM:** the matcher in `startxfce.sh`
+    picked the *last* `*Mouse*` match in sysfs order, so `VMware Virtual USB
+    Mouse` (event3) beat `ImPS/2 Generic Wheel Mouse` (event2) purely by
+    sorting later. The fix (in `iso/startxfce.sh`, with gate cases 10 and 11
+    in `tests/startxfce-gate.sh`): the PS/2-named device (`*ImPS/2*`,
+    `*ImExPS*`, `*Explorer*`, `*PS/2*`) wins the pointer, and a plain
+    `*Mouse*` is only the pointer when no PS/2 device exists. The sysfs
+    location is now `COPPER_SYSINPUT`-overridable so the gate can fake the
+    exact VMware device lineup (`event1` keyboard / `event2` ImPS/2 /
+    `event3` tablet) and assert the config writes `/dev/input/event2`.
+  - **Next data point:** boot the new artifact in VMware and confirm the
+    cursor moves; then the agreed next project is wrapping the `startxfce.sh`
+    exec with `dbus-launch --exit-with-session` to silence the session-bus /
+    AT-SPI / login1 noise.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 

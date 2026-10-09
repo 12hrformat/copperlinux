@@ -376,6 +376,81 @@ out=$(sh "$SUT" --help 2>&1); rc=$?
 eq "  --help exits 0" 0 "$rc"
 has "  --help lists the exit codes" "22 X gave no display" "$out"
 
+echo
+echo "=== case 10: the PS/2 mouse wins the pointer over a USB tablet ==="
+# Measured on the machine (blocking dd): the emulated ImPS/2 mouse delivers
+# events on VMware, the "Virtual USB Mouse" tablet delivers none (vmmouse is
+# retired from Ubuntu). The matcher must prefer the PS/2 device even though
+# it sorts before the tablet in sysfs.
+reset
+mkdir -p "$TMP/sys/class/input/event1/device" \
+         "$TMP/sys/class/input/event2/device" \
+         "$TMP/sys/class/input/event3/device"
+printf 'AT Translated Set 2 keyboard\n'  > "$TMP/sys/class/input/event1/device/name"
+printf 'ImPS/2 Generic Wheel Mouse\n'    > "$TMP/sys/class/input/event2/device/name"
+printf 'VMware Virtual USB Mouse\n'      > "$TMP/sys/class/input/event3/device/name"
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+sleep 1
+python3 - <<'PY'
+import socket, time
+s = socket.socket(socket.AF_UNIX)
+s.bind("$TMP/.X11-unix/X0")
+s.listen(1)
+time.sleep(60)
+PY
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$PROBE" \
+      COPPER_XORGCONF="$TMP/xorg.conf" COPPER_SYSINPUT="$TMP/sys/class/input" \
+      XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null
+eq "  exit code is 0" 0 "$rc"
+has "  names the PS/2 device as the pointer" "pointer=event2" "$out"
+if grep -q '/dev/input/event2' "$TMP/xorg.conf" 2>/dev/null; then
+    ok "  the config points the pointer at the PS/2 mouse"
+else
+    bad "  the config points the pointer at the PS/2 mouse" \
+        "xorg.conf does not name /dev/input/event2: $(tr '\n' '|' < "$TMP/xorg.conf" 2>/dev/null)"
+fi
+if grep -q '/dev/input/event3' "$TMP/xorg.conf" 2>/dev/null; then
+    bad "  the dead USB tablet was rejected" "xorg.conf names /dev/input/event3"
+else
+    ok "  the dead USB tablet was rejected"
+fi
+
+echo
+echo "=== case 11: no PS/2 device, a plain USB mouse is still the pointer ==="
+# The preference is a preference, not a requirement: a machine whose only
+# mouse is generic still has to end up with a pointer.
+reset
+mkdir -p "$TMP/sys/class/input/event1/device" \
+         "$TMP/sys/class/input/event3/device"
+printf 'AT Translated Set 2 keyboard\n' > "$TMP/sys/class/input/event1/device/name"
+printf 'Logitech USB Optical Mouse\n'   > "$TMP/sys/class/input/event3/device/name"
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+sleep 1
+python3 - <<'PY'
+import socket, time
+s = socket.socket(socket.AF_UNIX)
+s.bind("$TMP/.X11-unix/X0")
+s.listen(1)
+time.sleep(60)
+PY
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_XPROBE="$PROBE" \
+      COPPER_XORGCONF="$TMP/xorg.conf" COPPER_SYSINPUT="$TMP/sys/class/input" \
+      XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null
+eq "  exit code is 0" 0 "$rc"
+has "  the generic mouse won the pointer" "pointer=event3" "$out"
+
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
 echo
