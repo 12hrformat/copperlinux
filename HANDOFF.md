@@ -1100,6 +1100,12 @@ VMware's fault:
     cursor moves; then the agreed next project is wrapping the `startxfce.sh`
     exec with `dbus-launch --exit-with-session` to silence the session-bus /
     AT-SPI / login1 noise.
+- **Owner confirmed 2026-10-09 (input bug CLOSED):** with the `cc1ad9b`
+  artifact the cursor follows the mouse in VMware. The launcher change in
+  `7df142c` is the fix; gate cases 10/11 and the private-TMP hygiene in
+  `cc1ad9b` shipped with it. The remaining session-log noise (D-Bus
+  session bus, AT-SPI, system/login1, `pm-is-supported`) is the agreed next
+  project.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 
