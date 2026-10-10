@@ -370,5 +370,5 @@ above, not just Copper's own MIT terms.
 ## Contact
 
 - Email: [12hrformat@proton.me](mailto:12hrformat@proton.me)
-- Instagram: [@mommy_said_im_special](https://instagram.com/mommy_said_im_special)
+- Instagram: [@12hrformat](https://instagram.com/12hrformat)
 - Or simply tag us in [Discussions](https://github.com/Copper-linux/copper/discussions)
