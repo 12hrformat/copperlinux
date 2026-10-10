@@ -651,13 +651,37 @@ drivers. BlueZ wants a D-Bus daemon; that's the part to budget time for.
 
 ## G6 — Persistence
 
-**Done looks like:** a reboot keeps your files.
+**Done looks like:** a reboot keeps your files, and the 10 GB disk you gave
+the VM actually gets written to instead of sitting there doing nothing.
 
-The overlay's upper layer is currently tmpfs, so the session is throwaway by
-design. Move the upper onto a real disk partition the user picks on the
-wizard's last page — same overlay mechanism, different `upperdir`.
-`iso/live/init` already lays the overlay down, so this is a matter of mounting
-a disk where the tmpfs goes and telling the wizard to offer it.
+The writable top layer of the overlay is a tmpfs today, so every session is
+throwaway on purpose — and that is the same reason `ingot install firefox`
+died of ENOSPC on a machine with a 10 GB disk attached: the disk was never
+mounted for writing, the upper is pure RAM, and firefox's payload + unpack
+tree need ~570 MB of it. Stopgap (landed with this handoff): cap the upper
+tmpfs at 50% so a firefox-sized install fits in the current ISO. Real fix
+below.
+
+**The plan: same overlay, different `upperdir` — the upper goes on a disk.**
+
+- **The label is the handshake.** We declare a filesystem label, `COPPER`.
+  `iso/live/init` scans the disks that aren't the boot medium at boot, and
+  if one carries a `COPPER`-labeled ext4 partition it mounts that where the
+  tmpfs used to go. No label → tmpfs fallback, ISO still boots anywhere.
+  Label-first is the safety: we never touch a random disk with real data on
+  it, because we only claim what we labeled ourselves.
+- **The wizard picks the disk.** Last page of `copper-firstboot`: list the
+  spare disks, the user picks one, we wipe + format ext4 with the `COPPER`
+  label, and tell them it takes effect on the next boot. Explicit choice,
+  not "grab the first disk we see".
+- **It activates on the next boot, not mid-session.** By the time the wizard
+  runs, the overlay is already up with a tmpfs upper, and hot-swapping the
+  upper under a live overlay (copying everything across a remount) is the
+  kind of fragile shit we don't ship. Turn it on at boot, reboot once, and
+  every boot after is persistent.
+- **Where it goes:** `iso/live/init` does the detect-and-mount; the wizard's
+  last page does the format (`mkfs.ext4 -L COPPER`, so the image needs an
+  ext4 mkfs); the label contract lives in one place so both halves agree.
 
 ## G7 — Land `patch-1`
 
@@ -1283,6 +1307,19 @@ VMware's fault:
     the uid drop itself plus making Xorg work as that user. See **"The
     desktop session runs as root — brief for the implementer"** below for
     the full, code-pointed writeup.
+- **Third real-boot test 2026-10-10 (the owner booting it): downloads work,
+  then the install dies of no space.** `startxfce` runs, the index is
+  fetched, the bar renders, and then `tar` gets `No space left on device`
+  mid-unpack of firefox. The machine has a **10 GB disk attached and nothing
+  ever mounts it.** The whole writable layer is a tmpfs capped at 25% of RAM
+  — 512 MB on the 2 GB VM — and firefox needs ~570 MB in the writable layer
+  at once (the ~120 MB payload plus its ~450 MB unpacked tree coexist while
+  installing; the payload is deleted only after unpacking). The disk was
+  never the problem; the disk is the fix (see G6). Also in that log: four of
+  the offered apps (`mousepad`, `ristretto`, `xfce4-taskmanager`,
+  `xarchiver`) answered `no package named X in the index`, because the live
+  index still had only 5 of the 9 packages — their pages are now published
+  to the live Pages repo (`2c344ab`).
 
 ### The desktop session runs as root — brief for the implementer
 
