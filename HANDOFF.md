@@ -1059,11 +1059,11 @@ Each of these cost a wrong turn once. All were checked against real sources.
   it prints `note: TLS certificate validation not implemented` every time,
   does **not** verify certificates, and on a faithful 1.36.1 build it hangs
   against `release-assets.githubusercontent.com` (the GitHub release
-  redirect) while fetching Pages and github.com itself fine. The ISO ships
-  **no `openssl` binary**, so every https download on the live image falls
-  into path (b) — which is bug "the download doesn't go through". If you
-  ever see that note on the machine, that is the internal-TLS path, and
-  payload downloads from GitHub releases will never complete.
+  redirect) while fetching Pages and github.com itself fine. **The ISO ships
+  `openssl` + `ca-certificates` now** (gui stage, since 2026-10-10 — see its
+  "brief" notes), so a normal image takes path (a). If you ever see that
+  note on the machine, the openssl exec failed or was dropped, i.e. path
+  (b) — and payload downloads from GitHub releases will never complete.
 
 ---
 
@@ -1241,25 +1241,123 @@ VMware's fault:
     release-assets redirect** (rc=124/timeout in the WSL repro; the exact
     payload URL and `tree-2.3.2-1.tar.gz` both hang). With openssl
     available, the same busybox downloads all three URLs fine (rc=0).
-    **Fix candidate (unverified):** ship an `openssl` binary in the image
-    so the openssl helper path works, then boot-verify. Note busybox's
-    internal TLS also *cannot verify certificates* (config help: "it does
-    not check that the peer is who it claims to be"), so even where it
-    works it is MITM-able; a real TLS client for the payload fetch is the
-    honest fix.
-  - **The desktop session runs as root.** By design, but it is wrong for a
-    wizard that just created a user: `copper-init.c` reads
-    `/etc/copper-firstboot.done` (the wizard-created account, e.g.
-    `dragon`), `chdir`s into `/home/<user>` and sets `HOME`/`USER`/
-    `LOGNAME` **but never drops uid** — the console shell (and everything
-    launched from it, including `startxfce` and the whole XFCE session)
-    stays uid 0, which is why Thunar warns "you are logged in as root". The
-    wizard account exists but is never actually logged in. **Fix is a
-    design call:** drop to the wizard-created user for the desktop session
-    (setuid + X authority), keeping a root console for admin, or make the
-    wizard user the full session user with sudo for elevation.
+    **Fix landed in `build_gui` (2026-10-10): the image now ships
+    `openssl` + `ca-certificates`, and the stage writes the CA bundle
+    itself.** The glibc closure already provides libssl/libcrypto, so the
+    gui package list gained `openssl` and `ca-certificates` (`build.sh` gui
+    stage). no maintainer script runs on the image, so
+    `update-ca-certificates` never fires and `/etc/ssl/certs/
+    ca-certificates.crt` — openssl's default CAfile, and the file busybox's
+    helper verifies against — would be missing; the build mirrors the
+    postinst by concatenating the mozilla roots into it. That matters:
+    without the bundle, the helper's `-verify 100 -verify_return_error
+    -verify_hostname` (passed whenever cert checking is on, which is the
+    default) fails every real-site handshake. The busybox build now also
+    *requires* `FEATURE_WGET_OPENSSL` (`require_bb_config`), and the gui
+    presence checks demand both `/usr/bin/openssl` and the bundle.
+    **Mechanism WSL-verified, boot unverified:** the faithful 1.36.1 repro
+    with `openssl` on PATH and the concatenated bundle in `SSL_CERT_FILE`
+    downloads `tree-2.3.2-1.tar.gz` through the release-assets redirect
+    with rc=0 and the manifest sha256 (`913de0a…`). A real boot of a
+    rebuilt ISO running `ingot install firefox` is still pending. Note
+    busybox's *internal* TLS remains and still *cannot verify certificates*
+    (config help: "it does not check that the peer is who it claims to
+    be"), so it stays MITM-able even where it works; with openssl shipped
+    the payload fetch no longer uses it.
+  - **The desktop session runs as root — DESIGN DECIDED, work assigned.**
+    The wizard creates an account (say `12hrformat`, or `dragon` here), but
+    the session never runs as it. `copper-init.c` reads
+    `/etc/copper-firstboot.done` (the wizard-created username), `chdir`s
+    into `/home/<user>` and sets `HOME`/`USER`/`LOGNAME` (`copper-init.c`
+    ~331-356) **but never drops uid** — `spawn_tty` execs `/usr/bin/copper-sh`
+    still as uid 0, and everything launched from that shell (including
+    `startxfce` and the whole XFCE session) stays root, which is why Thunar
+    warns "you are logged in as root". The wizard account exists but is
+    never actually logged in. **Decision (owner, 2026-10-10): the
+    wizard-created user owns the session; PID 1 keeps root; sudo is the
+    elevation path.** The sudo plumbing already ships:
+    `iso/sudo/` builds a setuid-root sudo, `iso/sudo/sudoers` grants
+    `%wheel ALL=(ALL:ALL) ALL`, and the wizard already adds the user to
+    `wheel users audio video dialout cdrom` (`copper-firstboot.c:979`), so
+    the session user can elevate the moment it exists. What is missing is
+    the uid drop itself plus making Xorg work as that user. See **"The
+    desktop session runs as root — brief for the implementer"** below for
+    the full, code-pointed writeup.
 
-## Pacman is GONE — Copper grows its own package manager (ingot) instead
+### The desktop session runs as root — brief for the implementer
+
+Status 2026-10-10. Decision is made (owner): **the wizard-created user
+owns the session; PID 1 keeps root; sudo is the elevator.** This is the
+writeup the fix should be built from. Anything marked *verify* is a
+real-boot fact to establish, not something this document claims.
+
+**Why the session is root today (verified details):** `spawn_tty`
+(`copper-init.c:220-238`) `setsid()`, opens `/dev/tty1`, dup2s it onto
+0/1/2, `TIOCSCTTY`, then `execl`s `/usr/bin/copper-sh` — with no
+`setgid`/`setuid` anywhere, so the child stays uid 0. The
+home-directory block (`copper-init.c:331-356`) only `chdir`s to
+`/home/<user>` and sets `HOME`/`USER`/`LOGNAME` from the marker; identity
+never changes. So the console shell, `startxfce`, and every XFCE process
+run as root, and Thunar warns "you are logged in as root". The wizard
+account (e.g. `12hrformat`) exists, with its password and supplements,
+but is never logged in.
+
+**What must change, in order:**
+
+1. **Drop privileges in the spawned shell child, not in init.** PID 1
+   (copper-init) stays root — it needs root for mounts, network, and the
+   power handling (bug #2). The drop belongs in the `spawn_tty` child
+   between `TIOCSCTTY` and the `execl`. Read the username from
+   `/etc/copper-firstboot.done` (first line), `getpwnam` for uid/gid,
+   `initgroups` (or the same supplement list the wizard uses:
+   `{"wheel","users","audio","video","dialout","cdrom"}` —
+   `copper-firstboot.c:979`), `setgid`, `setuid`, then exec. Fall back to
+   uid 0 only when no marker user exists (first boot before the wizard) —
+   the only case a root console is acceptable.
+
+2. **Xorg as the wizard user is the hard part.** `startxfce.sh` already
+   anticipates a non-root login (config-write comment at ~342-351; the
+   xorg.conf falls back to /tmp), and Xorg is launched plainly as the
+   current user (`startxfce.sh:~410-416`, `"$XORG" ":$DISPLAY_NUM" ... &`)
+   — which is the right call: start X and XFCE as the same uid and there is
+   no Xauthority dance. What actually fights a non-root Xorg on this
+   system:
+   - **Device nodes.** The static xorg.conf pins evdev to
+     `/dev/input/event*`, and modesetting needs `/dev/dri/card*`. Kernel
+     devtmpfs defaults these root-owned (`0660 root:root` typical; *verify
+     exact perms on the booted image*). The baked `/etc/group` overlay has
+     `video` but **no `input` group**, and the wizard supplements list has
+     neither. So a non-root session currently cannot open the evdev nodes
+     → Xorg starts, draws a frozen cursor, no keyboard/mouse. Options: add
+     an `input` group (overlay + wizard supplements), chgrp the nodes at
+     boot, or chmod. This is the first thing to boot-verify.
+   - **The xorg-wrapper console-user gate activates.** `xorg-wrapper.c`
+     gates its console-user check on `getuid() != 0` — as root the check
+     is skipped entirely (see "Root is not a problem for Xorg"). As the
+     wizard user the gate runs, and on a system with no logind it may fail
+     closed. *Verify:* does a non-root `startxfce` reach a live display?
+     Routing options: a setuid Xorg wrapper (X stays root, keeps the
+     console-user skip) with `-auth` + `XAUTHORITY` handed to the session,
+     or handle the gate. Both are legitimate; setuid + cookie keeps X's
+     device access honest.
+   - **X authority.** If X runs as root while XFCE runs as the user
+     (setuid route), clients need `-auth`/`XAUTHORITY` or they cannot open
+     the display. If X and XFCE share the wizard uid, nothing extra is
+     needed. Decide first, then wire.
+
+3. **sudo already ships and should just work.** `iso/sudo/` builds a
+   setuid-root sudo, `sudoers` has `%wheel ALL=(ALL:ALL) ALL`, the wizard
+   puts the user in `wheel`, and the devpts fix (this session) means sudo
+   can actually allocate ptys. `startxfce.sh:60-63` clears `SUDO` when
+   `id -u` = 0. *Verify:* `sudo true` from the dropped shell.
+
+**Success check for the implementer:** fresh image through the wizard;
+console `id` shows the wizard username, not uid 0; `sudo whoami` answers
+`root`; `startxfce` gives a desktop whose pointer and keyboard both work
+(the `/dev/input` test) and whose panel/terminal run as the wizard user,
+not root. **Unverified today:** the uid drop itself, Xorg-as-non-root
+device access, and the xorg-wrapper gate — all three need implement +
+boot.
 
 Pacman was removed on 2026-10-08 (owner's call): no `iso/pacman/`, no
 `build_pacman` stage, no pacman step in the workflow, no Arch stub db. Chasing
@@ -1317,9 +1415,11 @@ Carried over from the pacman work, still true and still needed:
 - The GUI stage's glibc closure gives the rootfs libssl/libcrypto/libz/liblzma/
   libzstd/libbz2 and `/lib64/ld-linux-x86-64.so.2`, so glibc-linked payloads
   run.
-- Runtime network is proven (DHCP + DNS in every serial log); busybox wget's
-  TLS encrypts but does not verify certificates — noted in ingot's docs and in
-  `futureplans.md`.
+- Runtime network is proven (DHCP + DNS in every serial log); busybox wget
+  takes the openssl helper path on a normal image (openssl + ca-certificates
+  ship since 2026-10-10), which verifies certificates. The internal-TLS
+  fallback still exists if the helper's exec fails, and that path does not
+  verify — noted in ingot's docs and in `futureplans.md`.
 - First end-to-end check once the Pages repo exists: boot, `ingot install
   tree`, run `tree`, read it off a screendump.
 

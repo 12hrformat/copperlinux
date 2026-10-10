@@ -40,5 +40,5 @@ url, wherever that points.
 
 Also on the pile (not blockers, noted for later):
 - sudo must actually work on the image first — `ingot install` needs root to write into `/`, and the live user isn't root. sudoers + wheel group are already staged
-- busybox wget's TLS encrypts but doesn't verify certificates; fine for our own Pages repo, write it down before trusting a mirror
+- busybox wget's TLS: the openssl-helper path verifies certs (openssl + ca-certificates now ship in the image); only the internal-TLS fallback skips verification, so don't trust a mirror if that note prints
 - "real url" for our own payloads will likely be GitHub Releases (Pages won't serve 100 MB files forever)

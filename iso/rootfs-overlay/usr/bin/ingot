@@ -86,8 +86,9 @@ require_root() { # require_root <verb>
 # ---- helpers --------------------------------------------------------------
 
 # fetch url -> file. busybox wget and GNU wget both accept -O and -q.
-# busybox wget's TLS encrypts but does not verify certificates: fine for
-# fetching from our own Pages repo, worth knowing before trusting a mirror.
+# busybox wget's openssl helper path verifies certificates (the image ships
+# openssl since 2026-10-10); only the internal-TLS fallback skips that, and
+# the helper is the path a normal image takes.
 dl() { # dl <file> <url>
   wget -q -O "$1" "$2" || { echo "ingot: download failed ($2)" >&2; return 1; }
 }

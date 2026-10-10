@@ -444,7 +444,7 @@ require_bb_config() {
   for sym in \
       STATIC ASH ID \
       UDHCPC FEATURE_UDHCPC_ARPING IP IFCONFIG ROUTE PING \
-      WGET FEATURE_WGET_HTTPS NSLOOKUP \
+      WGET FEATURE_WGET_HTTPS FEATURE_WGET_OPENSSL NSLOOKUP \
       MOUNT SWITCH_ROOT HOSTNAME \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP \
       CHPASSWD FEATURE_SHADOWPASSWDS ; do
@@ -971,9 +971,16 @@ build_gui() {
   for p in libasound2t64 libasound2; do
     if apt-cache show "$p" >/dev/null 2>&1; then alsa=$p; break; fi
   done
+  # openssl and ca-certificates: busybox wget's openssl helper (the path that
+  # verifies certs and works against GitHub release CDNs) forks `openssl
+  # s_client`. Without the binary busybox silently falls back to its internal
+  # TLS, which cannot verify certificates and hangs on
+  # release-assets.githubusercontent.com -- the "downloads don't go through"
+  # bug. libssl/libcrypto already arrive through the glibc closure; this brings
+  # the tool itself. ca-certificates brings the roots to build the bundle from.
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal fonts-dejavu-core hicolor-icon-theme \
-         adwaita-icon-theme librsvg2-common
+         adwaita-icon-theme librsvg2-common openssl ca-certificates
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \
@@ -1017,6 +1024,24 @@ build_gui() {
     rm -f "$TGT/$rel"
   done < "$WORK/gui-empties"
   echo "  $(wc -l < "$WORK/gui-empties") empty package files pruned"
+
+  # The CA bundle, built the way ca-certificates' postinst builds it -- no
+  # maintainer script runs on this image (see the block of mirrors elsewhere
+  # in this stage), so update-ca-certificates never fires and the default
+  # openssl CAfile /etc/ssl/certs/ca-certificates.crt would be missing. That
+  # leaves busybox wget's openssl helper able to connect but unable to verify:
+  # -verify 100 -verify_return_error fail the handshake on every real site.
+  # update-ca-certificates is just "concatenate the mozilla roots", so mirror
+  # that one step directly.
+  mkdir -p "$TGT/etc/ssl/certs"
+  if ls "$STAGE"/usr/share/ca-certificates/mozilla/*.crt >/dev/null 2>&1; then
+    cat "$STAGE"/usr/share/ca-certificates/mozilla/*.crt \
+      > "$TGT/etc/ssl/certs/ca-certificates.crt"
+    echo "  CA bundle written ($(wc -c <"$TGT/etc/ssl/certs/ca-certificates.crt") bytes)"
+  else
+    echo "gui: ca-certificates did not arrive from the packages" >&2
+    exit 1
+  fi
 
   # The session bus wants a machine identity even on a live system, and with
   # no maintainer script running here, nothing else is going to make one.
@@ -1151,7 +1176,8 @@ build_gui() {
   local f
   for f in usr/bin/Xorg usr/bin/startxfce4 usr/bin/xkbcomp \
            usr/bin/dbus-daemon usr/bin/dbus-launch \
-           lib64/ld-linux-x86-64.so.2; do
+           lib64/ld-linux-x86-64.so.2 \
+           usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do
     if [ ! -e "$TGT/$f" ]; then
       echo "gui: $f did not arrive from the packages" >&2
       exit 1
