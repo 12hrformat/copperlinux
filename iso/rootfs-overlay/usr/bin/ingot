@@ -89,8 +89,32 @@ require_root() { # require_root <verb>
 # busybox wget's openssl helper path verifies certificates (the image ships
 # openssl since 2026-10-10); only the internal-TLS fallback skips that, and
 # the helper is the path a normal image takes.
+#
+# Say which URL we're fetching before touching the network -- a multi-tens-of-
+# MB payload from the release CDN looks like a hang when the only output line
+# is the trailing "installed". The note goes to stderr, not stdout: fetch_meta
+# ends with `echo "/tmp/$name"` and cmd_install captures ALL of its stdout via
+# `meta=$(fetch_meta ...)` -- a stdout note would land in the package meta and
+# break jget. stderr is the notification channel here.
+#
+# The release CDN drops long slow transfers ("connection closed prematurely"
+# from busybox, i.e. the server closed the socket before content-length bytes
+# arrived). One wget shot therefore fails most of the time on a 120MB payload;
+# retry a few times with -c so each attempt resumes the bytes already pulled
+# instead of restarting. busybox wget checks that the server honored the Range
+# header and starts over itself when it did not.
 dl() { # dl <file> <url>
-  wget -q -O "$1" "$2" || { echo "ingot: download failed ($2)" >&2; return 1; }
+  echo "ingot: fetching $2" >&2
+  tries=5
+  while [ "$tries" -gt 0 ]; do
+    if wget -q -c -O "$1" "$2"; then
+      [ -s "$1" ] && return 0
+    fi
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] && { echo "ingot: download interrupted; retrying ($tries left)" >&2; sleep 2; }
+  done
+  echo "ingot: download failed ($2)" >&2
+  return 1
 }
 
 # jget <key> <json-file> -> the value of "key": "value" (first match, no \n).
