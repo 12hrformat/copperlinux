@@ -32,16 +32,16 @@ nothing gets stamped as Copper without being checked.
 
 ---
 
-# Read this part: the branch, and why it isn't on upstream
+# Read this part: which branch is real
 
-**Work is on `main` now.** The `gui` branch below was the interim home of the
-display work, and `gui` is pushed — but everything in it landed on `main`
-after the merge. The narrative that follows is history, kept because a re-run
-will trip over it otherwise. Working-in-parallel status (updated 2026-10-08)
-says the same thing from the other end: *"Work is on `main`. The `gui`-branch
-narrative is history — the display commits live on `main` now."*
+**Work is on `main`. That is the whole answer.** The `gui` branch was the
+interim home of the display work; everything on it landed on `main` and then
+the branch was **deleted from the remote** — `git ls-remote origin` answers
+`main` and `untested`, nothing else. Any doc that still talks about `gui` as a
+live branch is stale. The display driver history it carried lives on in the
+"desktop / display drivers" section below.
 
-The old branch state, for the record:
+Remotes:
 
 ```
 origin    https://github.com/12hrformat/copperlinux.git   (push works)
@@ -49,47 +49,9 @@ dragon    https://github.com/12hrformat/copperlinux.git   (same remote, a second
 fork      https://github.com/farcrowx/copper.git          (never pushed to, do not start)
 ```
 
-`git ls-remote origin refs/heads/gui` answered `3d27857`, which was the tip.
-`gui` was 12 commits ahead of the old `origin/main`:
-
-```
-3d27857 remove copper-gui: it drew a picture of a desktop, it was not one
-9fcb04c gui: stop the pointer being dragged back to the centre
-71fbf64 tests: fix the startxfce gate, which was testing the wrong paths
-2c57c83 gui: boot to a shell, and add the startxfce command
-24bf586 iso: define REPO, so the build gates that use it can run at all
-187829b tests: restore the two test files this branch never had, and make them executable
-6939a1e docs: record the display driver matrix, and what it does not prove
-e64ee94 kernel: add the display drivers the desktop actually needs
-98bbc04 tests: make account-gate.sh executable, so CI can run it
-fdeb329 iso: turn the framebuffer on, so the desktop actually boots
-7278290 gui: wire the desktop into the boot, and find out what it costs
-86ec08a gui: a desktop that draws straight into /dev/fb0
-```
-
-The first four were cherry-picks of work from `untested`, onto `main`'s tree —
-which had **diverged** from `untested`, so `iso/build.sh` and
-`iso/src-init/copper-init.c` both needed real merges rather than a clean apply.
-Two things about that cherry-pick, for when a re-run gets confused:
-
-- **`7ff1879` ("firstboot: remove the boot art") was skipped, correctly.**
-  `main` never had the art files — `iso/firstboot/boot-art.h`,
-  `tools/gen-boot-art.py` and `tests/art-gate.sh` were all verified absent on
-  `origin/main` — so the commit had nothing to remove. Not a compromise.
-- **`main`'s firstboot wizard is the old 240-line version**, with no
-  questions table, no terminal sizing and no splash. `untested` has a
-  1033-line one. So `gui` had the simpler wizard, and that was accepted rather
-  than re-landing six commits to get the other one.
-
-The older work is still on `untested` (14 commits ahead of the old `main`), and
-PR #10 (`untested` → `main`) is still open.
-
-If a branch-merge brawl breaks out anyway, expect conflicts in
-`iso/build.sh`, `iso/src-init/copper-init.c`,
-`iso/firstboot/copper-firstboot.c`, `HANDOFF.md`, `README.md` and
-`.github/workflows/build-iso.yml`. Resolve by keeping `main`'s layout
-(`local SRC="$ROOT/../src"`, no `$REPO` variable) and taking the GUI additions
-on top of it.
+`untested` still exists out there. Treat anything on it as work that never
+made it in; the merge conflict notes that used to live here are dead history
+now that the GUI work is on `main`.
 
 ---
 
@@ -122,20 +84,17 @@ from artifacts that were taken apart and read before being trusted.
 
 ## What has never actually run
 
-1. **`copper charge` on a booted system.** The logic is verified end to end
-   off-ISO (see below) but has never run against a live root.
-2. **Real internet traffic.** We have an address, a prefix, a default route
-   and a nameserver. Nothing has yet proved that a name resolves or that a TCP
-   connection completes. `ping 1.1.1.1` and a `wget` are still unrun. (The
-   ingot payload downloads in the 2026-10-10 boot tests came through fine, but
-   the general *"name resolution works, plain HTTP works"* trio is still
-   unpaid.)
-3. **A boot of the real ISO on VMware.** Everything measured for the longest
+1. **Real internet traffic, as the G2 trio defines it.** `ping -c 1 1.1.1.1`,
+   `nslookup example.com` and a plain `wget` haven't all been run. The ingot
+   payload downloads in the 2026-10-10 boot tests went over the real network
+   and came through fine, but that specific three-command checklist is still
+   unpaid.
+2. **A boot of the real ISO on VMware.** Everything measured for the longest
    time was QEMU with a direct `-kernel` boot — GRUB, the VGA BIOS, and real
    hardware all bypassed. That gap has been closing, one owner test at a time:
    the PTY fix and the VMware mouse fix were both confirmed by the owner on a
    real boot, and XFCE now reaches a desktop under QEMU.
-4. **Xorg running as the wizard user.** Xorg boots under QEMU, but the session
+3. **Xorg running as the wizard user.** Xorg boots under QEMU, but the session
    still runs as root — the uid drop is built, assigned, and not yet done. See
    "The desktop session runs as root" brief further down.
 
@@ -766,8 +725,9 @@ copper: charge complete
   -> rollback:  restored etc_copper_demo.txt → .../etc/copper/demo.txt
 ```
 
-Apply, backup, idempotent skip, and restore are all confirmed. What is **not**
-confirmed is the same cycle on a booted system.
+Apply, backup, idempotent skip, and restore are all confirmed — once against
+the fake WSL root, and then again on a booted VM, which is the real machine
+test. `copper charge` and `copper rollback` have both run on a live system.
 
 ## Testing it offline
 
@@ -834,6 +794,9 @@ Being precise here matters, because it is easy to mistake "it compiles" for
   downloaded through the GitHub release redirect with a progress bar, retry
   and resume working. The install itself died of ENOSPC — that is the G6
   disk/persistence work, not the downloader.
+- **`copper charge` and `copper rollback` on a booted VM** — the apply /
+  backup / idempotent-skip / restore cycle ran on the live system, confirming
+  the earlier fake-root WSL run on the real machine.
 - **The whole CI build**, green end to end — kernel, musl, busybox, all eight
   GNU tools, Copper's three binaries, rootfs, initramfs, GRUB ISO.
 - **`sh -n`** on all three shipped shell scripts, plus at build time via
@@ -852,7 +815,6 @@ Being precise here matters, because it is easy to mistake "it compiles" for
   desktop paints, but as root. The uid drop is designed, not built.
 - **Anything on real non-VM hardware.** Every measurement in this document is
   a VM.
-- **`copper charge` against a booted system.** Verified off-ISO only.
 - **Persistence (G6) end to end.** Designed, stopgap landed, disk not yet
   claimed at boot.
 - **Any plain-HTTP/name-resolution trio (`ping`/`nslookup`/`wget`)** as the
@@ -1072,11 +1034,13 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # Working in parallel: GUI and the package paths — read the ownership lines before editing
 
 Status written 2026-10-08, updated through the 2026-10-10 boot tests. Work is
-on **`main`**. pacman is **gone**; the queue is now **GUI polish** (display
-under QEMU, mostly verified) plus **the session user + persistence**. **sudo**
-is built by its own stage and CI-green; **ingot** is shipped, busybox-clean,
-and gated by `tests/ingot-gate.sh` (31 assertions, green in WSL); the release
-step (real Pages repo) is done — the payloads and pages are live.
+on **`main`**. pacman is **gone**; the desktop is **done** (XFCE under QEMU,
+plus ingot as the package manager) and the queue is now **the session user +
+persistence**, with the remaining display-driver verification on real VMware.
+**sudo** is built by its own stage and CI-green; **ingot** is shipped,
+busybox-clean, and gated by `tests/ingot-gate.sh` (31 assertions, green in
+WSL); the release step (real Pages repo) is done — the payloads and pages are
+live.
 
 Verified at this tip:
 

@@ -34,7 +34,7 @@ tools already on it.
 |---|---|
 | `copper-sh` (shell) | Works. Arrow-key line editing, history, pipes, redirects. |
 | Networking | Wired works — DHCP on boot, `ping`/`nslookup`/`wget` present. |
-| `copper charge` / `copper rollback` | Ship in the ISO. Logic tested end to end off-ISO; not yet run on a booted system. |
+| `copper charge` / `copper rollback` | Ship in the ISO and work — run on a booted VM, not just off-ISO. |
 | First-boot wizard | Verified end to end: all six questions answered, nothing refused, no shell prompt after — the desktop came up instead. |
 | Desktop (XFCE) | **Works under QEMU.** Boot → shell → `startxfce` → the screen becomes the session. VMware display is still unproven (see below). |
 | X server (Xorg) | **Builds and boots.** 1.21.1.9 with `modesetting_drv.so` and `libfbdevhw.so`, starts under QEMU. |
