@@ -13,7 +13,8 @@
 [] make some custom tools for deadlight linux
 [x] make a plymouth boot splash for copper (frames are in `iso/plymouth/plymouth-frames.zip`)
 [] update: Now that the gui is working make it so gui automatically starts as soon as user enters
-[] add persistence
+[] add persistence (see BUGS.md)
+[] add a way to install copper and deadlight linux to a hard drive (like archinstall or debian installer)
 [] add more packages in ingot repo
 [] add a 'archinstall' type installation / debians installer / custom made (<-- preffered)
 

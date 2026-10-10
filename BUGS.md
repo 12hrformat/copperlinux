@@ -1,6 +1,6 @@
 # BUGS.md
 
-> please note down all the bugs you come across in h1 heading (#) thier name and how they affect things on a scale of 1-10 please remove any bugs if fixed and please write [bug number [] fixed by [] ] at the bottom of the file so we can track how many bugs were there and who fixed them
+> please note down all the bugs you come across in h1 heading (#) thier name and how they affect things on a scale of 1-10 remove any bugs if fixed and please write in this format [bug number [] fixed by [] ] at the bottom of the file so we can track how many bugs were there and who fixed them
 
 Only bugs that are not fixed live here. Fixed ones are removed from the list —
 their graves are in the tracker at the bottom of the file.
@@ -12,9 +12,9 @@ their graves are in the tracker at the bottom of the file.
 **How it affects things:** you can't install bigger apps, and the disk you
 gave the VM does literally nothing while you watch it happen.
 
-**What happens:** a real boot `ingot install firefox` (2026-10-10) got the
-index, fetched the ~120 MB payload, drew the progress bar — then `tar` died
-mid-unpack with `No space left on device` on a 2 GB VM that had a **10 GB disk
+**What happens:** a real boot `ingot install firefox` (2026-10-10) ingot fetched the index file
+donwlaoded firefox.tar, but then on the unpacking stage ingot died, saying
+'no space left on device' on a 2 GB VM that had a **10 GB disk
 attached the whole time**. The disk is never mounted; the read-only ISO and a
 RAM tmpfs upper are all there is.
 
@@ -22,7 +22,7 @@ RAM tmpfs upper are all there is.
 firefox needs ~570 MB in the writable layer at once — the ~120 MB payload and
 its ~450 MB unpacked tree coexist until unpack finishes.
 
-**Status:** stopgapped, not fixed. Cap on the upper tmpfs is 50% now
+**Status:** not fixed. Cap on the upper tmpfs is 50% now
 (`iso/live/init`, with the `/tmp` entry in `etc/fstab` kept in step), so it
 fits on a 2 GB box. Still RAM, still throwaway.
 
@@ -34,7 +34,7 @@ only 5 of the 9 packages. Their pages are published now; gone.
 
 ---
 
-# 18. `sudo shutdown now` / `sudo reboot` do nothing — impact 8/10
+# 18. `sudo shutdown now` / `sudo reboot` do nothing — impact 4/10
 
 **How it affects things:** there is no clean reboot or shutdown from the
 desktop or a shell. The only way off is a forced power-off, which scribbles
@@ -85,7 +85,7 @@ desktop session runs as root — brief for the implementer".
 
 ---
 
-# 20. persistence isn't built — the writable layer is RAM — impact 9/10
+# 20. persistence isn't built — the writable layer is RAM — impact 10/10
 
 **How it affects things:** every reboot throws your files away, and the disk
 you attach to the VM is never written to. This is the root cause behind bug
@@ -375,15 +375,11 @@ bug 6 fixed by farcrowx   stale files survived in the cached staging trees (0cf3
 bug 7 fixed by farcrowx   last console= is /dev/console — serial stole the screen (971b6e5)
 bug 8 fixed by farcrowx   serial log got 0 bytes under quiet (9750dac)
 bug 9 fixed by farcrowx   DHCP discovered into sit0, eth0 never came up (2601222)
-bug 10 fixed by me        copper charge/rollback — four defects, each making it dead (ab6c17f, b811a15)
-bug 11 fixed by me        GdkPixbuf loaders absent → XFCE crash loop (6ebc11a)
-bug 12 fixed by me        icons still failed: mime database + SVG loaders (12e7c86, 0770d98)
-bug 13 fixed by me        VMware mouse dead — launcher picked the wrong device (7df142c, cc1ad9b)
-bug 14 fixed by me        no /dev/pts — sudo and the terminal died (9d2705c)
-bug 15 fixed by nobody    firefox ENOSPC — 50% stopgap landed, real fix is bug 20
-bug 16 fixed by me        payload downloads hung — busybox internal TLS (99515d1)
-bug 17 fixed by me        startxfce false-started on a dead server / missing XFCE (1bf9a4f)
-bug 18 fixed by nobody    sudo shutdown / reboot do nothing
-bug 19 fixed by nobody    desktop session runs as root
-bug 20 fixed by nobody    persistence not built — the writable layer is RAM
-bug 21 fixed by nobody    VMware framebuffer unproven
+bug 10 fixed by 12hrformat        copper charge/rollback — four defects, each making it dead (ab6c17f, b811a15)
+bug 11 fixed by 12hrformat        GdkPixbuf loaders absent → XFCE crash loop (6ebc11a)
+bug 12 fixed by 12hrformat        icons still failed: mime database + SVG loaders (12e7c86, 0770d98)
+bug 13 fixed by 12hrformat        VMware mouse dead — launcher picked the wrong device (7df142c, cc1ad9b)
+bug 14 fixed by 12hrformat        no /dev/pts — sudo and the terminal died (9d2705c)
+bug 15 still                      firefox install dies of ENOSPC (2026-10-10)
+bug 16 fixed by 12hrformat        payload downloads hung — busybox internal TLS (99515d1)
+bug 17 fixed by 12hrformat        startxfce false-started on a dead server / missing XFCE (1bf9a4f)

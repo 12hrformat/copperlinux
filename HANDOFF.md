@@ -1,10 +1,13 @@
 # Copper Linux — Handoff
 
+> please note that SOME things in here are outdated and because this is a thousand lines of text, I cannot keep it all up to date. The most recent and accurate information is in the `BUGS.md` file, which is the source of truth for what is verified and what is not. If you are reading this file, please also read `BUGS.md` to see what is still unverified or broken. thank you
+
 > Read this first, then `iso/README.md` for the build internals.
 > Written by whoever had the machine last. Everything in it is either verified
 > or explicitly marked as unverified — there is no third category.
 > **All bug history, traps, and config gotchas live in `BUGS.md` now.**
 > This file is only live status and current work.
+> if youre contributing or changing anything, im not against the use of ai tools or anything but please make sure you read the code and understand it before you commit it. if you dont understand it, ask someone who does. if you dont know who to ask, ask me. if you dont know who i am, ask the team. if you dont know the who the team is ask yourself why youre here.
 
 ## What Copper actually is
 
