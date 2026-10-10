@@ -59,7 +59,14 @@ say "initramfs up, medium is $MEDIA"
 # overlay then fails with ENOENT on upperdir while the tmpfs sitting right
 # there looks perfectly healthy. build.sh pre-creates these same two
 # directories in the cpio, and the tmpfs hides those just as thoroughly.
-if ! /bin/busybox mount -t tmpfs -o size=25% tmpfs /mnt/upper; then
+#
+# Size: this layer must hold every ingot install a session can ask for, and
+# packages are big -- firefox's 120M payload plus its ~450M unpacked tree
+# coexist in here (the payload is removed only after unpacking), which is
+# already 570M. A 25% cap is 512M on a 2G VM and dies mid-unpack. 50% is the
+# live-session balance: enough headroom for firefox-class installs while
+# leaving the other half of RAM to the running system.
+if ! /bin/busybox mount -t tmpfs -o size=50% tmpfs /mnt/upper; then
     rescue "cannot mount tmpfs on /mnt/upper (no writable layer for the session)"
 fi
 if ! /bin/busybox mkdir -p /mnt/upper/upper /mnt/upper/work; then
