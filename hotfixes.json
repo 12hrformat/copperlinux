@@ -4,7 +4,7 @@
       "id": "demo-banner",
       "file": "etc/copper/demo.txt",
       "fail_code": "THIS LINE IS BROKEN",
-      "new_code": "THIS LINE HAS BEEN FIXED BY COPPER CHARGE",
+      "new_code": "i love you",
       "description": "Demo: proves charge can find, back up and patch a file"
     }
   ]
