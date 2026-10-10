@@ -1,4 +1,4 @@
-<img width="1242" height="788" alt="IMG_20260926_213859" src="https://github.com/user-attachments/assets/ba0b244f-ec8e-403d-b595-1a68c8b81463" />
+<img width="1920" height="1080" alt="72" src="https://github.com/user-attachments/assets/b8ca3396-545f-4a15-ad9e-962ab4968866" />
 
 
 <h1 align="center">Copper Linux</h1>
