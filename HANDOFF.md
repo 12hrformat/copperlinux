@@ -36,8 +36,8 @@ Upstream projects are reference material. Nothing gets packaged as-is.
 **Current work is on `gui`, and `gui` is pushed.**
 
 ```
-origin    https://github.com/12hrformat/copper.git     (push works - this is where gui lives)
-dragon    https://github.com/12hrformat/copper.git      (no gui branch)
+origin    https://github.com/12hrformat/copperlinux.git     (push works - this is where gui lives)
+dragon    https://github.com/12hrformat/copperlinux.git      (no gui branch)
 fork      https://github.com/farcrowx/copper.git        (never pushed to, do not start)
 ```
 

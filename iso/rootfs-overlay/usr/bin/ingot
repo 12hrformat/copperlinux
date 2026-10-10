@@ -57,7 +57,7 @@ set -u
 # /etc/ingot.conf may override the repo url; INGOT_REPO beats both. This is
 # how the gate test points ingot at a scratch server, and how a live user
 # points it at an unofficial mirror.
-DEFAULT_REPO='https://12hrformat.github.io/copper-pages'
+DEFAULT_REPO='https://12hrformat.github.io/copper-ingot-repo'
 repo_url=$DEFAULT_REPO
 [ -r /etc/ingot.conf ] && . /etc/ingot.conf
 [ -n "${INGOT_REPO:-}" ] && repo_url=$INGOT_REPO
