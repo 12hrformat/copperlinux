@@ -927,7 +927,8 @@ cached toolchain and rebuilds it when that fails, instead of trusting that the
 file exists. This was a real red build.
 
 **`xfce4` does not depend on a terminal emulator, and `--no-install-recommends`
-does not pull one.** The gui stage names `xfce4-terminal` explicitly. Without it
+does not pull one.**
+The gui stage names `xfce4-terminal` explicitly. Without it
 the image has no `*.desktop` carrying `Categories=…;TerminalEmulator;`, so
 clicking "Terminal" runs `exo-open --launch TerminalEmulator`, finds no helper,
 and pops the "choose an application" dialog — "nothing is chosen for terminal".
@@ -967,6 +968,21 @@ leaks `update-index --chmod=+x` changes into a later commit. Use index-only:
 **`core.fileMode` is off on Windows**, so exec bits need
 `git update-index --chmod=+x`. `iso/live/init` and the lease script are mode
 100755 and must stay that way.
+
+**Noble renamed `libasound2` and kept the old name as a virtual package.**
+Ubuntu 24.04's 64-bit time_t transition moved the real package to
+`libasound2t64`; `apt-get install libasound2` now fails with "has no
+installation candidate" on a noble host (the jammy runners were the only
+reason it ever worked). The gui stage probes `libasound2t64` first exactly
+like it probes the pixbuf loader bin. If you name a package in this list,
+assume its noble name is wrong and check. This was a real red build.
+
+**Pages does not follow the rename into the README.** The ingot repo moved
+`copper-pages` → `copper-ingot-repo`, and GitHub renamed the Pages site with
+it. The image's default and `/etc/ingot.conf` already say
+`https://12hrformat.github.io/copper-ingot-repo`; the README inside the ingot
+repo silently keeps the old name until someone replaces it. When the name is
+wrong, ingot fetches a 404 and blames the machine it runs on.
 
 ---
 
