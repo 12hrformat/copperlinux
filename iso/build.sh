@@ -961,9 +961,20 @@ build_gui() {
   # TerminalEmulator, which found no helper and popped the "choose an
   # application" dialog. It brings exo-utils (exo-open) along as a
   # dependency, which is what actually performs the launch.
+  #
+  # alsa: firefox dlopens libasound for audio, so it has to be in the image
+  # for the browser to be able to make sound. noble renamed the package for
+  # the 64-bit time_t transition -- libasound2 became a virtual name over
+  # libasound2t64 -- and an apt install of a virtual package fails. Ask the
+  # host which name it carries, like the pixbuf bin above.
+  local alsa="" p
+  for p in libasound2t64 libasound2; do
+    if apt-cache show "$p" >/dev/null 2>&1; then alsa=$p; break; fi
+  done
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal fonts-dejavu-core hicolor-icon-theme \
-         adwaita-icon-theme librsvg2-common libasound2
+         adwaita-icon-theme librsvg2-common
+  [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \
     -o Dir::State::status="$status" \
