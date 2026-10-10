@@ -3,6 +3,8 @@
 > Read this first, then `iso/README.md` for the build internals.
 > Written by whoever had the machine last. Everything in it is either verified
 > or explicitly marked as unverified — there is no third category.
+> **All bug history, traps, and config gotchas live in `BUGS.md` now.**
+> This file is only live status and current work.
 
 ## What Copper actually is
 
@@ -23,23 +25,22 @@ that make it *Copper* are written by hand.
 - first boot personalizes like a real distro OOBE
 - speaks to **drivers** (wifi, bluetooth, firmware) and reaches the **internet**
 
-XFCE is packaged into the ISO and paints a desktop under QEMU; the VMware case
-has one open bug. Check "Working in parallel" below for where it actually
-stands; "XFCE" is the history of how it got here.
+The desktop is done: XFCE is packaged into the ISO and paints a desktop under
+QEMU, with ingot as the package manager. Remaining work is the session user +
+persistence, plus confirming the VMware framebuffer on real hardware.
 
 Upstream projects are reference material. Nothing gets packaged as-is, and
 nothing gets stamped as Copper without being checked.
 
 ---
 
-# Read this part: which branch is real
+# Which branch is real
 
 **Work is on `main`. That is the whole answer.** The `gui` branch was the
 interim home of the display work; everything on it landed on `main` and then
 the branch was **deleted from the remote** — `git ls-remote origin` answers
 `main` and `untested`, nothing else. Any doc that still talks about `gui` as a
-live branch is stale. The display driver history it carried lives on in the
-"desktop / display drivers" section below.
+live branch is stale.
 
 Remotes:
 
@@ -50,8 +51,7 @@ fork      https://github.com/farcrowx/copper.git          (never pushed to, do n
 ```
 
 `untested` still exists out there. Treat anything on it as work that never
-made it in; the merge conflict notes that used to live here are dead history
-now that the GUI work is on `main`.
+made it in.
 
 ---
 
@@ -82,77 +82,68 @@ That whole line — kernel, initramfs, overlay, `switch_root`, our PID 1, DHCP,
 netmask conversion, default route, resolver, the wizard — verified on hardware,
 from artifacts that were taken apart and read before being trusted.
 
-## What has never actually run
+**What has actually been executed:**
 
-1. **Real internet traffic, as the G2 trio defines it.** `ping -c 1 1.1.1.1`,
-   `nslookup example.com` and a plain `wget` haven't all been run. The ingot
-   payload downloads in the 2026-10-10 boot tests went over the real network
-   and came through fine, but that specific three-command checklist is still
-   unpaid.
-2. **A boot of the real ISO on VMware.** Everything measured for the longest
-   time was QEMU with a direct `-kernel` boot — GRUB, the VGA BIOS, and real
-   hardware all bypassed. That gap has been closing, one owner test at a time:
-   the PTY fix and the VMware mouse fix were both confirmed by the owner on a
-   real boot, and XFCE now reaches a desktop under QEMU.
-3. **Xorg running as the wizard user.** Xorg boots under QEMU, but the session
-   still runs as root — the uid drop is built, assigned, and not yet done. See
-   "The desktop session runs as root" brief further down.
+- **The boot path, end to end, on a real machine.** Kernel → initramfs →
+  overlay → `switch_root` → `copper-init`. The log above is the evidence.
+- **DHCP against a real server.** A lease, `/24` derived from a
+  `255.255.255.0` netmask, a default route, a resolver.
+- **The full first-boot wizard.** All six questions answered, nothing refused,
+  `Done — welcome`, no shell prompt afterwards. G1 is closed.
+- **XFCE reaching a desktop under QEMU** (`-vga std`): boot → shell →
+  `startxfce --check` reports `found the X server: /usr/bin/Xorg` and
+  `found XFCE` → `startxfce` → the screen becomes the session, and OCR of the
+  screendump read the xfdesktop icons ("Home", "File System"). Input devices
+  are seen in `/proc/bus/input/devices`.
+- **The VMware mouse fix** — owner-confirmed 2026-10-09, cursor follows the
+  pointer on a real boot.
+- **The devpts / PTY fix** — owner-confirmed: the XFCE terminal opens a real
+  pty and `sudo` allocates ptys without error.
+- **`copper charge` and `copper rollback` on a booted VM** — apply / backup /
+  idempotent-skip / restore all confirmed on the live system (the four
+  defects that made it non-functional in the first place are bug 10 in
+  BUGS.md's tracker).
+- **Ingot downloads on a live boot** (2026-10-10): index fetched, payload
+  downloaded through the GitHub release redirect with a progress bar, retry
+  and resume working. The install itself died of ENOSPC — that is G6 (below),
+  not the downloader.
+- **The framebuffer kernel** on the emulated adapters — `bochs-drm` on
+  `-vga std`, `virtio-gpu` on `-vga virtio`, `qxl` on `-device qxl-vga` — each
+  confirmed from the guest's own dmesg.
+- **`copper-sh`** — compiled clean under GCC, run through a 44-command battery
+  under AddressSanitizer (exit 0, no leaks). `tests/smoke.sh` (19 assertions)
+  is the gate.
+- **The whole CI build**, green end to end — kernel, musl, busybox, the GNU
+  tools, the Copper binaries, rootfs, initramfs, GRUB ISO.
 
-The first-boot wizard is no longer on this list. A full run was verified on the
-framebuffer kernel: all six questions answered, nothing refused, no shell
-prompt afterwards, and 17 of 17 exact pixel assertions on the desktop that
-followed.
+**What has never actually run:**
+
+- **Real internet traffic, as the G2 trio defines it** — `ping -c 1 1.1.1.1`,
+  `nslookup example.com` and a plain `wget` haven't all been run. The ingot
+  payload downloads went over the real network and came through fine, but that
+  specific three-command checklist is still unpaid.
+- **The shipped ISO on VMware, to the framebuffer.** `vmwgfx` probes correctly
+  and refuses on QEMU because QEMU is not VMware. The mouse is confirmed on
+  real VMware; the *display* is the open half. See BUGS.md #21.
+- **Xorg running as the wizard user.** The session still runs as root; the uid
+  drop is designed and not built.
+- **Anything on real non-VM hardware.** Every measurement in this document is
+  a VM.
+- **Persistence (G6) end to end.** Designed; disk not yet claimed at boot.
+
+**A note on green CI runs:** a green run does not mean the artifact is
+correct. Run `36220249701` was fully green and shipped an ISO built from the
+previous commit's `init`. Always take the artifact apart before trusting it.
 
 ---
 
-# The desktop, and the bug that hid in it
+# The desktop
 
-## What happened
+## The display matrix, and what is proven
 
-`iso/gui/copper-gui.c` was written, wired into the boot, and verified — 17 of
-17 exact colour assertions at fixed coordinates, including four corner markers,
-plus a text console that renders and accepts keystrokes with every glyph
-matched against the kernel's own `font_8x16`.
-
-It has since been **deleted**, and the deletion is deliberate. Every string it
-drew was a constant — eight rows of `readme.txt`, a taskbar wired to nothing —
-and `compute_layout()` ran once, with no window manager behind it. It rendered
-pixels of a desktop rather than being one. `iso/gui/` is gone, along with the
-build stage that compiled it and the `gui=1` boot path. XFCE is the desktop.
-
-What remains worth keeping from that work is the kernel half. Then, it booted
-to a shell:
-
-```
-copper: no /dev/fb0, starting the shell
-```
-
-## Why, which is the part worth keeping
-
-`copper-init` was correct. It looked for `/dev/fb0`, found none, and started a
-shell, which is the right thing to hand a machine with no framebuffer.
-
-The kernel had exactly **one** display driver: `DRM_BOCHS`. It binds to exactly
-one PCI device, `1234:1111` — QEMU's Bochs VGA. It is not "the QEMU display
-driver" and it is not a generic framebuffer.
-
-Every measurement behind that change was taken under QEMU `-vga std`, which *is*
-that one adapter. So the work looked finished, and was, for the one machine it
-had been tested on.
-
-Under VMware the guest gets a different display device, nothing binds,
-`/dev/fb0` never appears, and the fallback runs. **The failure was
-indistinguishable from a machine with no graphics at all**, and nothing in the
-log said "no driver for your display". That is what made it easy to miss, and
-it is the general lesson: a correct fallback can hide a missing capability
-perfectly, because a correct fallback is indistinguishable from a machine that
-does not have the thing.
-
-## What was changed
-
-Nine display options are now requested **and asserted** in
-`require_kernel_config`, and the kernel was built and booted once per emulated
-device to see which drivers actually claim hardware:
+Nine display options are requested **and asserted** in `require_kernel_config`.
+The kernel was built and booted once per emulated device to see which drivers
+actually claim hardware:
 
 | Emulated device | Driver that bound | `/dev/fb0` |
 |---|---|---|
@@ -166,383 +157,47 @@ device to see which drivers actually claim hardware:
 `DRM_BOCHS`, `DRM_SIMPLEDRM`, `DRM_VMWGFX`, `DRM_VIRTIO_GPU`, `DRM_QXL`,
 `DRM_VBOXVIDEO`, `DRM_I915`, `FB_VESA`, `FB_EFI`.
 
-### Three limits on that table, none of them hidden
+The three honest limits: VMware is unproven until booted on real VMware;
+VirtualBox cannot be tested at all (QEMU has no such display device); and
+`FB_VESA`/`FB_EFI` were never exercised because the probe skips the BIOS. The
+`DRM_VMWARE`→`DRM_VMWGFX` kconfig typo the assertion caught is the reason the
+assertions exist — see BUGS.md.
 
-- **VMware is unproven and cannot be proven here.** `vmwgfx` probes the adapter
-  correctly — it reads the FIFO, the VRAM and the SVGA version — and then
-  prints:
-
-  ```
-  vmwgfx 0000:00:03.0: [drm] *ERROR* vmwgfx seems to be running on an unsupported hypervisor.
-  ```
-
-  It checks the hypervisor vendor and QEMU is not VMware. So the driver is the
-  right one and it works right up to the check that requires real VMware
-  hardware. Only booting the ISO on the user's machine settles it. (The mouse —
-  a different device — *is* confirmed on real VMware; see Working in parallel.)
-- **VirtualBox cannot be tested at all.** This QEMU has no VirtualBox display
-  device: `-device vboxvga` is rejected as an invalid model name. There is
-  nothing to run it against.
-- **`FB_VESA` and `FB_EFI` were never exercised.** The probe boots with
-  `-kernel`, so no BIOS runs and there is no VGA BIOS to take a mode from. Only
-  a real boot through GRUB reaches those two.
-
-`cirrus-vga` genuinely has no driver. It is QEMU's legacy default rather than
-anything a current VM hands out, so it is recorded as a gap rather than fixed
-with a 15-minute rebuild for a device nobody will boot.
-
-### The assertion earned its place immediately
-
-`require_kernel_config` was inverted to *demand* every driver rather than
-request it. On the first run of the new kernel it stopped the build:
-
-```
-FAIL: kconfig dropped: DRM_VMWARE
-```
-
-**`DRM_VMWARE` is not a symbol.** The real one is `DRM_VMWGFX`. `scripts/config`
-accepted the wrong name without complaint, `olddefconfig` dropped it without a
-word, and the build would have gone green with no VMware driver in the image —
-which is the exact shell this work exists to stop, on the exact machine that
-reported it. The check caught it in one minute; nobody would have caught it
-otherwise.
-
-## The other half: whatever draws must not log to the screen
-
-fbcon keeps painting `tty0`. If a program's stdout is the framebuffer console,
-every line it prints lands on top of whatever was just drawn. That was a real
-black band across the title bar, and the rule it established still holds for
-the XFCE side: a graphical process routes stdout to `/dev/ttyS0`..`ttyS3` and
-failing that to `/dev/null`, never to `/dev/console`. The path that did this
-for the old desktop was `start_gui()`, which went with the deletion;
-`startxfce` follows the same rule.
-
----
-
-# XFCE — the requested end state, and what it actually costs
-
-The ask is a real desktop with a start command, `startxfce4`. XFCE is an X
-client, so it needs an X server, and that is where the cost is.
-
-## In progress: the apps, delivered by ingot
-
-The desktop is in the image; the *apps* on top of it are not. The optional ones
-live in `copper-ingot-repo` as ordinary ingot packages, and `startxfce` offers
-them before it starts the session:
-
-- **Packaged** (payload = the app plus its whole Ubuntu-noble dependency
-  closure, uploaded to the `payloads-v1` release): **firefox**, **mousepad**,
-  **ristretto**, **xfce4-taskmanager**, **xarchiver**. All five exist now.
-- **Baked** (the gui stage ships them; not ingot packages): XFCE itself,
-  **thunar** (a dependency of the `xfce4` metapackage) and **xfce4-terminal**
-  (named explicitly in `build.sh`).
-- The offered list lives in `iso/rootfs-overlay/etc/copper/xfce-apps`.
-  `startxfce` reads it, installs only what is missing, and asks first:
-
-      before running xfce do you want to install its main components? (ex- firefox and thunar) (Y/n)
-
-  Default is yes. On no, or if an install fails, the desktop starts anyway — a
-  component that would not install is a warning, not a failure to launch. With
-  no terminal to ask on it stops with a clear message unless `--yes` or `--no`
-  is passed (**exit 25**).
-
-## What has been established
-
-- **Xorg 1.21.1.9 builds** against this toolchain, with **both** driver paths
-  present in the output: `modesetting_drv.so` and `libfbdevhw.so`. Read back
-  from the build tree, not assumed from the switches.
-- It links **dynamically against glibc** and needs 21 shared libraries,
-  including `libsystemd.so.0` and the loader. That list is the shopping list
-  for the rootfs.
-- The full X/GTK build dependency chain is installable and verified by
-  `pkg-config`: `glib 2.88.3`, `gtk+ 3.24.52`, `cairo 1.18.4`, `pango 1.58.0`,
-  `pixman 0.46.4`, `xcb 1.17.0`, `libdrm 2.4.134`, `xfont2`, `epoxy`, `gbm`.
-- **It boots and paints under QEMU** (`-vga std`): boot → shell →
-  `startxfce --check` reports `found the X server: /usr/bin/Xorg` and
-  `found XFCE`, then `startxfce` makes the screen the session, and OCR of the
-  screendump reads the xfdesktop icons ("Home", "File System").
-
-## The architectural decision, and why it is lower-risk than "switch to glibc"
+## The architecture: musl-static base, glibc guest for X
 
 Copper's userland is **musl-static**. Xorg, glib and GTK3 are not built for
-musl-static, so *something* has to give. The chosen approach is **additive,
-not replacing**: keep busybox, coreutils and the Copper binaries static-musl,
-and add a **dynamic glibc** userspace beside them for Xorg and XFCE, with
-`ld-linux-x86-64.so.2` and the needed `.so` files staged into the rootfs.
-
-The reasoning is that the static-musl boot path is the one thing in this
-project that is known to work end to end. Replacing it wholesale puts the
-working shell, the working init and the working wizard at risk to make room
-for a guest. Adding beside them means a failure in the X stack costs a shell,
-not the machine.
+musl-static, so the approach is **additive, not replacing**: keep busybox,
+coreutils and the Copper binaries static-musl, and add a **dynamic glibc**
+userspace beside them for Xorg and XFCE, with `ld-linux-x86-64.so.2` and the
+needed `.so` files staged into the rootfs. A failure in the X stack costs a
+shell, not the machine.
 
 **Nothing physical blocks the size.** The live root is an **overlay on the
 read-only ISO** (`lowerdir=/mnt/root`), not the initramfs, and `build_iso` runs
 `grub-mkrescue` over the whole staged tree. A few hundred megabytes of
-userspace costs ISO size and nothing else. The initramfs stays small.
+userspace costs ISO size and nothing else.
 
-## `startxfce` — the command, and what it does today
+## `startxfce` — the command
 
 `iso/startxfce.sh` installs as `/usr/bin/startxfce`. It starts the X server if
-one is not already listening, then hands `DISPLAY` to `startxfce4` with `exec`,
-so when XFCE exits the command exits with the same status.
+one is not already listening, then hands `DISPLAY` to `startxfce4` with `exec`.
 
-It exits **20** for no X server in the image, **21** for no XFCE, **22** for a
-server that never opened a display, **23** for a server that exited while
-starting, **24** for a usage error. `startxfce --check` reports what is present
-and starts nothing.
+Exit codes are a contract: **20** no X server in the image, **21** no XFCE,
+**22** server never opened a display, **23** server exited while starting,
+**24** usage error, **25** the app-install prompt had no terminal to ask on
+without `--yes`/`--no`. `startxfce --check` reports what is present and starts
+nothing. Verified: exit 20 path measured (12 ms); happy path measured under
+QEMU; gate kept green by CI.
 
-Without that, the honest failure was `sh: /usr/bin/startxfce4: not found` and
-exit 127 — indistinguishable from a broken PATH, a missing library, or a server
-that would not start. Each missing piece now names itself.
+## App install offers (ingot)
 
-### What the launcher got wrong, and where the tests were no help
-
-- **A running X server hid the missing XFCE.** The installation checks were
-  inside the branch that starts a server, so the "a server is already running"
-  path skipped them and went straight to `exec`. Xorg up and XFCE absent — the
-  state of the image the moment anyone starts a server by hand — produced the
-  raw `not found` and exit 127. A running server is not a desktop. The checks
-  now run first and unconditionally.
-- **A stale socket was trusted.** `/tmp/.X11-unix/X0` survives any session that
-  did not exit cleanly, and X does not remove it. Checking that the file exists
-  means reusing a dead display: XFCE starts, connects to nothing, and hangs
-  with nothing to report. It now asks the display with `xdpyinfo` when that
-  exists, and falls back to the socket test when it does not.
-- **Both of those were found by reading, not by running.** The test suite had
-  nothing for them: case 6 reused a live server but also had a session present,
-  and no case had a live server with XFCE absent.
-
-### What is verified, precisely
-
-- **`startxfce` with nothing installed: measured.** Exit 20, correct message,
-  12 ms.
-- **The happy path: measured under QEMU.** Xorg opens, XFCE arrives, and the
-  desktop paints — see "Working in parallel" for the owner-confirmed
-  particulars (mouse, PTY, icons).
-- **`gui=1` parsing: measured.** Nine command lines through the real parser —
-  the default gives a shell, `gui=1` and bare `gui` give the desktop, `nogui`
-  and `gui=0` give a shell, and `fpgui=1`, `rogui=1`, `xn--gui=1`, `foo=gui=1bar`
-  all give a shell. (The `gui=1` path itself is gone — copper-gui was deleted —
-  but the parser contract is still real: `copper-init.c` compiles clean under
-  `gcc -std=c11 -Wall -Wextra`.)
-- **The rest of `startxfce-gate.sh`: kept green by CI** on every push.
-
----
-
-# Four checks I wrote that reported a cause they had not established
-
-All four were in checks written specifically to avoid inventing causes. They
-are recorded because the failure mode repeats, and the pattern is the thing to
-avoid.
-
-**1. A driver probe that read a stub config.** `make O= defconfig` had failed
-with *"The source tree is not clean, please run 'make mrproper'"* and left a
-746-byte `.config` behind. The symbol check read that stub and concluded
-kconfig had dropped `FONT_8x16`. It had dropped nothing. The symptom was real
-— a font symbol genuinely absent from a real config would be worth stopping
-for — and the cause was invented. Both `defconfig` and `olddefconfig` now check
-exit status *and* that they produced a config over 1000 lines before any symbol
-is read.
-
-**2. A framebuffer check that grepped for a path the kernel never prints.**
-The detector looked for the literal string `/dev/fb0`. The kernel prints `fb0`:
-
-```
-fbcon: bochs-drmdrmfb (fb0) is primary device
-```
-
-So it reported **"fb0: no" for the device whose own log says fb0 is the
-primary device**. It was measuring the wording of a log line rather than the
-existence of a device, and would have reported a working framebuffer as
-missing.
-
-**3. Three dependency checks that asked for pkg-config modules that have never
-existed.** `libX11`, `libXext`, `libxcb`, `libxau`, `libxdmcp`, `libepoxy`,
-`libgbm`, `libXfont2`, `libpciaccess` — the real module names are `x11`, `xext`,
-`xcb`, `xau`, `xdmcp`, `epoxy`, `gbm`, `xfont2`, `pciaccess`. Every one of
-those libraries was installed the whole time. The check stopped the build
-three times on dependencies that were already present. The names were then
-looked up from `pkg-config --list-all` instead of assumed.
-
-**4. A meson configure that stopped on options which do not exist.** `-Dfbdev`
-and `-Dllvm` are not options in xorg-server 21.1.9. `fbdev` support is not a
-switch at all — it is part of the Xorg DDX and comes with `-Dxorg=true` — and
-the `llvm` option existed in the autotools build, not the meson one. Guessing
-names from the old build system is what produced it. Every option is now
-checked against the project's own `meson_options.txt` before meson runs.
-
-The pattern in all four: **grepping for a string I imagine a tool prints,
-rather than reading what it printed.** The fix each time was to dump the raw
-evidence and look at it.
-
----
-
-# What was messed up, and what fixed it
-
-Nine commits, and most of them exist because something was quietly wrong in a
-way that looked like something else. Worth reading in order — several of these
-cost a boot cycle each, and the reasons generalise.
-
-## 1. The overlay directories were created before the tmpfs went over them
-
-`iso/live/init` did `mkdir -p /mnt/upper/upper` and then
-`mount -t tmpfs … /mnt/upper`. Mounting hides what was underneath, so the
-overlay came up with no `upperdir` and died:
-
-```
-overlays: failed to resolve '/mnt/upper/upper': -2
-```
-
-Fix: mount the tmpfs **first**, then `mkdir` inside it. The whole staging
-order is that one trick. `3ae61c1`.
-
-## 2. CI shipped an ISO built from the *previous* commit
-
-The nastiest one, because **the run was fully green**. `restore-keys:
-copper-work-` deliberately restores the previous tree — that is what saves a
-7-minute kernel build — but the stage guards were existence-only
-(`[ -s "$TGT/boot/initrd.img" ] && skip`). Key changed, old tree restored, file
-present, stage skipped. An ISO went out with an initrd packed from the old
-`init`.
-
-Fix: `stamped_skip` / `stamp_set` / `tree_hash` in `build.sh`. Every stage
-stamps its output with a hash of its own inputs. `d9b1ce1`.
-
-**Do not "fix" this by deleting `restore-keys`.** The fallback is not the bug;
-it is what makes a warm cache survive an unrelated change. The stamps are what
-make it sound.
-
-## 3. `$0` is not a path you can hash after a `cd`
-
-`SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")` is pinned before the
-script `cd`s, because CI runs `sudo bash iso/build.sh kernel` — so `$0` is the
-*relative* `iso/build.sh`, and line 20 `cd`s out from under it. `cat "$0"` then
-had nothing to open, and under `set -euo pipefail` that killed the script 14
-lines after a successful 7-minute kernel build. `307d6b9`.
-
-## 4. My own rescue check was a false negative
-
-Added in fix #1, to turn "switch_root on a root with no init" into something
-readable. It read:
-
-```sh
-[ -x /mnt/merged/sbin/init ] || rescue "no /sbin/init in the merged root"
-```
-
-`/sbin/init` is a symlink to the **absolute** path `/usr/bin/copper-init`.
-Before `switch_root` does its chroot, an absolute symlink resolves against the
-initramfs root — where there is no `/usr/bin` at all. So the test followed the
-link into the initramfs, found nothing, and reported a perfectly good ISO as
-broken. It cost a boot cycle to find.
-
-Fix: test the binary, not the link. `switch_root` still gets handed
-`/sbin/init`, which resolves correctly after the chroot. `b7facc7`.
-
-## 5. …and the build gate I added to catch #4 made the same mistake
-
-`[ -e "$TGT/sbin/init" ]` — which also *follows* the link, this time to the
-**build host's** `/usr/bin/copper-init`, which does not exist. Dangling, so
-"missing", so the first CI run of the new gate failed on a staged tree that
-was fine. It uses `readlink` now. `0cf3fd9`.
-
-Worth internalising: **`-e` and `-x` follow symlinks. Any check on a
-Copper-created link must use `readlink`, or it is testing the build machine.**
-
-## 6. Stale files survived in two staging trees
-
-`build_initramfs` and `build_rootfs` both copy into a `$TGT` that may have come
-straight out of the cache, and `cp` only ever adds. A file or directory
-deleted from the source came back in the next ISO — and because the ISO stage
-stamps the whole tree, it did that while *looking* like a clean rebuild.
-`rm -rf` the initramfs staging dir; keep a manifest of what the overlay
-contained last time and drop whatever it no longer claims. `0cf3fd9`.
-
-**The manifest has to be built from `iso/rootfs-overlay/`, not from `$TGT`.**
-My first version diffed `$TGT` against itself, which is the cached directory
-that still holds the stale file, so it could never fire. A test now pins that:
-it runs the old logic against the scenario and asserts the file survives, so
-the test cannot pass on the broken version.
-
-## 7. The serial console addition made the screen lie
-
-`console=tty0 console=ttyS0,115200` looked obviously right. It is not. **The
-last `console=` on the command line is what `/dev/console` points at**, and that
-is the only place userspace output goes. On a VM with no serial port, `ttyS0`
-never registers, `/dev/console` has no working target, and the screen sits on
-GRUB's "Booting up kernel" while the system boots perfectly out of sight. It
-looks exactly like a hang. Cost hours. `971b6e5`.
-
-Correct order is `console=ttyS0,115200 console=tty0` — register both, screen
-last.
-
-## 8. …which then made the serial log useless
-
-Fixing #7 correctly left the file getting the kernel's half of the boot and
-none of ours, and under `quiet` — the entry anyone actually boots — **0 bytes**.
-Measured, not assumed.
-
-So `say()` in all three places (initramfs, PID 1, lease script) now writes to
-stdout *and* to `/dev/ttyS0`, guarded by `[ -c /dev/ttyS0 ]` so a machine with
-no serial port does nothing. `9750dac`.
-
-Practical upshot: **you never have to photograph or transcribe a screen
-again.** Point the VM's serial port at a file and paste that.
-
-## 9. DHCP was broadcasting into a tunnel
-
-This is the one that mattered most, and it was hiding in plain sight:
-
-```
-copper-net: no lease on sit0 yet, still asking
-udhcpc: no lease, forking to background
-```
-
-`sit0` is not a network card. It is the IPv6-in-IPv4 tunnel the `sit` module
-creates at boot, and with `MODULES=n` every driver is built in, so it exists
-before the real NIC finishes probing. `first_nonloop_iface()` took the first
-name in `/sys/class/net` that wasn't `lo`, so it got `sit0`, brought it up with
-`SIOCSIFFLAGS`, and broadcast DHCP discovers into an interface that cannot
-carry them. `eth0` sat there untouched and never even reported link up,
-because nothing had asked it to.
-
-Fix: read `/sys/class/net/<if>/type` (the `ARPHRD_*` value) and only accept
-`ARPHRD_ETHER`, or `ARPHRD_IEEE80211_RADIOTAP` when there is no wired one.
-That skips `sit0`, `gre0`, `ip6tnl0`, `ipip0`, `teql0`, `tun0` and `ifb0`
-without naming any of them, and it no longer depends on directory order.
-`2601222`.
-
-The old code carried a comment predicting this exact failure. It was right,
-and it was still worth doing properly.
-
----
-
-# The live layer was RAM, and the disk did nothing — firefox died of ENOSPC
-
-The real-boot firefox install (2026-10-10) got the index, fetched the ~120 MB
-payload, drew the progress bar — and then `tar` died with **`No space left on
-device`** mid-unpack. The VM had a **10 GB disk attached the whole time.**
-Nothing ever mounted it.
-
-The root cause is the writable layer, not the disk. The overlay's upper is a
-**tmpfs capped at 25% of RAM** (`iso/live/init`, `size=25%`). On a 2 GB VM that
-is 512 MB, and firefox needs ~570 MB in the writable layer at once: the ~120 MB
-payload plus its ~450 MB unpacked tree coexist during install (the payload is
-deleted only after unpacking). So the biggest single install on the machine
-ran out of space exactly there.
-
-The stopgap landed: the cap is **50% now** (`iso/live/init`, plus the `/tmp`
-entry in `etc/fstab` kept in step), which fits a firefox-class install on the
-2 GB VM. That is a balance, not a fix — the layer is still RAM and still
-throwaway.
-
-Also caught in that same log: four of the offered apps (`mousepad`,
-`ristretto`, `xfce4-taskmanager`, `xarchiver`) answered
-`no package named X in the index`, because the live index still had only 5 of
-the 9 packages. Their pages are published to the live Pages repo now
-(`2c344ab`).
-
-The real fix is G6 — put the writable layer on that disk. See G6 below.
+`startxfce` offers optional apps from `copper-ingot-repo` before starting the
+session. **Packaged:** firefox, mousepad, ristretto, xfce4-taskmanager,
+xarchiver. **Baked into the image:** XFCE itself, thunar, xfce4-terminal. The
+offered list lives in `iso/rootfs-overlay/etc/copper/xfce-apps`. Default is to
+ask first and install what's missing; on no, or if an install fails, the
+desktop starts anyway — a component that won't install is a warning, not a
+failure to launch.
 
 ---
 
@@ -552,13 +207,8 @@ Ordered by what unblocks the most.
 
 ## G1 — Confirm the first-boot wizard ✅ closed
 
-**Done:** verified. A full run on the framebuffer kernel answered all six
-questions, refused nothing, and left no shell prompt — the desktop came up
-instead. Seventeen of seventeen pixel assertions on the result.
-
-Kept as a closed goal rather than deleted, because "the wizard ran" and "the
-wizard ran and the machine then gave you a desktop" are different claims, and
-the second is the one that was actually being asked.
+Verified: a full run on the framebuffer kernel answered all six questions,
+refused nothing, and left no shell prompt — the desktop came up instead.
 
 ## G2 — Prove the internet, not just DHCP
 
@@ -571,60 +221,45 @@ wget -O - http://example.com   # HTTP end to end
 ```
 
 We have a lease, a route and a resolver. The ingot payload downloads on a real
-boot are the closest thing so far to end-to-end internet (2026-10-10), but the
-three commands above have not all been run as a trio. Cheap version: add a
-reachability probe to the lease script's `bound` handler so the next log
-answers it without anyone typing commands; honest version: run the three
-commands at a `copper-sh` prompt and paste the output.
+boot are the closest thing so far to end-to-end internet, but the trio above
+has not all been run together. Cheap version: add a reachability probe to the
+lease script's `bound` handler so the next log answers it; honest version: run
+the three commands at a `copper-sh` prompt and paste the output.
 
 ## G3 — Static-IP escape hatch
 
-Some networks don't hand out leases, and a DHCP-only box is a box that can't
-be used on one.
-
 **Done looks like:** a `/etc/network`-style file (interface, address, netmask
 or prefix, gateway, nameservers) that `copper-init` reads and applies instead
-of starting `udhcpc`, when the file is present and non-empty. Missing file
-means DHCP, as it does today.
+of starting `udhcpc`, when present and non-empty. Missing file means DHCP.
 
 ## G4 — WiFi
 
-Bigger than ethernet, because `MODULES=off` means the wireless driver and
-`CONFIG_CFG80211` have to be compiled into the kernel `.config` directly.
-
-**Done looks like:** the box associates with an access point and gets a lease
-without manual fiddling.
-
-Roughly: enable `CFG80211` plus the driver in `build.sh`; build
-**wpa_supplicant** from source (static musl) for association; keep busybox
-`udhcpc` for the IP afterwards, since it now demonstrably works; and drop the
-card's firmware blobs (a `linux-firmware` subset) into the rootfs.
-NetworkManager — glib and dbus from source — is the heavy end state for
-roaming and a GUI, and is not required to get onto a network.
-
-The interface-selection bug that broke wired DHCP is already handled for wifi:
-`first_nonloop_iface()` now asks sysfs for the `ARPHRD_*` type and prefers
-`ARPHRD_ETHER` over `ARPHRD_IEEE80211_RADIOTAP`, so a wireless NIC no longer
-turns it into a coin flip.
+**Done looks like:** the box associates with an AP and gets a lease without
+manual fiddling. Roughly: `CFG80211` plus the wireless driver in the kernel
+`build.sh`; **wpa_supplicant** from source (static musl); keep busybox
+`udhcpc` for the IP afterwards (it demonstrably works); drop the card's
+firmware blobs (a `linux-firmware` subset) into the rootfs. NetworkManager is
+the heavy end state and not required to get onto a network. The
+interface-selection bug that broke wired DHCP is already handled for wifi:
+`first_nonloop_iface()` asks sysfs for the `ARPHRD_*` type and prefers
+`ARPHRD_ETHER` over `ARPHRD_IEEE80211_RADIOTAP`.
 
 ## G5 — Bluetooth
 
-**Done looks like:** `bluetoothctl` or equivalent sees a paired device.
+**Done looks like:** `bluetoothctl` sees a paired device. BlueZ built from
+source, `CONFIG_BT=y` with the protocol drivers. BlueZ wants a D-Bus daemon;
+that's the part to budget time for.
 
-BlueZ built from source, kernel `CONFIG_BT=y` with the relevant protocol
-drivers. BlueZ wants a D-Bus daemon; that's the part to budget time for.
-
-## G6 — Persistence
+## G6 — Persistence ⚠️ current work
 
 **Done looks like:** a reboot keeps your files, and the 10 GB disk you gave
 the VM actually gets written to instead of sitting there doing nothing.
 
 The writable top layer of the overlay is a tmpfs today, so every session is
-throwaway on purpose — and that is the same reason `ingot install firefox`
-died of ENOSPC on a machine with a 10 GB disk attached: the disk was never
-mounted for writing, the upper is pure RAM, and firefox's payload + unpack
-tree need ~570 MB of it. Stopgap (landed): cap the upper tmpfs at 50% so a
-firefox-sized install fits in the current ISO. Real fix below.
+throwaway — and that is the same reason `ingot install firefox` died of ENOSPC
+on a machine with a 10 GB disk: the upper is pure RAM, and firefox's payload +
+unpack tree need ~570 MB of it. Stopgap (landed): cap the upper tmpfs at 50%
+so a firefox-sized install fits in the current ISO. Real fix below.
 
 **The plan: same overlay, different `upperdir` — the upper goes on a disk.**
 
@@ -638,735 +273,150 @@ firefox-sized install fits in the current ISO. Real fix below.
   spare disks, the user picks one, we wipe + format ext4 with the `COPPER`
   label, and tell them it takes effect on the next boot. Explicit choice, not
   "grab the first disk we see".
-- **It activates on the next boot, not mid-session.** By the time the wizard
-  runs, the overlay is already up with a tmpfs upper, and hot-swapping the
-  upper under a live overlay (copying everything across a remount) is the kind
-  of fragile shit we don't ship. Turn it on at boot, reboot once, and every
-  boot after is persistent.
+- **It activates on the next boot, not mid-session.** Hot-swapping the upper
+  under a live overlay is the kind of fragile shit we don't ship. Turn it on
+  at boot, reboot once, and every boot after is persistent.
 - **Where it goes:** `iso/live/init` does the detect-and-mount; the wizard's
   last page does the format (`mkfs.ext4 -L COPPER`, so the image needs an ext4
   mkfs); the label contract lives in one place so both halves agree.
 
-**Boot-verification is the blocker.** Everything above is design; confirming
-it needs a fresh CI-built ISO and a real boot.
+**Boot-verification is the blocker.** Everything above is design; confirming it
+needs a fresh CI-built ISO and a real boot.
 
 ## G7 — Land `patch-1`
 
-See the top of this document. It needs a PR from an account with write access
-to `12hrformat/copperlinux`, or someone with that access pushing it.
+It needs a PR from an account with write access to `12hrformat/copperlinux`,
+or someone with that access pushing it.
 
-## G8 — A desktop: XFCE ⚠️
+## G8 — A desktop: XFCE ✅ / finishing
 
-**Done looks like:** `startxfce4` at a `copper-sh` prompt brings up an XFCE
-session on the framebuffer, and Ctrl+Alt+F2 or the escape path still gets a
-shell.
-
-Status: **Xorg boots and XFCE paints under QEMU** — that is measured, with the
-owner confirming input and the PTY fix on real boots. What remains is almost
-all about running the session as the wizard user instead of root, plus the
-VMware framebuffer being confirmed on an actual VMware boot. See "The desktop
-session runs as root" brief, which is the code-pointed writeup for the next
-chunk.
+**Done looks like:** `startxfce4` brings up an XFCE session on the framebuffer.
+Status: **Xorg boots and XFCE paints under QEMU** — measured, with the owner
+confirming input and the PTY fix on real boots. What remains is running the
+session as the wizard user instead of root, plus confirming the VMware
+framebuffer on an actual VMware boot.
 
 Order of the remaining work:
 
-1. **Drop privileges in the session shell.** The uid drop is designed (see
-   the brief); it needs building and a boot test.
+1. **Drop privileges in the session shell.** The uid drop is designed (see the
+   brief below); needs building and a boot test.
 2. **Xorg as the wizard user**, with device-node, xorg-wrapper, and X
-   authority sorted — the brief lists them.
+   authority sorted.
 3. Boot-test as that user, and confirm the VMware framebuffer on real VMware.
 
 CI's six-hour cap is a real constraint on the heavy build stages; `restore-keys`
-is what makes a warm cache survive an unrelated change, see bug #2.
-
----
-
-# `copper charge` — what it is and how it got debugged
-
-The hotfix system. `copper charge` pulls `hotfixes.json` and patches the live
-system in place; `copper rollback` puts it back. Full user-facing docs are in
-`README.md`. This section is the part a next person needs and the README does
-not say: **every one of these was found by running the thing, not by reading
-it.**
-
-`copper-charge.sh` and `copper-rollback.sh` had never been executed by anyone
-before the day the bugs surfaced. Four defects, each of which made the feature
-completely non-functional:
-
-1. **`charge` called `curl`, which does not exist on the live system.** The
-   rootfs ships busybox applets; there is no `curl` anywhere in the ISO.
-   Checked by listing the artifact, not by assuming. Now prefers `curl` if
-   present and falls back to `wget`.
-2. **`rollback` could never restore anything.** `charge` names a backup by
-   `tr '/' '_'`, so `/usr/bin/foo` becomes `usr_bin_foo`. `rollback` undid
-   that with `sed 's|__|/|g'` — replacing a *double* underscore, which can
-   never appear when `tr` emits one per slash. Every restore died with
-   `target file not found`. Now `tr '_' '/'`.
-3. **The only hotfix in the database targeted `src/main.c`,** a repo path that
-   does not exist on a booted system, so even a successful fetch could only
-   ever print `skipping … not found`. Replaced with a demo entry against
-   `/etc/copper/demo.txt`, which the ISO ships.
-4. **There was no `copper` binary at all.** The tools shipped as
-   `copper-charge` and `copper-rollback`, so the command everyone would type,
-   `copper charge`, returned `not found`. Added `/usr/bin/copper` as a front
-   end, calling the tools by absolute path so a short `PATH` cannot hide them.
-
-## How it is verified
-
-Not by a green CI run — by running both scripts against a fake root in WSL
-with the real ISO overlay files, as root, and reading the actual file contents
-after each step:
-
-```
-copper: applied demo-banner — Demo: proves charge can find, back up and patch a file
-copper:   backed up to .../var/backups/copper/etc_copper_demo.txt
-copper: charge complete
-  -> second run: skipping demo-banner — fail_code not in etc/copper/demo.txt (already fixed?)
-  -> rollback:  restored etc_copper_demo.txt → .../etc/copper/demo.txt
-```
-
-Apply, backup, idempotent skip, and restore are all confirmed — once against
-the fake WSL root, and then again on a booted VM, which is the real machine
-test. `copper charge` and `copper rollback` have both run on a live system.
-
-## Testing it offline
-
-The ISO installs `hotfixes.json` at `/etc/copper/hotfixes.json`, and `charge`
-prefers that file and never touches the network when it exists. So the hotfix
-system can be tested on a VM with no working internet. Delete the file to go
-back to fetching from `HOTFIX_URL`.
-
-## A trap worth knowing
-
-`busybox adduser` and `addgroup` write to the real `/etc/passwd` and
-`/etc/group` regardless of `HOME`, `PWD`, or anything else. Probing them
-inside a WSL shell **modifies WSL**. Back those files up and restore them in
-a `trap`, or you will leave junk accounts behind. This happened twice here and
-was cleaned up both times.
-
----
-
-# What is verified, and what is not
-
-Being precise here matters, because it is easy to mistake "it compiles" for
-"it works".
-
-## Has actually been executed
-
-- **The boot path, end to end, on a real machine.** Kernel → initramfs →
-  overlay → `switch_root` → `copper-init`. The log at the top of this document
-  is the evidence.
-- **DHCP against a real server.** A lease, `/24` derived from a
-  `255.255.255.0` netmask, a default route, and a resolver. `mask_to_prefix`
-  had only ever been unit-tested before this; it is now correct in production.
-- **`copper-sh`** — compiled with real GCC 12.2
-  (`-std=c11 -O2 -Wall -Wextra`, zero warnings) and run through a 44-command
-  battery under **AddressSanitizer**: exit 0, no leaks, no overruns. Bugs that
-  found and fixed: an argv heap off-by-one, output lost because `_exit()`
-  skipped the stdio flush, history storing tokenized instead of the line you
-  typed, children reading stale buffered stdin, `ls -l` on a single file, and
-  `ls` going one-per-line on a non-TTY so `ls | grep` filters like real `ls`.
-- **`tests/smoke.sh`** — 19 assertions over the shell's core behaviours. Run
-  it before you touch the shell.
-- **The DHCP lease script** — 58 assertions on `mask_to_prefix` (all 33 valid
-  netmasks, generated rather than typed, plus non-contiguous and malformed
-  input) and 25 more driving the whole script against a stub `ip`.
-- **The stage-stamp logic** — 11 assertions including the exact regression
-  (output present *and* input moved on must rebuild), and a separate harness
-  proving the helpers survive `set -euo pipefail`.
-- **The build gates** — overlay-manifest pruning against a simulated warm
-  cache, the CRLF gate, and the `readlink` comparison, with a check that the
-  *old* manifest logic fails the same scenario.
-- **The logging paths** — all three `say()` implementations reach both the
-  screen and `ttyS0`, with the `-c` guard proven to skip a non-character
-  device.
-- **A complete, clean first-boot wizard run** — banner, all six questions
-  answered, nothing refused, `Done — welcome`, and no shell prompt afterwards.
-  G1 is closed.
-- **The framebuffer kernel**, on the emulated adapters — `bochs-drm` on
-  `-vga std`, `virtio-gpu` on `-vga virtio`, `qxl` on `-device qxl-vga` — each
-  confirmed from the guest's own dmesg showing that driver as fb0's primary
-  device. (The 17/17 pixel assertions that sat alongside this went out with
-  `copper-gui`.)
-- **XFCE painting under QEMU**, and — on real boots — the devpts fix (pty
-  works, sudo allocates) and the VMware mouse fix, both owner-confirmed.
-- **Ingot downloads on a live boot** (2026-10-10): index fetched, payload
-  downloaded through the GitHub release redirect with a progress bar, retry
-  and resume working. The install itself died of ENOSPC — that is the G6
-  disk/persistence work, not the downloader.
-- **`copper charge` and `copper rollback` on a booted VM** — the apply /
-  backup / idempotent-skip / restore cycle ran on the live system, confirming
-  the earlier fake-root WSL run on the real machine.
-- **The whole CI build**, green end to end — kernel, musl, busybox, all eight
-  GNU tools, Copper's three binaries, rootfs, initramfs, GRUB ISO.
-- **`sh -n`** on all three shipped shell scripts, plus at build time via
-  `lint_scripts`.
-- **`copper-init.c` and `copper-firstboot.c`** compile clean under GCC 12.2
-  with `-Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings`, and in CI against
-  musl.
-
-## Has never run
-
-- **The shipped ISO on VMware, to the framebuffer.** The one thing the whole
-  display-driver work exists for is unproven on the hardware it was written
-  for. `vmwgfx` probes correctly and refuses on QEMU because QEMU is not
-  VMware. (The mouse on real VMware is fixed; the *display* is the open half.)
-- **The session running as the wizard user.** Xorg boots under QEMU and the
-  desktop paints, but as root. The uid drop is designed, not built.
-- **Anything on real non-VM hardware.** Every measurement in this document is
-  a VM.
-- **Persistence (G6) end to end.** Designed, stopgap landed, disk not yet
-  claimed at boot.
-- **Any plain-HTTP/name-resolution trio (`ping`/`nslookup`/`wget`)** as the
-  G2 checklist defines it.
-
-## A note on green CI runs
-
-**A green run does not mean the artifact is correct.** Run `36220249701` was
-fully green and shipped an ISO built from the previous commit's `init`. Always
-take the artifact apart: mount it, `gzip -dc` the initrd, decode the cpio, read
-`/init` back out, and parse the ISO's Rock Ridge records if you need to know
-what a symlink points at. Windows shows 8.3 names because the image has Rock
-Ridge and **no Joliet** — `COPPER_I` is `copper-init`, and that is cosmetic,
-not a bug.
-
-## The build gates
-
-- `lint_scripts` — `sh -n` over the initramfs `init` and the lease script.
-  Both are read by busybox ash on a machine with no shell to log into and fix
-  them with.
-- `require_kernel_config` / `require_bb_config` — read the `.config` files
-  back after kconfig has had its say and refuse to continue, listing what went
-  missing.
-- `build_copper` — checks the staged tree actually contains the binaries and
-  lease script `switch_root` needs, and that `sbin/init` is a symlink to
-  `/usr/bin/copper-init`. Uses `readlink`, not `-e`; see bug #5.
-
----
-
-# Traps that will cost you a day
-
-**Backgrounded test stubs inherit your desktop, and will use it.** WSLg runs
-a real X server on `:0` and exports `DISPLAY=:0` and `WAYLAND_DISPLAY=wayland-0`.
-A backgrounded process that inherits those makes WSLg start a notification
-daemon, which is a popup on the desktop of whoever is running the test — and it
-cost two interruptions and a `pkill` before it was identified. Any test that
-backgrounds something must unset `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`,
-`XDG_SESSION_DESKTOP`, `XDG_CURRENT_DESKTOP`, `XDG_RUNTIME_DIR` and
-`DBUS_SESSION_BUS_ADDRESS` first, and should use its own scratch directory so
-it never touches the real `/tmp/.X11-unix`.
-
-**A `trap` does not fire when the tool call is killed outright.** An
-interrupted run left a live instance behind, which then collided with the next
-run on the same scratch directory; both were found blocked for eight minutes
-with no children. One scratch directory per run (`mktemp -d`), a lock so a
-second copy refuses rather than races, and a cleanup step you can run by hand.
-
-**Two tests sharing one scratch directory will corrupt each other.** Each case
-above deletes and recreates the directory, so two copies are always racing on
-whatever the other is halfway through.
-
-**Never write an inline `wsl ... bash -c "..."` with pipes, `||`, `$(...)` or
-`$?`.** PowerShell parses them first and mangles them — `||` is not a statement
-separator, `head` and `wc` are not PowerShell commands, and `> /tmp/file`
-redirects to `C:\tmp\file`, which does not exist. **Write a `.sh` file and
-invoke it.** Every one of these cost a round trip, and the failures look like
-bugs in the script rather than in the shell that ate it.
-
-**`nohup … &` inside `wsl` is not detached.** `wsl` tears the session down when
-the calling command returns and takes the child with it. An `apt-get install`
-launched that way wrote no log at all and installed nothing, while appearing
-to have started. Run long jobs as a background task from the harness instead,
-and verify by asking `pkg-config` whether the library arrived — not by whether
-`apt-get` returned 0.
-
-**`bzImage` is compressed, so `strings` on it lies.** It reports every display
-driver absent, including ones known to be present. The only trustworthy
-evidence about which driver bound is the **guest's own dmesg**. An earlier
-probe was discarded for this reason.
-
-**The kernel's framebuffer message is `fb0`, not `/dev/fb0`.** See the second
-false check above. A grep for the path reports a working framebuffer as
-missing.
-
-**`make O=… defconfig` fails on a dirty source tree and leaves a stub `.config`
-behind.** The message is *"The source tree is not clean, please run 'make
-mrproper'"*, and the leftover file is a few hundred bytes. Anything that reads
-symbols out of it will confidently report nonsense. `mrproper` first, and
-check the config is over 1000 lines.
-
-**pkg-config module names are not library file names.** `x11` not `libX11`,
-`epoxy` not `libepoxy`, `xfont2` not `libXfont2`, `pciaccess` not
-`libpciaccess`. Look them up with `pkg-config --list-all` instead of guessing;
-guessing stopped three builds on libraries that were already installed.
-
-**meson options must be read from the project's own `meson_options.txt`.**
-xorg-server 21.x is meson, not autotools, and the option sets differ —
-`-Dfbdev` and `-Dllvm` do not exist, and it is `systemd_logind` with an
-underscore. Guessing from the autotools build is what produced the failures.
-
-**`CC=…` is an environment variable, not a `meson setup` argument.** Passed as
-a trailing flag, meson reads it as a source directory and reports
-`ERROR: Neither source directory 'CC=gcc-13' … contain a build file meson.build`,
-which points at the project rather than at the misplaced flag.
-
-**This network cannot download 4.9 MB in five minutes.** `curl --max-time 300`
-failed partway. Use `-C -` to resume, and gate on `tar tf` rather than on the
-transfer appearing to succeed — a truncated tarball extracts halfway and then
-reports a build error against the source.
-
-**Any change to a cache-key file is a full kernel rebuild.** The CI cache key
-hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
-`iso/rootfs-overlay/**`, `iso/src-init/**`, `iso/firstboot/**` and `src/**`. A
-change to *any one* of those throws away the whole `iso/work/` cache. The
-cache is saved even on failure (`if: always()`), so a red run still warms the
-next one. Batch changes; don't dribble.
-
-**A cached musl toolchain is only usable at the path it was built at.**
-`musl-gcc` is a wrapper that names its specs file and its crt/lib objects by
-**absolute** path, and `$SYS` is `iso/work/sys` under the workspace, whose
-directory is named after the repository. Renaming or transferring the repo
-(`copper` → `copperlinux`) moves `/home/runner/work/<name>/<name>`, so a
-restored `musl-gcc` still exists and still points at the old path, and cannot
-link anything: coreutils' `configure` then dies with *"C compiler cannot
-create executables"*, which blames coreutils rather than the cache.
-`build_musl` now compiles a one-line program with the cached toolchain and
-rebuilds it when that fails, instead of trusting that the file exists. This
-was a real red build.
-
-**`xfce4` does not depend on a terminal emulator, and `--no-install-recommends`
-does not pull one.**
-The gui stage names `xfce4-terminal` explicitly. Without it the image has no
-`*.desktop` carrying `Categories=…;TerminalEmulator;`, so clicking "Terminal"
-runs `exo-open --launch TerminalEmulator`, finds no helper, and pops the
-"choose an application" dialog — "nothing is chosen for terminal". The defaults
-live in `iso/rootfs-overlay/etc/xdg/xfce4/helpers.rc`
-(`TerminalEmulator=xfce4-terminal`, `WebBrowser=firefox`). exo reads the
-system-wide file after the user's own `~/.config/xfce4/helpers.rc`; the system
-file is the one that works here because first-boot's skel copy takes only
-top-level regular files, never a nested `~/.config/...`.
-
-**The kernel command line's last `console=` is `/dev/console`.** See bug #7.
-This is the single most counter-intuitive thing in the whole boot, it produces
-a fake hang, and it cost the most time.
-
-**`console=ttyS0,115200` on a VM with no serial port is not a no-op.** It
-takes `/dev/console` away from `tty0`. Add the serial port *and* put `tty0`
-last.
-
-**The live image has no `/dev/pts` unless the initramfs mounts devpts.** Two
-things break silently: `sudo` dies with `unable to allocate pty`, and nothing
-that needs a real PTY works (the XFCE terminal opens and cannot give its shell
-a pty — vte's openpty fails on a missing `/dev/pts`). Confirmed on the first
-real-boot test (2026-10-10) and fixed the same day in `iso/live/init`: it now
-mounts `devpts` on the merged root's `/dev/pts` and symlinks `/dev/ptmx`. The
-second real-boot test confirmed the fix. Nothing in the CI build catches
-pty-regressions because the build never boots.
-
-**The writable layer is RAM, capped at 50% of it.** A firefox-class install
-needs ~570 MB in the writable layer at once; on a 2 GB VM that fits now, but
-the layer is still throwaway and still RAM. A donor disk changes nothing until
-G6 lands. You'll think "a bigger disk will fix it" — it won't, until the
-overlay's upperdir lives on the disk.
-
----
-
-# Config facts worth not rediscovering
-
-Each of these cost a wrong turn once. All were checked against real sources.
-
-- **busybox's `make defconfig` is not a stock config.** busybox patches kconfig
-  with `const char conf_defname[] = "/dev/null"`
-  (`scripts/kconfig/confdata.c:25`), so "defconfig" means *the Kconfig
-  defaults*. There is no `configs/defconfig` in 1.36.1. Per-applet symbols live
-  in `//config:config SYMBOL` comments inside the `.c` files and in the
-  directory `Config.src` files.
-- `CONFIG_STATIC` is `default n`, so it must be set explicitly — and **after**
-  `make defconfig`, because reassigning a symbol defconfig already answered is
-  silently dropped (first assignment wins). That's what `set_bb_config` is for.
-- **6.12 has no `CONFIG_ETHERNET`.** The driver menu is unconditional under
-  `NET`/`NETDEVICES`. Those are the real gates.
-- In 6.12, `config INET` moved to `net/Kconfig` and `net/ipv4/Makefile` builds
-  `tcp.o`/`udp.o` in `obj-y` unconditionally under `INET`. So `CONFIG_INET=y`
-  (which `x86_64_defconfig` sets) is enough for IPv4.
-- `BLK_DEV_NVME` lives in `drivers/nvme/host/Kconfig` in 6.12. It's `tristate`
-  with **no default**, so the explicit `--enable` in `build.sh` turns it on.
-- `CONFIG_OVERLAY_FS` is also `tristate` with no default. The entire live-root
-  design rests on `build.sh` passing `--enable OVERLAY_FS`.
-- vmxnet3's Kconfig path isn't `drivers/net/ethernet/vmware/Kconfig` in 6.12
-  and the symbol name couldn't be pinned down. `build.sh` passes **both**
-  `--enable VMXNET3` and `--enable VMWARE_VMXNET3`; kconfig drops whichever
-  doesn't exist. Deliberately not asserted.
-- **In busybox 1.36.1 udhcpc's source is `networking/udhcp/dhcpc.c`,** not
-  `networking/udhcp.c` — the client was split into a directory. `ip` is split
-  too: address parsing is in `networking/libiproute/`.
-- The environment udhcpc exports comes from the DHCP **option** names. The
-  consequence that matters: **`$subnet` is the netmask as a dotted quad**, and
-  `$mask` is the same mask as a decimal uint32. Neither is a prefix length.
-- busybox `ip` *does* accept a dotted mask after the slash: `get_prefix_1`
-  (`networking/libiproute/utils.c`) falls back to parsing it as a netmask. We
-  convert to a prefix length ourselves rather than depending on that.
-- `udhcpc -b` does not exit — after its retries it forks into the background
-  and keeps trying forever. So init can fire it and move on; no `-n` needed.
-- udhcpc does **not** put `PATH` in the lease script's environment, so init has
-  to set it before the exec.
-- busybox installs udhcpc at `/sbin/udhcpc`, `ip`/`ifconfig`/`route` in
-  `/sbin`, `ping` in `/bin`, `wget`/`nslookup` in `/usr/bin`, `switch_root` in
-  `/sbin`. It does **not** install a lease script, which is why we ship one.
-- `wget`'s `https://` can take **two very different paths** depending on what
-  is on the machine, and which one runs decides whether a download succeeds:
-  **(a) the openssl helper** (`FEATURE_WGET_OPENSSL`, `default y`): busybox
-  forks `openssl s_client` and feeds it the sockets — this path verifies
-  certs (unless `--no-check-certificate`) and works against github.com
-  releases; **(b) busybox's internal TLS** (`FEATURE_WGET_HTTPS`,
-  `default y`): used only when the openssl exec fails or wasn't configured —
-  it prints `note: TLS certificate validation not implemented` every time,
-  does **not** verify certificates, and on a faithful 1.36.1 build it hangs
-  against `release-assets.githubusercontent.com` (the GitHub release
-  redirect) while fetching Pages and github.com itself fine. **The ISO ships
-  `openssl` + `ca-certificates` now** (gui stage, since 2026-10-10), so a
-  normal image takes path (a). If you ever see that note on the machine, the
-  openssl exec failed or was dropped, i.e. path (b) — and payload downloads
-  from GitHub releases will never complete.
-
----
-
-# Working in parallel: GUI and the package paths — read the ownership lines before editing
-
-Status written 2026-10-08, updated through the 2026-10-10 boot tests. Work is
-on **`main`**. pacman is **gone**; the desktop is **done** (XFCE under QEMU,
-plus ingot as the package manager) and the queue is now **the session user +
-persistence**, with the remaining display-driver verification on real VMware.
-**sudo** is built by its own stage and CI-green; **ingot** is shipped,
-busybox-clean, and gated by `tests/ingot-gate.sh` (31 assertions, green in
-WSL); the release step (real Pages repo) is done — the payloads and pages are
-live.
-
-Verified at this tip:
-
-- **XFCE reaches a desktop.** Under QEMU (`-vga std`): boot → shell →
-  `startxfce --check` reports `found the X server: /usr/bin/Xorg` and
-  `found XFCE` → `startxfce` → the screen becomes the session, and OCR of the
-  screendump read the xfdesktop icons ("Home", "File System"). It paints.
-- **The guest sees input devices** — `/proc/bus/input/devices` lists the
-  keyboard and mouse under QEMU.
-
-**Bug: on VMware, `startxfce` starts X but the screen was blank — ROOT CAUSE
-FOUND, fix shipped.** The full `/tmp/session.log` was recovered (via the
-owner's screenshot-OCR round trip) and it was conclusive — this was never
-VMware's fault:
-
-- The session **starts**: `xfce4-session`, `xfwm4`, `xfsettingsd`,
-  `xfce4-panel`, `Thunar`, `xfdesktop` all launch.
-- Then every component dies on **missing GdkPixbuf loaders**:
-  `Gtk-WARNING: Could not load a pixbuf from icon theme`,
-  `could not load a pixbuf from /org/gtk/libgtk/icons/...png. This may
-  indicate that pixbuf loaders or the mime database could not be found`,
-  then `Wnck:ERROR ... default_icon_at_size: assertion failed: (base)`,
-  `Gtk:ERROR ... ensure_surface_for_gicon: assertion failed (error == NULL)`,
-  each ending in `Bail out!` (GLib's g_error → abort).
-- `xfdesktop` is respawned by the session manager and dies again — PIDs
-  climbing in the log (268 -> 279 -> 297 -> 304). The session repeatedly
-  aborts before painting anything; X itself is fine.
-- **Why no loaders:** `loaders.cache` is only ever written by the gdk-pixbuf
-  package's postinst, and this build runs no postinsts (pure `dpkg-deb -x`).
-  The boot-time fallback in `startxfce.sh` (`gdk-pixbuf-query-loaders
-  --update-cache`) runs, but as a normal user against a read-only squashfs
-  `/usr` it cannot write, and the `>/dev/null 2>&1 || :` swallows the failure.
-- **Fix (shipped in the gui stage):** `build_gui()` now mirrors the gdk-pixbuf
-  postinst at build time: it locates `gdk-pixbuf-query-loaders` in the staged
-  tree (the tool moved out of `/usr/bin` into the libdir in gdk-pixbuf 2.42 —
-  first attempt hardcoded `/usr/bin` and the build gate caught it), feeds it
-  every loader `.so` under the module dir as arguments (PNG/JPEG are compiled
-  into the library now and need no entry), and writes its stdout to
-  `.../2.10.0/loaders.cache` — all chrooted into `$TGT`, where the glibc
-  closure and modules are available. The stage aborts if the cache comes out
-  empty. The image now ships the cache; the runtime fallback in
-  `startxfce.sh` becomes an inert no-op. CI caught a second bug in the next
-  iteration: the loader `find` used `-path '.../2.10.0/loaders'` without a
-  trailing `/*`, which matches only the directory and so (with `-name '*.so'`)
-  matched nothing — the gate failed with "no loader modules" on a tree full of
-  them. Fixed with a trailing `/*` and a comment explaining why. Final CI for
-  the loaders fix: run 37881707295 (commit `6ebc11a`) is green — the log shows
-  `pixbuf loaders.cache written (93 entries)` and the `copper-iso` artifact is
-  downloadable.
-- **Owner retested 2026-10-09; icons still failed until the pair of fixes.**
-  A fresh session log with the loaders-cache image still showed `Could not
-  load a pixbuf from icon theme. This may indicate that pixbuf loaders or the
-  mime database could not be found` and the crash loop. Two leads: the GTK
-  message explicitly names the **mime database** (`shared-mime-info` ships
-  `/usr/bin/update-mime-database` but only its postinst ever runs it), and the
-  fatal icon is `Adwaita/scalable/status/*.svg` — an **SVG**, which in
-  gdk-pixbuf 2.42 is a *module* in `librsvg2-common`. The fix (`build_gui()`):
-  gate on `image/svg+xml` actually appearing in `loaders.cache`, run
-  `update-mime-database /usr/share/mime` chrooted, aborting unless `mime.cache`
-  is produced (commit `12e7c86`), and run `gtk-update-icon-cache -f -t` over
-  every staged icon theme. CI went red a different way: `update-mime-database`
-  emits a legacy `/usr/share/mime/icons` map that is zero bytes on this minimal
-  database, and the sudo stage's whole-tree empty-file gate tripped. Fix in
-  `0770d98`: prune the generated `icons` file when empty (keeping non-empty
-  ones, which carry real mappings). Owner then confirmed `loaders.cache` exists
-  and the mime database is now present.
-- **Bug: on VMware, the mouse cursor was stuck (no input reaches X) — ROOT
-  CAUSE FOUND and fixed, owner-confirmed.** Sequence of diagnosis:
-  - **Xorg was exonerated first:** `/var/log/Xorg.0.log` shows evdev opened and
-    registered both devices. `ps w` shows the single Xorg is ours
-    (`-config /etc/X11/xorg.conf`).
-  - **The `od` result was a red herring.** busybox `od` reads nonblocking, so
-    "read error" means "no events available right now".
-  - **The decisive test was a blocking read:** `busybox dd if=/dev/input/eventX
-    of=/dev/null bs=24 count=2`. `event1` (AT keyboard) delivers events,
-    `event2` (ImPS/2 Wheel Mouse) delivers relative motion, `event3` (VMware
-    Virtual USB Mouse, the absolute/tablet device) **hangs forever** — the
-    driver was retired from Ubuntu in 2018 and doesn't exist in noble, so it
-    can never report. VMware feeds the emulated PS/2 mouse relative motion on
-    every Linux guest — event2 is the pointer.
-  - **The bug was the launcher, not the VM:** the matcher in `startxfce.sh`
-    picked the *last* `*Mouse*` match in sysfs order, so `VMware Virtual USB
-    Mouse` (event3) beat `ImPS/2 Generic Wheel Mouse` (event2) purely by
-    sorting later. The fix (`iso/startxfce.sh`, gate cases 10 and 11 in
-    `tests/startxfce-gate.sh`): the PS/2-named device (`*ImPS/2*`, `*ImExPS*`,
-    `*Explorer*`, `*PS/2*`) wins the pointer, and a plain `*Mouse*` is only the
-    pointer when no PS/2 device exists. The sysfs location is
-    `COPPER_SYSINPUT`-overridable so the gate can fake the exact VMware device
-    lineup (`event1` keyboard / `event2` ImPS/2 / `event3` tablet) and assert
-    the config writes `/dev/input/event2`.
-  - **Owner confirmed 2026-10-09 (input bug CLOSED):** with the `cc1ad9b`
-    artifact the cursor follows the mouse in VMware. The launcher change in
-    `7df142c` is the fix; gate cases 10/11 and the private-TMP hygiene in
-    `cc1ad9b` shipped with it. Remaining session-log noise (D-Bus session
-    bus, AT-SPI, system/login1, `pm-is-supported`) is the agreed next clean-up.
-- **First real-boot test 2026-10-10: two PTY bugs, one root cause — no
-  `/dev/pts`.** The prompt path works (component offer prints, default yes),
-  but every install attempt fails behind `sudo: unable to allocate pty`, and
-  the XFCE terminal opens and reports it cannot find a pty. Both come from
-  `iso/live/init` never mounting `devpts` on the merged root — see the trap
-  above. **Fixed in `iso/live/init`**: it now mounts devpts on the merged
-  root's `/dev/pts` (and symlinks `/dev/ptmx`).
-- **Second real-boot test 2026-10-10: the PTY fix is confirmed, and three new
-  bugs surface.** The XFCE terminal now opens a real pty and `sudo` allocates
-  ptys without error (owner-confirmed: "when I click terminal in xfce it
-  works"). That is the devpts fix closing. The three new ones:
-  - **`sudo shutdown now` / `sudo reboot` do nothing.** Two separate causes.
-    (1) **busybox has no `shutdown` applet at all** — `busybox --list` on a
-    faithful 1.36.1 build shows `shutdown: MIA` while `halt`, `poweroff`,
-    `reboot` are all present, so `shutdown` is simply "command not found";
-    nothing in the ISO ships one. (2) **`reboot` (and `halt`/`poweroff`)
-    without `-f` never call the reboot(2) syscall** — busybox
-    `init/halt.c` sends a signal to PID 1 and expects init to do the work
-    (`kill(1, SIGTERM)` for reboot; `SIGUSR1`/`SIGUSR2` for halt/poweroff).
-    Copper-init **ignores** `SIGINT`/`SIGTERM`/`SIGHUP`
-    (`copper-init.c:269-271`), so the request silently dies. `reboot -f`
-    would work, but nothing calls it. **Fix candidates:** teach copper-init
-    to handle the power signals (sync + `reboot(2)` with the right magic),
-    and add a small `/sbin/shutdown` wrapper since busybox will never ship
-    one.
-  - **App payload downloads hang on the live ISO.** `ingot install firefox`
-    fetches the index.json and the firefox page fine (GitHub Pages works),
-    then the payload — which lives on a GitHub **release** and therefore
-    **redirects to `release-assets.githubusercontent.com`** — never completes;
-    the loop prints `wget: note: TLS certificate validation not implemented`.
-    Root cause verified by a faithful busybox 1.36.1 build in WSL: with **no
-    `openssl` executable on PATH**, busybox drops to its **internal TLS**
-    fallback, which fetches github.com and Pages fine but **hangs against the
-    release-assets redirect** (rc=124/timeout in the WSL repro). With openssl
-    available, the same busybox downloads all three URLs fine (rc=0). **Fix
-    landed in `build_gui` (2026-10-10): the image now ships `openssl` +
-    `ca-certificates`, and the stage writes the CA bundle itself.** no
-    maintainer script runs on the image, so `update-ca-certificates` never
-    fires and `/etc/ssl/certs/ca-certificates.crt` would be missing; the build
-    mirrors the postinst by concatenating the mozilla roots into it. The
-    busybox build now also *requires* `FEATURE_WGET_OPENSSL`
-    (`require_bb_config`), and the gui presence checks demand both
-    `/usr/bin/openssl` and the bundle.
-  - **The desktop session runs as root — DESIGN DECIDED, work assigned.**
-    The wizard creates an account (say `12hrformat`, or `dragon` here), but
-    the session never runs as it. `copper-init.c` reads
-    `/etc/copper-firstboot.done` (the wizard-created username), `chdir`s into
-    `/home/<user>` and sets `HOME`/`USER`/`LOGNAME` (`copper-init.c`
-    ~331-356) **but never drops uid** — `spawn_tty` execs
-    `/usr/bin/copper-sh` still as uid 0, and everything launched from that
-    shell (including `startxfce` and the whole XFCE session) stays root, which
-    is why Thunar warns "you are logged in as root". The wizard account exists
-    but is never actually logged in. **Decision (owner, 2026-10-10): the
-    wizard-created user owns the session; PID 1 keeps root; sudo is the
-    elevation path.** The sudo plumbing already ships: `iso/sudo/` builds a
-    setuid-root sudo, `iso/sudo/sudoers` grants `%wheel ALL=(ALL:ALL) ALL`,
-    and the wizard already adds the user to
-    `wheel users audio video dialout cdrom` (`copper-firstboot.c:979`), so the
-    session user can elevate the moment it exists. What is missing is the uid
-    drop itself plus making Xorg work as that user. See **"The desktop session
-    runs as root — brief for the implementer"** below for the full,
-    code-pointed writeup.
-- **Third real-boot test 2026-10-10 (the owner booting it): downloads work,
-  then the install dies of no space.** `startxfce` runs, the index is
-  fetched, the bar renders, and then `tar` gets `No space left on device`
-  mid-unpack of firefox. The machine has a **10 GB disk attached and nothing
-  ever mounts it.** The whole writable layer is a tmpfs capped at 25% of RAM
-  — 512 MB on the 2 GB VM — and firefox needs ~570 MB in the writable layer
-  at once (the ~120 MB payload plus its ~450 MB unpacked tree coexist while
-  installing; the payload is deleted only after unpacking). The disk was
-  never the problem; the disk is the fix (see G6). Also in that log: four of
-  the offered apps (`mousepad`, `ristretto`, `xfce4-taskmanager`,
-  `xarchiver`) answered `no package named X in the index`, because the live
-  index still had only 5 of the 9 packages — their pages are now published
-  to the live Pages repo (`2c344ab`).
+is what makes a warm cache survive an unrelated change (that bug is 2 in BUGS.md's
+  tracker).
 
 ### The desktop session runs as root — brief for the implementer
 
 Status 2026-10-10. Decision is made (owner): **the wizard-created user owns
-the session; PID 1 keeps root; sudo is the elevator.** This is the writeup
-the fix should be built from. Anything marked *verify* is a real-boot fact to
-establish, not something this document claims.
+the session; PID 1 keeps root; sudo is the elevator.** Anything marked
+*verify* is a real-boot fact to establish, not something this document claims.
 
-**Why the session is root today (verified details):** `spawn_tty`
-(`copper-init.c:220-238`) `setsid()`, opens `/dev/tty1`, dup2s it onto
-0/1/2, `TIOCSCTTY`, then `execl`s `/usr/bin/copper-sh` — with no
-`setgid`/`setuid` anywhere, so the child stays uid 0. The home-directory
-block (`copper-init.c:331-356`) only `chdir`s to `/home/<user>` and sets
-`HOME`/`USER`/`LOGNAME` from the marker; identity never changes. So the
-console shell, `startxfce`, and every XFCE process run as root, and Thunar
-warns "you are logged in as root". The wizard account (e.g. `12hrformat`)
-exists, with its password and supplements, but is never logged in.
+**Why the session is root today (verified):** `spawn_tty` (`copper-init.c:220-238`)
+`setsid()`, opens `/dev/tty1`, dup2s it onto 0/1/2, `TIOCSCTTY`, then `execl`s
+`/usr/bin/copper-sh` — with no `setgid`/`setuid` anywhere, so the child stays
+uid 0. The home-directory block (`copper-init.c:331-356`) only `chdir`s to
+`/home/<user>` and sets `HOME`/`USER`/`LOGNAME`; identity never changes.
 
 **What must change, in order:**
 
-1. **Drop privileges in the spawned shell child, not in init.** PID 1
-   (copper-init) stays root — it needs root for mounts, network, and the
-   power handling (bug #2). The drop belongs in the `spawn_tty` child
-   between `TIOCSCTTY` and the `execl`. Read the username from
-   `/etc/copper-firstboot.done` (first line), `getpwnam` for uid/gid,
-   `initgroups` (or the same supplement list the wizard uses:
+1. **Drop privileges in the spawned shell child, not in init.** PID 1 stays
+   root. The drop belongs in the `spawn_tty` child between `TIOCSCTTY` and the
+   `execl`. Read the username from `/etc/copper-firstboot.done` (first line),
+   `getpwnam` for uid/gid, `initgroups` (same supplements the wizard uses:
    `{"wheel","users","audio","video","dialout","cdrom"}` —
-   `copper-firstboot.c:979`), `setgid`, `setuid`, then exec. Fall back to
-   uid 0 only when no marker user exists (first boot before the wizard) —
-   the only case a root console is acceptable.
+   `copper-firstboot.c:979`), `setgid`, `setuid`, then exec. Fall back to uid 0
+   only when no marker user exists (first boot before the wizard).
 
 2. **Xorg as the wizard user is the hard part.** `startxfce.sh` already
-   anticipates a non-root login (config-write comment at ~342-351; the
-   xorg.conf falls back to /tmp), and Xorg is launched plainly as the
-   current user (`startxfce.sh:~410-416`, `"$XORG" ":$DISPLAY_NUM" ... &`)
-   — which is the right call: start X and XFCE as the same uid and there is
-   no Xauthority dance. What actually fights a non-root Xorg on this
-   system:
-   - **Device nodes.** The static xorg.conf pins evdev to
-     `/dev/input/event*`, and modesetting needs `/dev/dri/card*`. Kernel
-     devtmpfs defaults these root-owned (`0660 root:root` typical;
-     *verify exact perms on the booted image*). The baked `/etc/group`
-     overlay has `video` but **no `input` group**, and the wizard
-     supplements list has neither. So a non-root session currently cannot
-     open the evdev nodes → Xorg starts, draws a frozen cursor, no
-     keyboard/mouse. Options: add an `input` group (overlay + wizard
-     supplements), chgrp the nodes at boot, or chmod. This is the first
-     thing to boot-verify.
-   - **The xorg-wrapper console-user gate activates.** `xorg-wrapper.c`
-     gates its console-user check on `getuid() != 0` — as root the check
-     is skipped entirely. As the wizard user the gate runs, and on a system
-     with no logind it may fail closed. *Verify:* does a non-root
-     `startxfce` reach a live display? Routing options: a setuid Xorg
-     wrapper (X stays root, keeps the console-user skip) with `-auth` +
-     `XAUTHORITY` handed to the session, or handle the gate. Both are
-     legitimate; setuid + cookie keeps X's device access honest.
-   - **X authority.** If X runs as root while XFCE runs as the user (setuid
-     route), clients need `-auth`/`XAUTHORITY` or they cannot open the
-     display. If X and XFCE share the wizard uid, nothing extra is needed.
-     Decide first, then wire.
+   anticipates a non-root login; Xorg is launched plainly as the current user,
+   which is the right call (no Xauthority dance). What fights a non-root Xorg:
+   - **Device nodes.** The static xorg.conf pins evdev to `/dev/input/event*`,
+     and modesetting needs `/dev/dri/card*`. devtmpfs defaults these
+     root-owned (`0660 root:root` typical; *verify perms on the booted image*).
+     The baked `/etc/group` has `video` but **no `input` group**, and the
+     wizard supplements list has neither. So a non-root session can't open the
+     evdev nodes → frozen cursor, no keyboard/mouse. Options: add an `input`
+     group, chgrp the nodes at boot, or chmod. First thing to boot-verify.
+   - **The xorg-wrapper console-user gate activates.** As root the check is
+     skipped; as the wizard user it runs and may fail closed with no logind.
+     *Verify:* does a non-root `startxfce` reach a live display? Either a
+     setuid Xorg wrapper (X stays root) with `-auth`/`XAUTHORITY`, or handle
+     the gate.
+   - **X authority.** If X runs as root while XFCE runs as the user, clients
+     need `-auth`/`XAUTHORITY`. If X and XFCE share the wizard uid, nothing
+     extra is needed. Decide first, then wire.
 
-3. **sudo already ships and should just work.** `iso/sudo/` builds a
-   setuid-root sudo, `sudoers` has `%wheel ALL=(ALL:ALL) ALL`, the wizard
-   puts the user in `wheel`, and the devpts fix (this session) means sudo
-   can actually allocate ptys. `startxfce.sh:60-63` clears `SUDO` when
+3. **sudo already ships and should just work.** Setuid-root sudo,
+   `%wheel ALL=(ALL:ALL) ALL`, wizard puts the user in `wheel`, and the devpts
+   fix means sudo can allocate ptys. `startxfce.sh:60-63` clears `SUDO` when
    `id -u` = 0. *Verify:* `sudo true` from the dropped shell.
 
-**Success check for the implementer:** fresh image through the wizard;
-console `id` shows the wizard username, not uid 0; `sudo whoami` answers
-`root`; `startxfce` gives a desktop whose pointer and keyboard both work
-(the `/dev/input` test) and whose panel/terminal run as the wizard user,
-not root. **Unverified today:** the uid drop itself, Xorg-as-non-root
-device access, and the xorg-wrapper gate — all three need implement + boot.
+**Success check for the implementer:** fresh image through the wizard; console
+`id` shows the wizard username, not uid 0; `sudo whoami` answers `root`;
+`startxfce` gives a desktop whose pointer and keyboard both work and whose
+panel/terminal run as the wizard user. **Unverified today:** the uid drop,
+Xorg-as-non-root device access, and the xorg-wrapper gate.
 
 ---
 
 # ingot — our package manager
 
-Pacman was removed on 2026-10-08 (owner's call): no `iso/pacman/`, no
-`build_pacman` stage, no pacman step in the workflow, no Arch stub db.
-Chasing Arch's stub-db/readline/ncurses compatibility was the wrong shape of
-the job — the image is a musl base, and glibc-closure games buy a fragile
-hybrid. Replaced by **ingot**, our own package manager distributed through
-**GitHub Pages**:
+Pacman was removed (2026-10-08, owner's call) and replaced by **ingot**,
+distributed through **GitHub Pages**:
 
-1. `ingot install nmap` goes to a GitHub Pages URL that looks like
-   `https://<pages>/iso/copper/pkg/hacking/nmap` — one JSON file per package
-   (no binary on Pages at all).
-2. ingot downloads that JSON to `/tmp`, reads it, and finds the **real url**
-   where the actual package payload lives (Releases/CDN — anywhere that can
-   hold big files).
-3. ingot downloads the payload from that url, checks its **sha256** against
-   the hash stored in the JSON (mismatch → refuse), installs it, and
-   **deletes the JSON from `/tmp`**.
+1. `ingot install nmap` goes to a GitHub Pages URL like
+   `https://<pages>/iso/copper/pkg/hacking/nmap` — one JSON file per package.
+2. ingot downloads the JSON to `/tmp`, reads the **real url** where the
+   payload lives (Releases/CDN).
+3. ingot downloads the payload, checks **sha256** against the JSON (mismatch →
+   refuse), installs, and **deletes the JSON from `/tmp`**.
 
 Pages carries only tiny index files; heavy payloads live behind the "real
-url". This is the design dragon specified — write NO other package path
-without asking.
+url". This is the design dragon specified — **write NO other package path
+without asking.**
 
-Status (2026-10-08, updated 2026-10-10): **built, gated, and released.**
-What landed:
-
-- **`iso/rootfs-overlay/usr/bin/ingot`** — the shipped client. POSIX sh,
-  busybox-ash clean (`sh -n` + `busybox sh -n` both pass).
-  install/remove/update/reinstall/inspect/info/search/list. Reads the
-  one-key-per-line JSON shape documented in its own header (index:
-  `{"nmap": "hacking"}` one entry per line; package pages: flat string
-  values, `depends` the only array). Recursion runs dep installs in a
-  subshell — there is no `local` in POSIX sh, so an inline call would let
-  the dep's fetch clobber the outer install's `name`/`url`/`want` and
-  silently re-install the dep under the dep's own name. The gate test found
-  exactly that.
-- **Downloads that survive a flaky network** — `dl()` retries with resume
-  (`-C -`) and a delay, so a drop in the middle keeps going instead of
-  starting over, and a progress bar with the payload's MB count renders when
-  stdout is a terminal. Both landed (`e5b9f5b`, `0efb3e7`) and CI is green.
-- **`iso/rootfs-overlay/etc/ingot.conf`** — default Pages url, overridable by
-  `INGOT_REPO` (which is how the gate points it at a scratch server).
-- **`tests/ingot-gate.sh`** — 31 assertions, green in WSL as root and
-  non-root: serves a fake Pages repo over localhost + busybox httpd, proves
-  files land, dep installs first, sha256 mismatch refuses, /tmp stays clean
-  after every path, remove deletes exactly what the manifest recorded (and
-  does not recurse into deps), unknown names fail by name, info/search/list
-  behave, inspect shows the installed record, reinstall removes then
-  reinstalls, update notices a moved sha256 and reinstalls else reports up to
-  date. Wired into `tests/branch-gate.sh` and the workflow test list.
-- **`iso/build.sh`** — `build_rootfs` chmods ingot + CRLF-guards it; the
-  POSIX parse audit now covers 4 busybox tools (ingot joins copper.sh,
-  copper-charge.sh, copper-rollback.sh).
-- **`iso/sudo/`** — sudo built by its own stage, CI-green: `ingot install`
-  runs as `sudo` from a wheel user (wheel group + `%wheel ALL=(ALL:ALL) ALL`).
-- **Live repo is live** — `copper-ingot-repo` on GitHub Pages, index updated
-  with all five payload packages (firefox shipped first; the pages for
-  `mousepad`, `ristretto`, `xfce4-taskmanager`, `xarchiver` were published
-  together, `2c344ab`). Payloads live on the `payloads-v1` GitHub release and
-  their sha256 digests match what the pages advertise, verified offline
-  against `release.payloads` digests.
+Status: **built, gated, and released.** `iso/rootfs-overlay/usr/bin/ingot` is
+the shipped client (POSIX sh, busybox-ash clean), with
+install/remove/update/reinstall/inspect/info/search/list. `dl()` retries with
+resume (`-C -`) and renders a progress bar on a terminal. `tests/ingot-gate.sh`
+(31 assertions) is green in WSL as root and non-root. The live Pages repo
+(`copper-ingot-repo`) has the index with all five payload packages; payloads
+live on the `payloads-v1` GitHub release and their sha256 digests match the
+pages, verified offline.
 
 Carried over from the pacman work, still true:
 
 - The GUI stage's glibc closure gives the rootfs libssl/libcrypto/libz/liblzma/
   libzstd/libbz2 and `/lib64/ld-linux-x86-64.so.2`, so glibc-linked payloads
   run.
-- Runtime network is proven (DHCP + DNS in every serial log); busybox wget
-  takes the openssl helper path on a normal image (openssl + ca-certificates
-  ship since 2026-10-10), which verifies certificates. The internal-TLS
-  fallback still exists if the helper's exec fails, and that path does not
-  verify — noted in ingot's docs and in `futureplans.md`.
+- Runtime network is proven; busybox wget takes the openssl helper path on a
+  normal image (openssl + ca-certificates ship), which verifies certificates.
+  The internal-TLS fallback still exists if the helper's exec fails, and that
+  path does not verify — bug 16 in BUGS.md's tracker, and see the wget note
+  in Config facts.
 - The remaining blocker on a full `ingot install firefox` is space, not
   downloads (G6).
 
 ---
 
-# GUI: the files that matter, and the lines not to cross
+# The build gates
 
-For whoever picks up the display work:
+- `lint_scripts` — `sh -n` over the initramfs `init` and the lease script.
+  Both are read by busybox ash on a machine with no shell to log into.
+- `require_kernel_config` / `require_bb_config` — read the `.config` files
+  back after kconfig has had its say and refuse to continue, listing what went
+  missing.
+- `build_copper` — checks the staged tree contains the binaries and lease
+  script `switch_root` needs, and that `sbin/init` is a symlink to
+  `/usr/bin/copper-init`. Uses `readlink`, not `-e` (bug 5 in BUGS.md's
+  tracker).
+
+---
+
+# GUI: the files that matter, and the lines not to cross
 
 **Yours:**
 
@@ -1380,26 +430,11 @@ For whoever picks up the display work:
 
 - `iso/build.sh` outside the gui stage: stamp helpers (~89-111),
   kernel/base/tools/copper/rootfs/initramfs/iso, the stage list at the bottom.
-  The ingot/sudo stages will insert there; two-way edits in one file are how
-  merges go wrong.
 - `src/`, `iso/live/init/`, `iso/src-init/`, `iso/firstboot/` — the verified
-  boot path. The GUI does not need them; a regression there costs a boot.
+  boot path. A regression there costs a boot.
 - `.github/workflows/build-iso.yml` — shared; touch only to add your own test
   name, in the same commit as the test.
 - `iso/out/` — build output, stays untracked.
-
-**Harness facts that will otherwise cost you a day** (each verified the hard
-way):
-
-- copper-sh rejects `2>&1` and `&`: the tokenizer splits them and `parse_line`
-  errors with `only one '>' per command`. Plain commands, at most one of
-  `< > >>`.
-- QEMU's monitor `sendkey` has **no `greater` key** and rejects uppercase
-  names (`shift-D` → `invalid parameter: D`). A typed `>` silently never
-  arrives — this bought a full debug round of "the serial output is empty".
-- The shell runs on tty1; serial carries only init's chatter. Read the guest
-  by screendump + tesseract (installed in the WSL box) instead of redirecting
-  to `/dev/ttyS0`; `diag2-xfce.sh` is the working pattern.
 
 ---
 
@@ -1431,9 +466,8 @@ tests/account-gate.sh     asserts the shipped account/answer path
 
 ## Getting the ISO
 
-Artifacts download fine now, using the Git Credential Manager token. Earlier
-notes saying this returns 401 are out of date. Capture the token into a
-variable and never print it:
+Artifacts download fine now, using the Git Credential Manager token. Capture
+the token into a variable and never print it:
 
 ```sh
 out=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill)
@@ -1452,24 +486,20 @@ the CD drive with **Connected at power on** ticked.
 disk (ext4 target, 10 GB is plenty) is what the wizard will offer to claim.
 
 Then **Add… → Serial Port**, "This end is connected to" → **Output to file** →
-`C:\Users\hp\Desktop\copper-boot.txt` (VMware insists on a `.txt` name and will
-warn that the file does not exist; accept it, it creates the file) → **Connect
-at power on**.
-
-Boot the **verbose** entry while diagnosing. The `copper:` and `copper-net:`
-lines now reach the file on *every* entry, so paste that file rather than
-photographing a screen.
+a `.txt` path (VMware insists on `.txt` and will warn the file doesn't exist;
+accept it, it creates it) → **Connect at power on**. The `copper:` and
+`copper-net:` lines reach the file on every entry, so paste the file rather
+than photographing a screen.
 
 ## Tooling on the build machine
 
 - **Git for Windows** gives a real POSIX shell at
   `C:\Program Files\Git\bin\bash.exe`. That allows `sh -n` on the shipped
   scripts and — more usefully — unit testing shell logic with a stub binary on
-  `PATH`, no VM and no compiler. Most of the tests in this branch were written
-  that way. Don't assume there's no way to test shell here.
+  `PATH`, no VM and no compiler.
 - **This box cannot create a symlink at all** — `ln -s` fails regardless of
-  privilege, because Windows wants Developer Mode for native symlinks. So any
-  test of symlink *behaviour* has to stub `readlink`; the real thing is CI's to
+  privilege, because Windows wants Developer Mode for native symlinks. Tests
+  of symlink behaviour have to stub `readlink`; the real thing is CI's to
   prove, and it does.
 - No local C toolchain: no gcc/clang/tcc, no WSL, no container runtime. C
   verification goes through Compiler Explorer's API, which is **glibc, not
@@ -1477,9 +507,7 @@ photographing a screen.
 - PowerShell gotchas that cost time: no heredocs (write the message to a file
   and use `git commit -F`); inline `bash -lc` with quotes and `$` gets mangled
   (write a `.sh` and invoke it); `curl.exe` mangles JSON in `--data-raw` (write
-  the body to a file, use `--data-binary @file`); nested `$'\r'` through
-  `bash -lc` arrives as a literal backslash-r, so CR checks must live in a
-  script file.
+  the body to a file, use `--data-binary @file`).
 
 ---
 
@@ -1496,7 +524,7 @@ photographing a screen.
   here. It will again.
 - When something is unverified, say so in the commit message and in this file.
   The gap between "it builds" and "it boots" is what this project has been
-  living on, and bugs #4 through #9 were all invisible to the build.
+  living on.
 - If you make a file that wasn't already made, write "handcrafted by [ your name ]" and if you update a file that had bugs, please write "updated by [ your name, the bug, the line where the bug was ]".
 
 THANK YOU
