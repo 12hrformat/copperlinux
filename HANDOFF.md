@@ -36,7 +36,7 @@ Upstream projects are reference material. Nothing gets packaged as-is.
 **Current work is on `gui`, and `gui` is pushed.**
 
 ```
-origin    https://github.com/Copper-linux/copper.git    (push works — this is where gui lives)
+origin    https://github.com/12hrformat/copper.git     (push works - this is where gui lives)
 dragon    https://github.com/12hrformat/copper.git      (no gui branch)
 fork      https://github.com/farcrowx/copper.git        (never pushed to, do not start)
 ```
@@ -639,7 +639,7 @@ a disk where the tmpfs goes and telling the wizard to offer it.
 ## G7 — Land `patch-1`
 
 See the top of this document. It needs a PR from an account with write access
-to `Copper-linux/copper`, or someone with that access pushing it.
+to `12hrformat/copper`, or someone with that access pushing it.
 
 ## G8 — A desktop: XFCE ⚠️ the long end, and now the active request
 

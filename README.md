@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://copper-linux.github.io/Copper-linux-website/">copper-linux.github.io/Copper-linux-website</a>
+  <a href="https://12hrformat.github.io/Copper-linux-website/">12hrformat.github.io/Copper-linux-website</a>
 </p>
 
 ---
@@ -259,7 +259,7 @@ string swap does not belong in this format.
 `/etc/copper/config`:
 
 ```sh
-HOTFIX_URL="https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json"
+HOTFIX_URL="https://raw.githubusercontent.com/12hrformat/copper/main/hotfixes.json"
 BACKUP_DIR="/var/backups/copper"
 LOG_FILE="/var/log/copper-charge.log"
 ```
@@ -370,5 +370,5 @@ above, not just Copper's own MIT terms.
 ## Contact
 
 - Email: [12hrformat@proton.me](mailto:12hrformat@proton.me)
-- Instagram: [@12hrformat](https://instagram.com/12hrformat)
-- Or simply tag us in [Discussions](https://github.com/Copper-linux/copper/discussions)
+- Instagram: [@mommy_said_im_special](https://instagram.com/mommy_said_im_special)
+- Or simply tag us in [Discussions](https://github.com/12hrformat/copper/discussions)

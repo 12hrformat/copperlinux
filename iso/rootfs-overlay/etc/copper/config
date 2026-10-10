@@ -1,7 +1,7 @@
 # Copper Linux configuration
 
 # Where to fetch hotfixes from
-HOTFIX_URL="https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json"
+HOTFIX_URL="https://raw.githubusercontent.com/12hrformat/copper/main/hotfixes.json"
 
 # Where to store backups before applying hotfixes
 BACKUP_DIR="/var/backups/copper"

@@ -38,7 +38,7 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 # Defaults if config is missing
-HOTFIX_URL="${HOTFIX_URL:-https://raw.githubusercontent.com/Copper-linux/copper/main/hotfixes.json}"
+HOTFIX_URL="${HOTFIX_URL:-https://raw.githubusercontent.com/12hrformat/copper/main/hotfixes.json}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/copper}"
 LOG_FILE="${LOG_FILE:-/var/log/copper-charge.log}"
 
