@@ -984,6 +984,26 @@ it. The image's default and `/etc/ingot.conf` already say
 repo silently keeps the old name until someone replaces it. When the name is
 wrong, ingot fetches a 404 and blames the machine it runs on.
 
+**The live image has no `/dev/pts` — and two things break because of it.**
+`iso/live/init` mounts `devtmpfs` on `/dev` (lines ~22 and ~75) but never
+mounts `devpts`, so `/dev/pts` does not exist on a booted system and nothing
+that needs a real PTY works. Confirmed on the first real-boot test
+(2026-10-10) by two separate symptoms:
+1. `sudo ingot install firefox` dies immediately with
+   `sudo: unable to allocate pty: No such file or directory` — sudo runs
+   commands through a pty, and there is none to allocate. This silently broke
+   every app install that `startxfce` attempted through `sudo` (the wget
+   network notes showed up, then nothing).
+2. The XFCE terminal opens but cannot give its shell a pseudo-terminal:
+   "no such file or directory such as pty" (vte's openpty fails on a missing
+   `/dev/pts`). Same root cause, different consumer.
+Fix when it lands: `mkdir -p /dev/pts && mount -t devpts devpts /dev/pts`
+after the devtmpfs mount on the final merged `/dev`, plus a `/dev/ptmx`
+symlink to `/dev/pts/ptmx` if devtmpfs did not create a node. Until then,
+everything pty-dependent — sudo, every terminal emulator, `script(1)` — is
+broken on the live image, and nothing in the CI build catches it because the
+build never boots.
+
 ---
 
 # Config facts worth not rediscovering
@@ -1167,6 +1187,13 @@ VMware's fault:
   `cc1ad9b` shipped with it. The remaining session-log noise (D-Bus
   session bus, AT-SPI, system/login1, `pm-is-supported`) is the agreed next
   project.
+- **First real-boot test 2026-10-10: two PTY bugs, one root cause — no
+  `/dev/pts`.** The prompt path works (component offer prints, default yes),
+  but every install attempt fails behind `sudo: unable to allocate pty`, and
+  the XFCE terminal opens and reports it cannot find a pty. Both come from
+  `iso/live/init` never mounting `devpts` on the merged root — see the trap
+  in "Traps that will cost you a day". Documented here; the fix (devpts
+  mount in init) is the next thing to land.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 
