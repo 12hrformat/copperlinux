@@ -1,12 +1,13 @@
 #!/bin/sh
 # startxfce -- start the X server, then XFCE on it.
 #
-# XFCE is not in the image yet: there is no glib, no GTK3 and no XFCE here,
-# only an X server that has been compiled and never booted. So the useful
-# behaviour right now is to fail informatively. A command that simply exec'd
-# startxfce4 would print "not found", which is indistinguishable from a broken
-# PATH, a missing library, or a server that would not start. Every missing piece
-# therefore gets its own exit code and its own sentence naming the piece.
+# The desktop lives in the image: Xorg and XFCE (thunar, xfce4-terminal) are
+# baked by the gui stage. The apps on top -- firefox, mousepad, ristretto,
+# xfce4-taskmanager, xarchiver -- are ingot packages, and before anything
+# starts this asks whether to install the missing ones (manifest at
+# /etc/copper/xfce-apps). What is genuinely absent still gets its own exit
+# code and its own sentence naming the piece, instead of a bare "not found"
+# that is indistinguishable from a broken PATH or missing library.
 #
 # POSIX sh, not bash: the image's shell is busybox ash, and build.sh checks these
 # scripts against /bin/sh. A bashism here is a script that works on the build
@@ -20,6 +21,8 @@
 #   22  the X server started but never opened its display socket
 #   23  the X server exited while starting up
 #   24  usage error
+#   25  a component is missing but there is no terminal to ask on, and
+#       neither --yes nor --no was given, so nothing was decided
 #
 # The X server's log goes to $COPPER_XLOG, else /tmp/xorg.log. When this fails
 # there is nothing on the screen to read, so the log is the only evidence.
@@ -50,6 +53,15 @@ XSOCKDIR=${XSOCKDIR:-/tmp/.X11-unix}
 DISPLAY_NUM=${DISPLAY_NUM:-0}
 WAIT_TRIES=${WAIT_TRIES:-100}
 
+# The component manifest and the installer it drives. startxfce only offers
+# components; it does not hardcode which ones.
+APPS=${COPPER_XFCE_APPS:-/etc/copper/xfce-apps}
+INGOT=${COPPER_INGOT:-ingot}
+SUDO=${COPPER_SUDO-sudo}
+# Root needs no sudo, and the image may not even have it. "-" (not ":-") so
+# an empty COPPER_SUDO really does disable sudo instead of reviving the default.
+if [ "$(id -u)" = 0 ]; then SUDO=; fi
+
 say() { printf 'startxfce: %s\n' "$1"; }
 
 usage() {
@@ -58,6 +70,8 @@ startxfce -- start the X server, then XFCE on it
 
   startxfce            start Xorg if it is not already running, then XFCE
   startxfce --check    report what is installed and exit, starting nothing
+  startxfce --yes      install any missing components without asking
+  startxfce --no       do not install components, just start the desktop
   startxfce --help     this text
 
 Environment, all optional:
@@ -70,10 +84,16 @@ Environment, all optional:
   COPPER_XORGCONF    where the generated input config is written
                      (default /etc/X11/xorg.conf; falls back to /tmp/xorg.conf
                      when the login cannot write there)
+  COPPER_XFCE_APPS   where the component manifest lives
+                     (default /etc/copper/xfce-apps; absence disables the
+                     offer entirely)
+  COPPER_INGOT       installer for the components   (default ingot)
+  COPPER_SUDO        how to gain root for the install (default sudo; empty
+                     means already root or never use it)
   DISPLAY_NUM        which display to use        (default 0)
 
 Exit codes: 0 ok, 20 no X server, 21 no XFCE, 22 X gave no display,
-23 X exited while starting, 24 usage.
+23 X exited while starting, 24 usage, 25 no way to ask about components.
 EOF
 }
 
@@ -101,13 +121,18 @@ report() {
     fi
 }
 
-case "${1:-}" in
---help|-h)   usage; exit 0 ;;
---check)     report; exit 0 ;;
-'')          : ;;
--*)          say "unknown option: $1"; usage >&2; exit 24 ;;
-*)           say "unexpected argument: $1"; usage >&2; exit 24 ;;
-esac
+choice=
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --help|-h)  usage; exit 0 ;;
+    --check)    report; exit 0 ;;
+    --yes|-y)   choice=yes ;;
+    --no|-n)    choice=no ;;
+    -*)         say "unknown option: $1"; usage >&2; exit 24 ;;
+    *)          say "unexpected argument: $1"; usage >&2; exit 24 ;;
+    esac
+    shift
+done
 
 # An X server already on this display is reused rather than replaced. Two
 # servers on one display is a confusing failure: the second refuses the socket,
@@ -170,6 +195,78 @@ if [ "$have_xfce" != 1 ]; then
     say "cannot start XFCE: there is no XFCE session at $STARTXFCE4"
     say "the X server alone is not a desktop."
     exit 21
+fi
+
+# Components. The desktop is in the image; the apps on top of it are ingot
+# packages, and only the missing ones are offered. The list lives in the
+# manifest, not here: what is offered, what marks it present, and how it is
+# installed change independently of this script. Components whose 'how' is
+# "image" are expected in the ISO already -- a missing one is a broken image,
+# so it is reported and never turned into an install attempt.
+missing=
+if [ -r "$APPS" ]; then
+    while read -r cname cprobe corigin; do
+        case "$cname" in ''|\#*) continue ;;
+        esac
+        [ -n "$cprobe" ] || continue
+        [ -e "$cprobe" ] && continue
+        case "$corigin" in
+            image) say "component '$cname' is missing from the image (looked for $cprobe)" ;;
+            *)     missing="$missing $cname" ;;
+        esac
+    done < "$APPS"
+fi
+
+if [ -n "$missing" ]; then
+    do_install=
+    case "$choice" in
+        yes) do_install=1 ;;
+        no)  say "not installing components (--no)" ;;
+        *)
+            if [ -t 0 ]; then
+                printf 'startxfce: before running xfce do you want to install its main components? (ex- firefox and thunar) (Y/n) '
+                answer=
+                read -r answer || answer=
+                case "$answer" in
+                    [Nn]*) say "not installing components" ;;
+                    *)     do_install=1 ;;
+                esac
+            else
+                say "a component is missing and there is no way to ask: stdin is not a terminal."
+                say "  startxfce --yes   install the missing components first"
+                say "  startxfce --no    start the desktop without them"
+                exit 25
+            fi
+            ;;
+    esac
+
+    if [ -n "$do_install" ]; then
+        say "installing the missing components:$missing"
+        failed=
+        for c in $missing; do
+            say "  $c ..."
+            if $SUDO $INGOT install "$c"; then
+                :
+            else
+                say "  could not install $c, continuing without it"
+                failed=1
+            fi
+        done
+        # ingot unpacks .debs but no maintainer script runs, so nothing
+        # regenerates the databases the desktop reads. Rebuild them by hand
+        # or the new .desktop files never show up and launchers stay dead.
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database /usr/share/applications >/dev/null 2>&1 || :
+        fi
+        if command -v update-mime-database >/dev/null 2>&1; then
+            update-mime-database /usr/share/mime >/dev/null 2>&1 || :
+        fi
+        if [ -n "$failed" ]; then
+            say "some components could not be installed; starting the desktop anyway"
+        else
+            say "components installed, running xfce now"
+        fi
+    fi
 fi
 
 if display_live; then

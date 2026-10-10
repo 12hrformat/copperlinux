@@ -1,12 +1,12 @@
 #!/bin/sh
 # Prove startxfce does the right thing, and fails the right way.
 #
-# startxfce's whole value right now is that XFCE is NOT in the image. So the
-# interesting cases are the failures, and a test that only checked the happy
-# path would be checking the one case that cannot happen yet. Every missing
-# piece therefore gets a case here, with the exact exit code asserted -- the
-# codes are a contract, and a script branching on them is broken silently if
-# one of them changes.
+# The desktop is in the image now, so the launcher's daily job is the component
+# offer and the happy launch -- but the failure paths carried the exit-code
+# contract, and a test that stopped checking them would let one drift silently.
+# Every missing piece therefore gets a case here, with the exact exit code
+# asserted -- the codes are a contract, and a script branching on them is broken
+# silently if one of them changes.
 #
 # The X server and the XFCE session are stubbed. That is not a shortcut: the
 # real Xorg is a 13MB binary linked against 21 glibc libraries, and this image
@@ -119,10 +119,17 @@ run_sut() {
     tries=$3
     shift 3
     # The trailing "$@" carries options like --check through to the launcher.
+    # COPPER_XFCE_APPS and COPPER_INGOT are driven by globals so the component
+    # cases can point the launcher at a manifest and a stub installer; anything
+    # else sees a manifest path that does not exist, which disables the offer.
+    APPS_MANIFEST=${APPS_MANIFEST:-}
+    INGOT_STUB=${INGOT_STUB:-}
     COPPER_XORG="$xorg" COPPER_STARTXFCE4="$session" COPPER_XLOG="$TMP/xorg.log" \
     COPPER_SESSIONLOG="$TMP/session.log" COPPER_XPROBE="$PROBE" \
     XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES="$tries" \
     COPPER_XORGCONF="$TMP/xorg.conf" \
+    COPPER_XFCE_APPS="${APPS_MANIFEST:-$TMP/no-apps}" \
+    COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
     sh "$SUT" "$@" 2>&1
 }
 
@@ -385,6 +392,8 @@ eq "  an unknown option exits 24" 24 "$rc"
 out=$(sh "$SUT" --help 2>&1); rc=$?
 eq "  --help exits 0" 0 "$rc"
 has "  --help lists the exit codes" "22 X gave no display" "$out"
+has "  --help documents the component flags" "--yes" "$out"
+has "  --help lists exit 25" "25 no way to ask" "$out"
 
 echo
 echo "=== case 10: the PS/2 mouse wins the pointer over a USB tablet ==="
@@ -462,6 +471,72 @@ out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
 pkill -f "$TMP/Xorg" 2>/dev/null
 eq "  exit code is 0" 0 "$rc"
 has "  the generic mouse won the pointer" "pointer=event3" "$out"
+
+echo
+echo "=== case 12: a component is missing, nothing to ask on, no --yes/--no ==="
+# The manifest names an ingot component whose probe does not exist. The test
+# has no terminal behind its command substitution, so the question cannot be
+# answered: startxfce must stop with exit 25 instead of silently guessing.
+reset
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+cat > "$TMP/apps" <<EOF
+firefox $TMP/missing/firefox ingot
+EOF
+APPS_MANIFEST="$TMP/apps"
+out=$(run_sut "$TMP/nope/Xorg" "$TMP/startxfce4" 5); rc=$?
+APPS_MANIFEST=
+eq "  exit code is 25 (cannot ask)" 25 "$rc"
+has "  explains there is no terminal" "not a terminal" "$out"
+has "  points at --yes" "--yes" "$out"
+
+echo
+echo "=== case 13: --no skips the install and the desktop starts anyway ==="
+reset
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+cat > "$TMP/apps" <<EOF
+firefox $TMP/missing/firefox ingot
+EOF
+APPS_MANIFEST="$TMP/apps"
+out=$(run_sut "$TMP/nope/Xorg" "$TMP/startxfce4" 5 --no); rc=$?
+APPS_MANIFEST=
+# Past the component block (so no exit 25) to the missing-server check.
+eq "  gets past the prompt to the X check" 20 "$rc"
+has "  says it is not installing components" "not installing components" "$out"
+hasnt "  never printed the question" "do you want to install" "$out"
+
+echo
+echo "=== case 14: --yes installs the missing components, then proceeds ==="
+reset
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+cat > "$TMP/apps" <<EOF
+firefox $TMP/missing/firefox ingot
+EOF
+cat > "$TMP/ingot" <<'EOF'
+#!/bin/sh
+echo "ingot-stub: $*" >&2
+exit 0
+EOF
+chmod +x "$TMP/ingot"
+APPS_MANIFEST="$TMP/apps"; INGOT_STUB="$TMP/ingot"
+out=$(run_sut "$TMP/nope/Xorg" "$TMP/startxfce4" 5 --yes); rc=$?
+APPS_MANIFEST=; INGOT_STUB=
+eq "  installs first, then reaches the X check" 20 "$rc"
+has "  the installer really was invoked" "ingot-stub: install firefox" "$out"
+has "  says the components were installed" "components installed, running xfce now" "$out"
+
+echo
+echo "=== case 15: a present component is not offered at all ==="
+reset
+: > "$TMP/present-probe"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+cat > "$TMP/apps" <<EOF
+firefox $TMP/present-probe ingot
+EOF
+APPS_MANIFEST="$TMP/apps"
+out=$(run_sut "$TMP/nope/Xorg" "$TMP/startxfce4" 5); rc=$?
+APPS_MANIFEST=
+eq "  no prompt, straight to the X check" 20 "$rc"
+hasnt "  never asked about components" "do you want to install" "$out"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
