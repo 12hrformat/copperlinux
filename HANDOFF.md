@@ -1,7 +1,9 @@
 # Copper Linux — Handoff
 
 > please note that SOME things in here are outdated and because this is a thousand lines of text, I cannot keep it all up to date. The most recent and accurate information is in the `BUGS.md` file, which is the source of truth for what is verified and what is not. If you are reading this file, please also read `BUGS.md` to see what is still unverified or broken. thank you
-
+>
+> PLEASE dont write bugs or random commecnt in README.md, dont write where things actually stand and stuff like that i like to keep it short
+>
 > Read this first, then `iso/README.md` for the build internals.
 > Written by whoever had the machine last. Everything in it is either verified
 > or explicitly marked as unverified — there is no third category.

@@ -12,25 +12,21 @@
 
 ---
 
-Copper is our distro. Not a Debian or Arch rebrand — we build the kernel, the
-libc, and the userland from source, and we write the bits that make it
-*Copper* ourselves: the shell, the init, and the first-boot setup. Arch and
-Debian are fine systems, we just wanted to do it our way.
-
-It's for daily driving — for Linux nerds, coders, and students who want
-something that feels like theirs.
-
-The source code of Arch Linux and Debian was used for reference, nothing more.
+Copper is our distro. Not a Debian or Arch rebrand — built from source, with a small, curated set of packages. It's designed to be a daily driver for Linux nerds, coders, and students who want something that feels like theirs. It's small, fast, and has a minimal base so you can add what you want. It has a GUI, but the default is a shell — so you can learn Linux without being forced into a desktop environment. It's built to be simple, but not simplistic.
 
 Copper has a twin: **deadlight linux**, a cybersecurity-focused distro by the
 same team. Same base, different goal — basically a reskin, but with the useful
 tools already on it.
 
+Copper linux is a work in progress. It's not ready for production use yet, but it's usable and fun to play with. The team is small, but we're working hard to make it better every day. Wanna contribute?
+
+Copper linux also has its own package manager, **ingot**, which is hosted on GitHub Pages. It's not pacman, but it works. It fetches packages from a JSON index on Pages, downloads the payload from the real URL, verifies the hash, and installs it. It's designed to be simple and fast.
+
 ---
 
 ## Boot, and starting a desktop
 
-First boot asks its questions, then lands on a **`copper-sh` prompt**. That's
+First boot asks its questions, then lands on a **prompt**. That's
 the current default and it's deliberate: the X stack is proven under QEMU but
 not on every machine, so a failure in it costs a shell rather than the
 machine.
@@ -92,7 +88,7 @@ sudo bash iso/build.sh
 ```
 
 or check the Actions logs for a CI run. A finished build uploads `copper.iso`
-(~57 MB) as an Actions artifact.
+(~300 MB) as an Actions artifact.
 
 ---
 
@@ -114,3 +110,9 @@ real disk partition.
 A small POSIX-style shell, written in C. Mostly builtins for now, so it can do
 useful things before the rest of the userland is on the system. Anything not
 built in falls through to `execvp` and runs from `$PATH`.
+
+## Contact
+
+Instagram: [@12hrformat](https://www.instagram.com/12hrformat/)
+Email: [12hrformat](mailto:12hrformat@proton.me)
+Discord: join copper linux's server: [discord](https://discord.gg/qCQdxNV9Va)
