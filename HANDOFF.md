@@ -1000,9 +1000,10 @@ that needs a real PTY works. Confirmed on the first real-boot test
 Fix (landed): `iso/live/init` now runs `mkdir -p /mnt/merged/dev/pts &&
 mount -t devpts devpts /mnt/merged/dev/pts` after the devtmpfs mount on the
 final merged `/dev`, and symlinks `/dev/ptmx` → `pts/ptmx` if devtmpfs did
-not create a node. Until that image is booted, everything pty-dependent —
-sudo, every terminal emulator, `script(1)` — is broken on the live image,
-and nothing in the CI build catches it because the build never boots.
+not create a node. **Confirmed on the second real-boot test (2026-10-10):**
+the XFCE terminal opens a real pty and `sudo` allocates ptys without error.
+Still true: nothing in the CI build catches pty-regressions because the
+build never boots.
 
 ---
 
@@ -1048,8 +1049,21 @@ Each of these cost a wrong turn once. All were checked against real sources.
 - busybox installs udhcpc at `/sbin/udhcpc`, `ip`/`ifconfig`/`route` in
   `/sbin`, `ping` in `/bin`, `wget`/`nslookup` in `/usr/bin`, `switch_root` in
   `/sbin`. It does **not** install a lease script, which is why we ship one.
-- `wget`'s `https://` is busybox's internal TLS. It encrypts but does **not**
-  verify certificates. Fine for pulling a tarball, not for a login.
+- `wget`'s `https://` can take **two very different paths** depending on what
+  is on the machine, and which one runs decides whether a download succeeds:
+  **(a) the openssl helper** (`FEATURE_WGET_OPENSSL`, `default y`): busybox
+  forks `openssl s_client` and feeds it the sockets — this path verifies
+  certs (unless `--no-check-certificate`) and works against github.com
+  releases; **(b) busybox's internal TLS** (`FEATURE_WGET_HTTPS`,
+  `default y`): used only when the openssl exec fails or wasn't configured —
+  it prints `note: TLS certificate validation not implemented` every time,
+  does **not** verify certificates, and on a faithful 1.36.1 build it hangs
+  against `release-assets.githubusercontent.com` (the GitHub release
+  redirect) while fetching Pages and github.com itself fine. The ISO ships
+  **no `openssl` binary**, so every https download on the live image falls
+  into path (b) — which is bug "the download doesn't go through". If you
+  ever see that note on the machine, that is the internal-TLS path, and
+  payload downloads from GitHub releases will never complete.
 
 ---
 
@@ -1194,7 +1208,56 @@ VMware's fault:
   `iso/live/init` never mounting `devpts` on the merged root — see the trap
   in "Traps that will cost you a day". **Fixed in `iso/live/init`**: it now
   mounts devpts on the merged root's `/dev/pts` (and symlinks `/dev/ptmx`).
-  Needs a boot to confirm.
+- **Second real-boot test 2026-10-10: the PTY fix is confirmed, and three
+  new bugs surface.** The XFCE terminal now opens a real pty and `sudo`
+  allocates ptys without error (owner-confirmed: "when I click terminal in
+  xfce it works"). That is the devpts fix closing. The three new ones:
+  - **`sudo shutdown now` / `sudo reboot` do nothing.** Two separate causes.
+    (1) **busybox has no `shutdown` applet at all** — `busybox --list` on a
+    faithful 1.36.1 build shows `shutdown: MIA` while `halt`, `poweroff`,
+    `reboot` are all present, so `shutdown` is simply "command not found";
+    nothing in the ISO ships one. (2) **`reboot` (and `halt`/`poweroff`)
+    without `-f` never call the reboot(2) syscall** — busybox
+    `init/halt.c` sends a signal to PID 1 and expects init to do the work
+    (`kill(1, SIGTERM)` for reboot; `SIGUSR1`/`SIGUSR2` for halt/poweroff).
+    Copper-init **ignores** `SIGINT`/`SIGTERM`/`SIGHUP`
+    (`copper-init.c:269-271`), so the request silently dies. `reboot -f`
+    would work, but nothing calls it. **Fix candidates:** teach copper-init
+    to handle the power signals (sync + `reboot(2)` with the right magic),
+    and add a small `/sbin/shutdown` wrapper since busybox will never ship
+    one.
+  - **App payload downloads hang on the live ISO.** `ingot install
+    firefox` fetches the index.json and the firefox page fine (GitHub Pages
+    works), then the payload — which lives on a GitHub **release** and
+    therefore **redirects to `release-assets.githubusercontent.com`** — never
+    completes; the loop prints
+    `wget: note: TLS certificate validation not implemented`. Root cause
+    verified by a faithful busybox 1.36.1 build in WSL: with **no `openssl`
+    executable on PATH** (the ISO ships none — grep `iso/build.sh` for
+    `openssl` returns nothing), busybox drops to its **internal TLS**
+    fallback (`FEATURE_WGET_OPENSSL=y` in the config, spawn of `openssl s_client`
+    fails, `wget.c` dispatch falls through to `spawn_ssl_client`). Internal
+    TLS fetches github.com and Pages fine but **hangs against the
+    release-assets redirect** (rc=124/timeout in the WSL repro; the exact
+    payload URL and `tree-2.3.2-1.tar.gz` both hang). With openssl
+    available, the same busybox downloads all three URLs fine (rc=0).
+    **Fix candidate (unverified):** ship an `openssl` binary in the image
+    so the openssl helper path works, then boot-verify. Note busybox's
+    internal TLS also *cannot verify certificates* (config help: "it does
+    not check that the peer is who it claims to be"), so even where it
+    works it is MITM-able; a real TLS client for the payload fetch is the
+    honest fix.
+  - **The desktop session runs as root.** By design, but it is wrong for a
+    wizard that just created a user: `copper-init.c` reads
+    `/etc/copper-firstboot.done` (the wizard-created account, e.g.
+    `dragon`), `chdir`s into `/home/<user>` and sets `HOME`/`USER`/
+    `LOGNAME` **but never drops uid** — the console shell (and everything
+    launched from it, including `startxfce` and the whole XFCE session)
+    stays uid 0, which is why Thunar warns "you are logged in as root". The
+    wizard account exists but is never actually logged in. **Fix is a
+    design call:** drop to the wizard-created user for the desktop session
+    (setuid + X authority), keeping a root console for admin, or make the
+    wizard user the full session user with sudo for elevation.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 
