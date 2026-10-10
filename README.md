@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://12hrformat.github.io/Copper-linux-website/">12hrformat.github.io/Copper-linux-website</a>
+  <a href="https://12hrformat.github.io/copperlinux-site/">Copper Linux website</a>
 </p>
 
 ---
@@ -17,6 +17,8 @@ Copper is our own distro, not a rebrand of Debian or Arch. We build the
 kernel, the libc, and the userland from source, and we write the parts that
 make it *Copper* ourselves — the shell, the init system, the first-boot
 setup. Arch and debian are good but we wanted to do it *our* way.
+
+Copper Linux is a distro made for daily driving, for Linux enthusiasts, coders and students.
 
 The source code of Arch linux and Debian was used for refrence, nothing more.
 
