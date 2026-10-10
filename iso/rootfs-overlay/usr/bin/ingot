@@ -85,14 +85,102 @@ require_root() { # require_root <verb>
 
 # ---- helpers --------------------------------------------------------------
 
+# human_mi <bytes> -> "NNN.N" (one decimal, no suffix). Integer math only so
+# it runs in busybox ash on a 120M payload without overflow or a float printf.
+human_mi() { # human_mi <bytes>
+  n=${1:-0}
+  whole=$(( n / 1048576 ))
+  frac=$(( (n % 1048576) * 10 / 1048576 ))
+  printf '%s.%s' "$whole" "$frac"
+}
+
+# human_size <bytes> -> "255 B" / "136.3 KiB" / "119.7 MiB" (apt-style, no floats)
+human_size() { # human_size <bytes>
+  n=${1:-0}
+  if [ "$n" -lt 1024 ]; then
+    printf '%s B' "$n"
+  elif [ "$n" -lt 1048576 ]; then
+    v=$(( n * 10 / 1024 ))
+    printf '%s.%s KiB' "$((v / 10))" "$((v % 10))"
+  else
+    v=$(( n * 10 / 1048576 ))
+    printf '%s.%s MiB' "$((v / 10))" "$((v % 10))"
+  fi
+}
+
+# draw_bar <now> <total> <speed-bytes-per-sec>  (on stderr, one \r frame)
+draw_bar() {
+  now=${1:-0}; total=${2:-0}; speed=${3:-0}
+  [ "$total" -gt 0 ] || return 0
+  [ "$now" -gt "$total" ] && now=$total
+  pct=$(( now * 100 / total ))
+  fill=$(( pct * 30 / 100 ))
+  bar=
+  i=0
+  while [ "$i" -lt 30 ]; do
+    if [ "$i" -lt "$fill" ]; then bar="${bar}#"; else bar="${bar}-"; fi
+    i=$((i + 1))
+  done
+  cur=$(human_mi "$now")
+  tot=$(human_mi "$total")
+  kib=$(( speed / 1024 ))
+  if [ "$speed" -gt 0 ]; then
+    eta_s=$(( (total - now) / speed ))
+    eta_m=$(( eta_s / 60 )); eta_s=$(( eta_s % 60 ))
+    eta=$(printf '%02d:%02d' "$eta_m" "$eta_s")
+  else
+    eta="--:--"
+  fi
+  printf '\r  %3d%% [%s] %5s / %5s MiB  %4d KiB/s  ETA %s\033[K' \
+    "$pct" "$bar" "$cur" "$tot" "$kib" "$eta" >&2
+}
+
+# download_once <file> <url> <total> -- one wget attempt. On a terminal with a
+# known size it runs wget in the background and repaints a pacman-style bar
+# from the growing file. Polling uses stat -c %s (busybox and GNU) which is
+# metadata only -- NOT wc -c, which reads the whole payload every second, and
+# NOT wc -c's `SIZE filename` output shape. Off a terminal, or with no size
+# known, it is a plain quiet wget.
+download_once() { # download_once <file> <url> <total>
+  file=$1; url=$2; total=${3:-}
+  # Bar only for real payloads on a real terminal: tiny packages (libpcap 136K,
+  # tcpdump 533K) finish faster than the bar can tick, and logs/scripts are
+  # quiet pipes, not terminals.
+  if [ -t 2 ] && [ -n "$total" ] && [ "$total" -ge 1048576 ]; then
+    wget -q -c -O "$file" "$url" &
+    wpid=$!
+    prev=0
+    speed=0
+    t_last=$(date +%s)
+    while kill -0 "$wpid" 2>/dev/null; do
+      sleep 1
+      t_now=$(date +%s)
+      now=$(stat -c %s "$file" 2>/dev/null || echo 0)
+      case "$now" in ''|*[!0-9]*) now=0 ;; esac
+      dt=$((t_now - t_last)); [ "$dt" -lt 1 ] && dt=1
+      speed=$(( (now - prev) / dt )); [ "$speed" -lt 0 ] && speed=0
+      draw_bar "$now" "$total" "$speed"
+      prev=$now; t_last=$t_now
+    done
+    wait "$wpid"
+    rc=$?
+    done_now=$(stat -c %s "$file" 2>/dev/null || echo 0)
+    case "$done_now" in ''|*[!0-9]*) done_now=0 ;; esac
+    draw_bar "$done_now" "$total" "$speed"
+    printf '\n' >&2
+    return $rc
+  fi
+  wget -q -c -O "$file" "$url"
+}
+
 # fetch url -> file. busybox wget and GNU wget both accept -O and -q.
 # busybox wget's openssl helper path verifies certificates (the image ships
 # openssl since 2026-10-10); only the internal-TLS fallback skips that, and
 # the helper is the path a normal image takes.
 #
-# Say which URL we're fetching before touching the network -- a multi-tens-of-
-# MB payload from the release CDN looks like a hang when the only output line
-# is the trailing "installed". The note goes to stderr, not stdout: fetch_meta
+# Say what we are doing before touching the network -- a multi-tens-of-MB
+# payload from the release CDN looks like a hang when the only output line is
+# the trailing "installed". The note goes to stderr, not stdout: fetch_meta
 # ends with `echo "/tmp/$name"` and cmd_install captures ALL of its stdout via
 # `meta=$(fetch_meta ...)` -- a stdout note would land in the package meta and
 # break jget. stderr is the notification channel here.
@@ -103,24 +191,30 @@ require_root() { # require_root <verb>
 # retry a few times with -c so each attempt resumes the bytes already pulled
 # instead of restarting. busybox wget checks that the server honored the Range
 # header and starts over itself when it did not.
-dl() { # dl <file> <url>
-  echo "ingot: fetching $2" >&2
+dl() { # dl <file> <url> [size]
+  file=$1; url=$2; total=${3:-}
+  if [ -n "$total" ]; then
+    echo "ingot: downloading $(basename "$url") ($(human_size "$total"))" >&2
+  else
+    echo "ingot: fetching $url" >&2
+  fi
   tries=5
   while [ "$tries" -gt 0 ]; do
-    if wget -q -c -O "$1" "$2"; then
-      [ -s "$1" ] && return 0
+    if download_once "$file" "$url" "$total"; then
+      [ -s "$file" ] && return 0
     fi
     tries=$((tries - 1))
-    [ "$tries" -gt 0 ] && { echo "ingot: download interrupted; retrying ($tries left)" >&2; sleep 2; }
+    [ "$tries" -gt 0 ] && { echo "ingot: transfer dropped; retrying ($tries left)" >&2; sleep 2; }
   done
-  echo "ingot: download failed ($2)" >&2
+  echo "ingot: download failed ($url)" >&2
   return 1
 }
 
-# jget <key> <json-file> -> the value of "key": "value" (first match, no \n).
-# Works because our JSON is one key per line with flat string values.
+# jget <key> <json-file> -> the value of "key": value (first match, no \n).
+# Works because our JSON is one key per line with flat values. Accepts both
+# "key": "string" and "key": 123456 (size is an unquoted integer).
 jget() {
-  sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -n1
+  sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$2" | head -n1
 }
 
 # category of a package name, from the one-entry-per-line index.
@@ -176,18 +270,25 @@ cmd_install() { # cmd_install <name>
   # files churn on disk (fine, that is the point), variables do not.
   deps=$(depends_of "$meta")
   if [ -n "$deps" ]; then
+    echo "ingot: resolving dependencies for $name" >&2
     for dep in $deps; do
       [ -n "$dep" ] || continue
       ( cmd_install "$dep" ) || { rm -f "/tmp/$name"; return 1; }
     done
   fi
 
-  # The real payload, from the REAL url in the JSON.
+  # The real payload, from the REAL url in the JSON. A size in the page makes
+  # dl draw a live progress bar on a terminal (pacman-style); without it the
+  # same download just runs quietly.
   payload="/tmp/$name.payload.$$"
-  dl "$payload" "$url" || { rm -f "/tmp/$name" "$payload"; return 1; }
+  size=$(jget size "$meta")
+  version=$(jget version "$meta")
+  echo "ingot: installing $name $version" >&2
+  dl "$payload" "$url" "$size" || { rm -f "/tmp/$name" "$payload"; return 1; }
 
   # The whole point of carrying the hash: a corrupted or replaced download
   # must not install. Compare before touching the tree.
+  echo "ingot: verifying $name checksum..." >&2
   got=$(sha256sum "$payload" | awk '{print $1}')
   if [ "$got" != "$want" ]; then
     echo "ingot: sha256 mismatch for $name" >&2
@@ -196,6 +297,7 @@ cmd_install() { # cmd_install <name>
     rm -f "/tmp/$name" "$payload"
     return 1
   fi
+  [ -t 2 ] && echo "ingot: checksum ok" >&2
 
   # Payload tar paths must stay inside the target root. An absolute path or
   # a .. entry would walk out of it; refuse before unpacking.

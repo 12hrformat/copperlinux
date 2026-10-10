@@ -55,6 +55,7 @@ mkdir -p "$REPO_ROOT/iso/copper/pkg/fun" "$REPO_ROOT/payloads" "$ROOT"
 # index.json: name -> category, one entry per line (the shape ingot parses).
 cat > "$REPO_ROOT/iso/copper/pkg/index.json" <<EOF
 {
+  "bigwheel": "fun",
   "pinwheel": "fun",
   "cog": "fun",
   "forged": "fun"
@@ -73,12 +74,24 @@ mkdir -p "$WORK/stage2/usr/lib"
 printf 'cog lib\n' > "$WORK/stage2/usr/lib/libcog.so"
 ( cd "$WORK/stage2" && tar -czf "$REPO_ROOT/payloads/cog-1.0.tar.gz" usr )
 SHA_COG=$(sha256sum "$REPO_ROOT/payloads/cog-1.0.tar.gz" | awk '{print $1}')
+SIZE_COG=$(wc -c < "$REPO_ROOT/payloads/cog-1.0.tar.gz")
 
 # forged-2.0: a real payload whose page JSON carries the WRONG sha256.
 mkdir -p "$WORK/stage3/usr/bin"
 printf 'forged binary\n' > "$WORK/stage3/usr/bin/forged"
 ( cd "$WORK/stage3" && tar -czf "$REPO_ROOT/payloads/forged-2.0.tar.gz" usr )
 SHA_FORGED_WRONG=$(sha256sum "$REPO_ROOT/payloads/pinwheel-1.0.tar.gz" | awk '{print $1}')
+SIZE_FORGED=$(wc -c < "$REPO_ROOT/payloads/forged-2.0.tar.gz")
+
+# bigwheel-1.0: a payload > 1MiB (urandom so the tarball won't shrink) so the
+# tty progress bar's >= 1048576 gate actually triggers under the pty test.
+mkdir -p "$WORK/stage4b/usr/lib"
+dd if=/dev/urandom of="$WORK/stage4b/usr/lib/big.dat" bs=1M count=2 status=none 2>/dev/null
+( cd "$WORK/stage4b" && tar -czf "$REPO_ROOT/payloads/bigwheel-1.0.tar.gz" usr )
+SHA_BIGWHEEL=$(sha256sum "$REPO_ROOT/payloads/bigwheel-1.0.tar.gz" | awk '{print $1}')
+SIZE_BIGWHEEL=$(wc -c < "$REPO_ROOT/payloads/bigwheel-1.0.tar.gz")
+
+SIZE_PIN=$(wc -c < "$REPO_ROOT/payloads/pinwheel-1.0.tar.gz")
 
 cat > "$REPO_ROOT/iso/copper/pkg/fun/pinwheel" <<EOF
 {
@@ -86,6 +99,7 @@ cat > "$REPO_ROOT/iso/copper/pkg/fun/pinwheel" <<EOF
   "version": "1.0",
   "category": "fun",
   "url": "http://127.0.0.1:$PORT/payloads/pinwheel-1.0.tar.gz",
+  "size": $SIZE_PIN,
   "sha256": "$SHA_PIN",
   "depends": ["cog"]
 }
@@ -97,6 +111,7 @@ cat > "$REPO_ROOT/iso/copper/pkg/fun/cog" <<EOF
   "version": "1.0",
   "category": "fun",
   "url": "http://127.0.0.1:$PORT/payloads/cog-1.0.tar.gz",
+  "size": $SIZE_COG,
   "sha256": "$SHA_COG"
 }
 EOF
@@ -107,7 +122,19 @@ cat > "$REPO_ROOT/iso/copper/pkg/fun/forged" <<EOF
   "version": "2.0",
   "category": "fun",
   "url": "http://127.0.0.1:$PORT/payloads/forged-2.0.tar.gz",
+  "size": $SIZE_FORGED,
   "sha256": "$SHA_FORGED_WRONG"
+}
+EOF
+
+cat > "$REPO_ROOT/iso/copper/pkg/fun/bigwheel" <<EOF
+{
+  "name": "bigwheel",
+  "version": "1.0",
+  "category": "fun",
+  "url": "http://127.0.0.1:$PORT/payloads/bigwheel-1.0.tar.gz",
+  "size": $SIZE_BIGWHEEL,
+  "sha256": "$SHA_BIGWHEEL"
 }
 EOF
 
@@ -138,6 +165,17 @@ if out=$( sh "$INGOT" install pinwheel 2>&1 ); then
 else
   note_bad "install pinwheel failed: $out"
 fi
+printf '%s' "$out" | grep -q "installing pinwheel 1.0" \
+  && note_ok "install names the package+version" || note_bad "no install status line: $out"
+printf '%s' "$out" | grep -q "downloading pinwheel-1.0.tar.gz (" \
+  && note_ok "install reports download with a size" || note_bad "no size-aware download line: $out"
+printf '%s' "$out" | grep -q "downloading cog-1.0.tar.gz (" \
+  && note_ok "dependency download reported too" || note_bad "dep download line missing: $out"
+printf '%s' "$out" | grep -q "verifying pinwheel checksum" \
+  && note_ok "install shows the verify step" || note_bad "verify step line missing: $out"
+printf '%s' "$out" | grep -q "KiB/s" \
+  && note_bad "bar leaked into a piped (non-tty) run" \
+  || note_ok "non-tty install has no progress bar"
 [ -f "$ROOT/usr/bin/pinwheel" ]                && note_ok "usr/bin/pinwheel landed"  || note_bad "usr/bin/pinwheel missing"
 [ -f "$ROOT/usr/share/pinwheel/data.txt" ]     && note_ok "data.txt landed"           || note_bad "data.txt missing"
 [ -f "$ROOT/usr/lib/libcog.so" ]               && note_ok "dependency cog installed"  || note_bad "dependency cog missing"
@@ -234,12 +272,14 @@ mkdir -p "$WORK/stage4/usr/lib"
 printf 'cog lib 1.1\n' > "$WORK/stage4/usr/lib/libcog.so"
 ( cd "$WORK/stage4" && tar -czf "$REPO_ROOT/payloads/cog-1.1.tar.gz" usr )
 SHA_COG_11=$(sha256sum "$REPO_ROOT/payloads/cog-1.1.tar.gz" | awk '{print $1}')
+SIZE_COG_11=$(wc -c < "$REPO_ROOT/payloads/cog-1.1.tar.gz")
 cat > "$REPO_ROOT/iso/copper/pkg/fun/cog" <<EOF
 {
   "name": "cog",
   "version": "1.1",
   "category": "fun",
   "url": "http://127.0.0.1:$PORT/payloads/cog-1.1.tar.gz",
+  "size": $SIZE_COG_11,
   "sha256": "$SHA_COG_11"
 }
 EOF
@@ -259,6 +299,25 @@ if out=$( sh "$INGOT" update 2>&1 ); then
   printf '%s' "$out" | grep -q "up to date" && note_ok "update-all sees nothing to do" || note_bad "update-all odd: $out"
 else
   note_bad "update (all) failed: $out"
+fi
+
+# ---- the pretty bar: on a real tty, big downloads animate ----------------
+# Non-tty runs must stay plain (asserted above); this one forces a pty and a
+# >1MiB payload so the bar path triggers for real and we can see the frames.
+if command -v python3 >/dev/null 2>&1; then
+  bar_out=$( python3 "$REPO/tests/pty-run.py" sh "$INGOT" install bigwheel 2>&1 )
+  printf '%s' "$bar_out" | grep -q '%' \
+    && note_ok "tty bar shows a percentage" || note_bad "tty bar has no percent: $bar_out"
+  printf '%s' "$bar_out" | grep -q 'MiB' \
+    && note_ok "tty bar shows MiB" || note_bad "tty bar has no MiB: $bar_out"
+  printf '%s' "$bar_out" | grep -q 'KiB/s' \
+    && note_ok "tty bar shows speed" || note_bad "tty bar has no speed: $bar_out"
+  printf '%s' "$bar_out" | grep -q '\[#' \
+    && note_ok "tty bar draws its fill" || note_bad "tty bar has no fill: $bar_out"
+  [ -f "$ROOT/usr/lib/big.dat" ] && note_ok "pty install landed the payload" \
+    || note_bad "pty install left no payload"
+else
+  note_ok "python3 missing: pty bar test skipped"
 fi
 
 # ---- the root contract: mutating commands on the real / need root ----------
