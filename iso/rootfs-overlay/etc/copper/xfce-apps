@@ -1,0 +1,24 @@
+# Copper Linux -- the components startxfce offers before it starts the desktop.
+#
+# Three whitespace-separated columns:
+#
+#   <name>   <probe>                       <how>
+#
+# <probe> is a path that exists when the component is present. startxfce
+# installs the missing ones whose <how> is "ingot", by asking ingot for them.
+# <how> of "image" means the gui stage already ships it in the ISO: it is kept
+# in this list so the report is honest about what a desktop is supposed to
+# have, but ingot has no such package and startxfce will not try to install
+# one -- a missing "image" component is a broken image, said out loud.
+#
+# The prompt names firefox and thunar as examples. Thunar and the terminal are
+# "image": the gui stage installs xfce4, which pulls thunar, and build.sh names
+# xfce4-terminal explicitly. Everything with "ingot" here is a payload in
+# copper-ingot-repo (payloads-v1) carrying its own dependency closure.
+firefox            /usr/bin/firefox            ingot
+mousepad           /usr/bin/mousepad           ingot
+ristretto          /usr/bin/ristretto          ingot
+xfce4-taskmanager  /usr/bin/xfce4-taskmanager  ingot
+xarchiver          /usr/bin/xarchiver          ingot
+thunar             /usr/bin/thunar             image
+xfce4-terminal     /usr/bin/xfce4-terminal     image

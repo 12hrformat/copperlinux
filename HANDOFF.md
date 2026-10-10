@@ -260,6 +260,29 @@ follows the same rule.
 The ask is a real desktop with a start command, `startxfce4`. XFCE is an X
 client, so it needs an X server, and that is where the cost is.
 
+## In progress: the apps, delivered by ingot
+
+The desktop is in the image; the *apps* on top of it are not. The optional ones
+are moving into `copper-ingot-repo` as ordinary ingot packages, and `startxfce`
+offers them before it starts the session:
+
+- **Packaged** (payload = the app plus its whole Ubuntu-noble dependency
+  closure, uploaded to the `payloads-v1` release): **firefox**, **mousepad**,
+  **ristretto**, **xfce4-taskmanager**, **xarchiver**. Firefox already exists;
+  the other four are being built.
+- **Baked** (the gui stage ships them; not ingot packages): XFCE itself,
+  **thunar** (a dependency of the `xfce4` metapackage) and **xfce4-terminal**
+  (named explicitly in `build.sh`).
+- The offered list lives in `iso/rootfs-overlay/etc/copper/xfce-apps`.
+  `startxfce` reads it, installs only what is missing, and asks first:
+
+      before running xfce do you want to install its main components? (ex- firefox and thunar) (Y/n)
+
+  Default is yes. On no, or if an install fails, the desktop starts anyway — a
+  component that would not install is a warning, not a failure to launch. With
+  no terminal to ask on it stops with a clear message unless `--yes` or `--no`
+  is passed (**exit 25**).
+
 ## What has been established
 
 - **Xorg 1.21.1.9 builds** against this toolchain, with **both** driver paths
@@ -891,6 +914,28 @@ hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
 change to *any one* of those throws away the whole `iso/work/` cache. The cache
 is saved even on failure (`if: always()`), so a red run still warms the next
 one. Batch changes; don't dribble.
+
+**A cached musl toolchain is only usable at the path it was built at.** `musl-gcc`
+is a wrapper that names its specs file and its crt/lib objects by **absolute**
+path, and `$SYS` is `iso/work/sys` under the workspace, whose directory is named
+after the repository. Renaming or transferring the repo (`copper` → `copperlinux`)
+moves `/home/runner/work/<name>/<name>`, so a restored `musl-gcc` still exists and
+still points at the old path, and cannot link anything: coreutils' `configure`
+then dies with *"C compiler cannot create executables"*, which blames coreutils
+rather than the cache. `build_musl` now compiles a one-line program with the
+cached toolchain and rebuilds it when that fails, instead of trusting that the
+file exists. This was a real red build.
+
+**`xfce4` does not depend on a terminal emulator, and `--no-install-recommends`
+does not pull one.** The gui stage names `xfce4-terminal` explicitly. Without it
+the image has no `*.desktop` carrying `Categories=…;TerminalEmulator;`, so
+clicking "Terminal" runs `exo-open --launch TerminalEmulator`, finds no helper,
+and pops the "choose an application" dialog — "nothing is chosen for terminal".
+The defaults live in `iso/rootfs-overlay/etc/xdg/xfce4/helpers.rc`
+(`TerminalEmulator=xfce4-terminal`, `WebBrowser=firefox`). exo reads the
+system-wide file after the user's own `~/.config/xfce4/helpers.rc`; the system
+file is the one that works here because first-boot's skel copy takes only
+top-level regular files, never a nested `~/.config/...`.
 
 **The kernel command line's last `console=` is `/dev/console`.** See bug #7.
 This is the single most counter-intuitive thing in the whole boot, it produces

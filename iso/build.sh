@@ -363,7 +363,30 @@ build_kernel() {
 # 2. musl libc (our C library, compiled from source)
 # ---------------------------------------------------------------
 build_musl() {
-  if [ ! -x "$SYS/bin/musl-gcc" ]; then
+  # The toolchain is a cache entry as much as a build product, and a cache
+  # entry can outlive the path it was built at. musl-gcc is a wrapper that
+  # names its specs file, its crt objects and its libc by ABSOLUTE path, and
+  # $SYS lives under the workspace, whose directory is named after the
+  # repository. Renaming or transferring the repo moves that path, and a
+  # restored musl-gcc then exists and cannot link anything: it still points
+  # at /home/runner/work/<old-name>/..., which is gone. "the file exists" is
+  # not evidence the toolchain works, so compile something with it. This was
+  # a real red build -- a cache from when the repo was copper/copper was
+  # restored under copperlinux/copperlinux, and coreutils' configure died
+  # with "C compiler cannot create executables" while the cache looked fine.
+  local musl_ok=0
+  if [ -x "$SYS/bin/musl-gcc" ]; then
+    if printf 'int main(void){return 0;}\n' \
+       | "$SYS/bin/musl-gcc" -x c - -o "$WORK/.musl-cc-test" >/dev/null 2>&1; then
+      musl_ok=1
+    else
+      echo "musl: cached toolchain at $SYS is present but cannot link; rebuilding it"
+      rm -rf "$SYS"
+    fi
+  fi
+  rm -f "$WORK/.musl-cc-test"
+
+  if [ "$musl_ok" != 1 ]; then
     echo "==> musl"
     local MT MD
     MT=$(fetch "https://musl.libc.org/releases/musl-1.2.5.tar.gz")
@@ -373,6 +396,10 @@ build_musl() {
       make -j"$JOBS"; make install
     popd >/dev/null
     [ -x "$SYS/bin/musl-gcc" ] || { echo "musl build failed"; exit 1; }
+    printf 'int main(void){return 0;}\n' \
+      | "$SYS/bin/musl-gcc" -x c - -o "$WORK/.musl-cc-test" \
+      || { echo "musl: freshly built toolchain at $SYS cannot link"; exit 1; }
+    rm -f "$WORK/.musl-cc-test"
   fi
   # everything userland from here on is static musl binaries
   export PATH="$SYS/bin:$PATH"
@@ -927,8 +954,15 @@ build_gui() {
   for p in libgdk-pixbuf2.0-bin libgdk-pixbuf-2.0-bin; do
     if apt-cache show "$p" >/dev/null 2>&1; then pixbuf=$p; break; fi
   done
+  # xfce4-terminal is named explicitly rather than assumed: the xfce4
+  # metapackage does not depend on it (nor recommend it), so under
+  # --no-install-recommends the image had a desktop with no terminal
+  # emulator in it at all. Clicking "Terminal" then ran exo-open --launch
+  # TerminalEmulator, which found no helper and popped the "choose an
+  # application" dialog. It brings exo-utils (exo-open) along as a
+  # dependency, which is what actually performs the launch.
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
-         dbus dbus-x11 xfce4 fonts-dejavu-core hicolor-icon-theme \
+         dbus dbus-x11 xfce4 xfce4-terminal fonts-dejavu-core hicolor-icon-theme \
          adwaita-icon-theme librsvg2-common libasound2
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \

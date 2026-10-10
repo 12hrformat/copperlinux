@@ -1,0 +1,19 @@
+# Copper Linux default applications.
+#
+# exo-open looks here when a menu or panel entry asks to launch a category --
+# the "Terminal" and "Web Browser" entries are exo-open --launch
+# TerminalEmulator / WebBrowser. With no entry, or with one naming a helper
+# that is not installed, exo-open does not fail quietly: it opens the "choose
+# an application" dialog. That dialog is what Copper showed for both entries.
+#
+# This is the system-wide location, /etc/xdg/xfce4/helpers.rc, which exo
+# searches after the user's own ~/.config/xfce4/helpers.rc. It is used
+# instead of a per-user file because first-boot's /etc/skel copy takes only
+# top-level regular files, so a nested ~/.config/... would never land.
+#
+# The value is the basename of a .desktop file under /usr/share/applications:
+# xfce4-terminal ships xfce4-terminal.desktop; firefox is not in the base
+# image and arrives via `ingot install firefox`, which ships firefox.desktop.
+WebBrowser=firefox
+TerminalEmulator=xfce4-terminal
+FileManager=thunar

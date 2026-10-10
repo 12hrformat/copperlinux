@@ -13,3 +13,8 @@ iso-main-latest/
 # Python bytecode from tests/firstboot-drive.py.
 __pycache__/
 *.pyc
+
+# Firefox package payload and its staging tree (build-firefox-pkg.sh). The
+# tarball is uploaded to GitHub Releases, not committed.
+firefox-*.tar.gz
+firefox-pkg-work/
