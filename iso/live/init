@@ -73,6 +73,15 @@ fi
 /bin/busybox mount -t proc proc /mnt/merged/proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /mnt/merged/sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /mnt/merged/dev 2>/dev/null
+# devtmpfs gives device nodes, not a pty pool. Without devpts there is no
+# /dev/pts and nothing that allocates a real pty works: sudo dies with
+# "unable to allocate pty" and every terminal emulator (vte, script, ssh)
+# fails to open one. Mount it on the merged root's /dev, and point /dev/ptmx
+# at the pty pool in case devtmpfs has not created the legacy node.
+/bin/busybox mkdir -p /mnt/merged/dev/pts 2>/dev/null
+/bin/busybox mount -t devpts devpts /mnt/merged/dev/pts 2>/dev/null || \
+    say "devpts failed to mount: sudo and terminals will not work"
+[ -e /mnt/merged/dev/ptmx ] || /bin/busybox ln -s pts/ptmx /mnt/merged/dev/ptmx 2>/dev/null
 /bin/busybox mkdir -p /mnt/merged/run
 /bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null
 

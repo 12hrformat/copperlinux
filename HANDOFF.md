@@ -997,12 +997,12 @@ that needs a real PTY works. Confirmed on the first real-boot test
 2. The XFCE terminal opens but cannot give its shell a pseudo-terminal:
    "no such file or directory such as pty" (vte's openpty fails on a missing
    `/dev/pts`). Same root cause, different consumer.
-Fix when it lands: `mkdir -p /dev/pts && mount -t devpts devpts /dev/pts`
-after the devtmpfs mount on the final merged `/dev`, plus a `/dev/ptmx`
-symlink to `/dev/pts/ptmx` if devtmpfs did not create a node. Until then,
-everything pty-dependent — sudo, every terminal emulator, `script(1)` — is
-broken on the live image, and nothing in the CI build catches it because the
-build never boots.
+Fix (landed): `iso/live/init` now runs `mkdir -p /mnt/merged/dev/pts &&
+mount -t devpts devpts /mnt/merged/dev/pts` after the devtmpfs mount on the
+final merged `/dev`, and symlinks `/dev/ptmx` → `pts/ptmx` if devtmpfs did
+not create a node. Until that image is booted, everything pty-dependent —
+sudo, every terminal emulator, `script(1)` — is broken on the live image,
+and nothing in the CI build catches it because the build never boots.
 
 ---
 
@@ -1192,8 +1192,9 @@ VMware's fault:
   but every install attempt fails behind `sudo: unable to allocate pty`, and
   the XFCE terminal opens and reports it cannot find a pty. Both come from
   `iso/live/init` never mounting `devpts` on the merged root — see the trap
-  in "Traps that will cost you a day". Documented here; the fix (devpts
-  mount in init) is the next thing to land.
+  in "Traps that will cost you a day". **Fixed in `iso/live/init`**: it now
+  mounts devpts on the merged root's `/dev/pts` (and symlinks `/dev/ptmx`).
+  Needs a boot to confirm.
 
 ## Pacman is GONE — Copper grows its own package manager (ingot) instead
 
