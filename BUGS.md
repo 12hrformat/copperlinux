@@ -101,6 +101,18 @@ the console shows the wizard user, `sudo whoami` answers `root`, and
 `startxfce` gives a desktop whose pointer and keyboard both work and whose
 terminal runs `firefox`.
 
+**First boot result (2026-10-11): the drop landed.** A real boot of the
+`711fcb9` ISO showed
+
+    dragon@copper:~$ id
+    uid=1000(dragon) gid=1000(dragon) groups=wheel,dialout,cdrom,audio,video,users,dragon,dragon
+
+so the shell is no longer root and Firefox's "root in a regular user's
+session" refusal is addressed. The desktop half is still unverified, and the
+same boot exposed bug 22: the ISO flattened `sudo`'s setuid bit, so
+`sudo whoami` failed and the install prompt could install nothing — including
+the browser. Fix for that is in the tree, not booted.
+
 ---
 
 # 20. persistence isn't built — the writable layer is RAM — impact 10/10
@@ -157,6 +169,63 @@ were never exercised (probe boots with `-kernel`, no VGA BIOS), and
 boots it.
 
 **Status:** only a boot on real VMware settles it.
+
+---
+
+# 22. file modes are flattened into the ISO, so `sudo` loses setuid — impact 9/10
+
+**How it affects things:** `sudo` refuses every request — `/usr/bin/sudo must be
+owned by uid 0 and have the setuid bit set` — so there is no way to elevate.
+The wizard's user cannot install a package, edit a system file or shut the
+machine down. The same flattening shipped `/etc/shadow` world-readable.
+
+**What happens (verified, 2026-10-11):** a real boot as the wizard user ran
+`startxfce`, which offered to install its components and then:
+
+    startxfce:    firefox ...
+    sudo: /usr/bin/sudo must be owned by uid 0 and have the setuid bit set
+    startxfce:    could not install firefox, continuing without it
+
+`sudo ingot install firefox` said the same thing.
+
+**Root cause:** `build_sudo` stages sudo correctly — it does `chmod 4755
+"$TGT/usr/bin/sudo"` and a gate that fails the build if the bit is missing — so
+the staging tree is right. The bit is lost one step later, in `build_iso`:
+`grub-mkrescue` builds the live root filesystem as ISO9660 and passes xorriso
+**`-r`**, "rationalised" Rock Ridge. That is not plain Rock Ridge — it forces
+uid/gid to 0 and rewrites every mode to `444` (files) or `555` (executables),
+dropping setuid/setgid and any `0000`. Mounting the shipped ISO shows it —
+every file is `444`, every binary `555`:
+
+    444 root:root /etc/shadow      <- shipped world-readable
+    555 root:root /usr/bin/sudo    <- 4755 in the staging tree it came from
+
+The ISO does carry Rock Ridge (long names and modes survive); it is only the
+rationalised flavour that throws the special bits away.
+
+**Fix in the tree (2026-10-11), not booted yet.** `grub-mkrescue` has no switch
+for this and reaches `xorriso` through `PATH`, so `build_iso` puts a one-job
+filter in front of it that rewrites exactly `-r` to `-R` — the same Rock Ridge
+without the rationalisation, which keeps the modes the staging tree already
+has. Measured on a synthetic tree: with the filter, a `4755` sudo and a `0000`
+shadow come back out of the finished ISO as `4755` and `0000`; without it they
+flatten to `555` and `444`. `build_iso` now reads `/usr/bin/sudo` back out of
+the ISO it just wrote and fails unless it is `4755`, and it folds `$SELF` into
+the ISO stamp so a change to the filter cannot be skipped against an unchanged
+tree.
+
+The same flattening made `/tmp` `555 root:root`, and `/tmp` is on the overlay
+rather than its own tmpfs. Xorg creates its lock file and socket there
+(`/tmp/.X0-lock`, `/tmp/.X11-unix`) before it paints, and `startxfce` redirects
+Xorg's log to `/tmp/xorg.log` — all of which a non-root session cannot do on a
+`555` directory, so this is as likely as anything to be why the desktop did not
+come up on the boot above. `build_iso` now pins `/tmp` to `1777` in the tree
+before packaging (a non-root write through a `1777` lower dir copies it up
+correctly — checked), and `-R` carries that mode to the disc.
+
+**Still open because:** "built" is not "verified". Needs a real boot: `sudo
+whoami` answers `root`, `sudo ingot install firefox` installs, and
+`ls -l /etc/shadow` is no longer world-readable.
 
 ---
 
@@ -413,7 +482,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-21 bugs total: 16 fixed, 1 stopgapped, 4 open.
+22 bugs total: 16 fixed, 1 stopgapped, 5 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -438,3 +507,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 19 | still open | the desktop session runs as root |  |
 | bug 20 | still open | persistence isn't built — the writable layer is RAM |  |
 | bug 21 | still open | VMware framebuffer unproven |  |
+| bug 22 | still open | ISO rationalised Rock Ridge flattened modes — sudo lost setuid |  |
