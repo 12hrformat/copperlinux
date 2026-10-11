@@ -445,7 +445,8 @@ require_bb_config() {
       STATIC ASH ID \
       UDHCPC FEATURE_UDHCPC_ARPING IP IFCONFIG ROUTE PING \
       WGET FEATURE_WGET_HTTPS FEATURE_WGET_OPENSSL NSLOOKUP \
-      MOUNT SWITCH_ROOT HOSTNAME \
+      MOUNT UMOUNT SWITCH_ROOT HOSTNAME \
+      BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP \
       CHPASSWD FEATURE_SHADOWPASSWDS ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
@@ -480,6 +481,13 @@ build_busybox() {
     set_bb_config MOUNT
     set_bb_config UMOUNT
     set_bb_config HOSTNAME
+    # blkid is how /init reads the COPPER label off a disk to find the
+    # persistent upper; FEATURE_BLKID_TYPE keeps the TYPE= field it prints
+    # useful in the boot log when a disk does not mount. grep guards the
+    # scan against a device that is already mounted.
+    set_bb_config BLKID
+    set_bb_config FEATURE_BLKID_TYPE
+    set_bb_config GREP
     set_bb_config FEATURE_ADDUSER_TO_GROUP
     set_bb_config FEATURE_SHADOWPASSWDS
     set_bb_config FEATURE_INSTALLER
@@ -978,9 +986,15 @@ build_gui() {
   # release-assets.githubusercontent.com -- the "downloads don't go through"
   # bug. libssl/libcrypto already arrive through the glibc closure; this brings
   # the tool itself. ca-certificates brings the roots to build the bundle from.
+  # e2fsprogs: the first-boot wizard formats the spare disk the user picks with
+  # the real mkfs.ext4, and /init mounts the result as the overlay upper. The
+  # busybox mke2fs applet cannot stand in: it creates ext2 only, and its
+  # superblock leaves EXT2_FEATURE_COMPAT_SUPP at zero, so there is no EXT_ATTR
+  # bit and overlayfs refuses that upper outright. A real ext4 carries the
+  # xattrs an overlay needs, which is why the glibc tool comes in here.
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal fonts-dejavu-core hicolor-icon-theme \
-         adwaita-icon-theme librsvg2-common openssl ca-certificates
+         adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \
@@ -1190,6 +1204,20 @@ build_gui() {
   # under pipefail reads as "not found" no matter what was found.
   if ! find "$TGT/usr" -name evdev_drv.so -print -quit 2>/dev/null | grep -q .; then
     echo "gui: evdev_drv.so is missing; the server would have no input" >&2
+    exit 1
+  fi
+
+  # Persistence formats the disk the user picks with the real mkfs.ext4, and
+  # /init then mounts the result as the overlay upper. The busybox mke2fs applet
+  # cannot stand in: it makes ext2 only and leaves the xattr feature bit clear,
+  # which overlayfs refuses. So the tool has to be in the image, and a missing
+  # one must fail the build here rather than turn into "persistence silently
+  # never works" on a real machine. Locate it by search, not by a fixed path:
+  # it moves between /sbin and /usr/sbin depending on the host's usrmerge state.
+  if ! find "$TGT/sbin" "$TGT/usr/sbin" -maxdepth 1 -name mkfs.ext4 \
+       -print -quit 2>/dev/null | grep -q .; then
+    echo "gui: mkfs.ext4 did not arrive from the packages; the wizard" >&2
+    echo "     could not format a disk for persistence" >&2
     exit 1
   fi
 

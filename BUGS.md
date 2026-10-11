@@ -28,7 +28,8 @@ its ~450 MB unpacked tree coexist until unpack finishes.
 (`iso/live/init`, with the `/tmp` entry in `etc/fstab` kept in step), so it
 fits on a 2 GB box. Still RAM, still throwaway.
 
-**The real fix is bug 20** (persistence): upper moves to a disk partition.
+**The real fix is bug 20** (persistence): the upper moves to a disk. That code
+is in the tree now but has not booted yet, so the stopgap stands until then.
 
 Also caught in that same log: `mousepad`, `ristretto`, `xfce4-taskmanager`,
 `xarchiver` answered `no package named X in the index` — the live index had
@@ -90,27 +91,34 @@ desktop session runs as root — brief for the implementer".
 # 20. persistence isn't built — the writable layer is RAM — impact 10/10
 
 **How it affects things:** every reboot throws your files away, and the disk
-you attach to the VM is never written to. This is the root cause behind bug
-15, and it is the current work queue.
+you attach to the VM is never written to. This is the root cause behind bug 15.
 
-**Why:** the overlay's upperdir is a 50%-of-RAM tmpfs in `iso/live/init`.
-Nothing at boot ever claims a disk.
+**The fix is in the tree (2026-10-11), but nobody has booted it yet.** Same
+overlay, different `upperdir`: the writable layer goes on a disk.
 
-**The plan (designed, not built):** same overlay, different `upperdir` — the
-upper goes on a disk.
+- `iso/live/init` scans the attached disks for one carrying the ext4 label
+  `COPPER` and mounts it where the tmpfs used to go. No label, or a labeled
+  disk that will not mount → the 50% tmpfs, so the ISO still boots anywhere.
+  A stale overlay `work/` left by an unclean shutdown is cleared first.
+- The wizard's last page (`copper-firstboot.c`) lists the spare whole disks,
+  makes the user pick one and type `ERASE`, then runs `mkfs.ext4 -q -F -L
+  COPPER`. Explicit choice, never "grab the first disk we see": the medium it
+  booted from and anything already mounted are never offered, and the page only
+  runs on a real Copper boot (`/init` leaves `/var/lib/copper/live-boot`).
+- Activates on the next boot, never mid-session. Hot-swapping the upper under a
+  live overlay is not the kind of thing we ship.
+- `e2fsprogs` is in the gui stage for the real `mkfs.ext4`, and that stage now
+  fails the build when the tool does not arrive. busybox's `mke2fs` applet
+  cannot stand in: it makes ext2 only and leaves the xattr feature bit clear,
+  which is exactly what overlayfs refuses as an upper (see the config facts at
+  the bottom).
 
-- The label is the handshake: a `COPPER`-labeled ext4 partition on a
-  non-medium disk gets mounted where the tmpfs used to go. No label → tmpfs
-  fallback, ISO boots anywhere. Label-first is the safety: we only ever claim
-  what we labeled ourselves.
-- The wizard picks the disk (last page of `copper-firstboot`): list spares,
-  user picks one, we wipe + format ext4 with the `COPPER` label. Explicit
-  choice, never "grab the first disk we see". Needs `mkfs.ext4` (+ busybox
-  applet) in the image.
-- Activates on the next boot, never mid-session. Hot-swapping the upper under
-  a live overlay is not the kind of thing we ship.
-
-**Blocker:** verification needs a fresh CI-built ISO and a real boot.
+**Still open because:** "built" is not "verified". The blocker is unchanged —
+a fresh CI-built ISO and a real boot: format a disk in the wizard, reboot,
+confirm the session comes back and the writable layer is no longer RAM.
+`tests/persist.sh` covers the wizard's disk choices against a stub `mkfs.ext4`
+(nothing real is ever formatted) and runs in CI, but nothing in CI boots the
+image.
 
 ---
 
@@ -270,11 +278,14 @@ shell a pty — vte's openpty fails on a missing `/dev/pts`). Fixed in
 `iso/live/init` (2026-10-10) and owner-confirmed, but nothing in the CI build
 catches pty-regressions because the build never boots.
 
-**The writable layer is RAM, capped at 50% of it.** A firefox-class install
-needs ~570 MB in the writable layer at once; on a 2 GB VM that fits now, but
-the layer is still throwaway and still RAM. A donor disk changes nothing until
-bug 20 lands. You'll think "a bigger disk will fix it" — it won't, until the
-overlay's upperdir lives on the disk.
+**The writable layer is RAM unless a disk is labelled `COPPER`.** A
+firefox-class install needs ~570 MB in the writable layer at once; on a 2 GB VM
+the 50% tmpfs cap fits it, but that layer is throwaway. The upper moves to a
+disk only when it carries the ext4 label `COPPER` — the label the wizard writes
+on its last page — and `iso/live/init` falls back to the tmpfs when there is
+none. You'll think "just attach a bigger disk and it fixes itself" — it does
+not: a disk with no label does nothing, and the upper stays in RAM. (Built
+2026-10-11; the real boot is still bug 20's open question.)
 
 **`busybox adduser` and `addgroup` write to the real `/etc/passwd` and
 `/etc/group` regardless of `HOME`, `PWD`, or anything else.** Probing them
@@ -360,6 +371,27 @@ Each of these cost a wrong turn once. All were checked against real sources.
   takes path (a). If you ever see that note on the machine, the openssl exec
   failed or was dropped, i.e. path (b) — and payload downloads from GitHub
   releases will never complete.
+- **busybox's `mke2fs` applet cannot make an overlay upper.** busybox 1.36.1
+  creates ext2 only — no `-t`, no journal — and it sets `s_feature_compat` from
+  `EXT2_FEATURE_COMPAT_SUPP` (`util-linux/mkfs_ext2.c` ~516,
+  `include/bb_e2fs_defs.h:526`), which in this version is **0**. So the
+  `EXT2_FEATURE_COMPAT_EXT_ATTR` bit (0x0008) is never set, an ext2 with no
+  xattr support is exactly what overlayfs refuses as an upper, and "just use
+  the busybox applet" silently produces a disk that cannot hold the writable
+  layer. Persistence uses the real `mkfs.ext4` from `e2fsprogs` (gui stage),
+  and the gui stage fails the build if it is missing. Read from the 1.36.1
+  source, not assumed.
+- **busybox `blkid` has no `-s` or `-o`.** It is `blkid [DEVICE]...` and prints
+  one tagged line per device: `/dev/sdb: LABEL="COPPER" UUID="..." TYPE="ext4"`
+  (the `TYPE=` only because `FEATURE_BLKID_TYPE` defaults on). `/init` matches
+  the `LABEL="COPPER"` substring instead of asking for a single field. `findfs
+  LABEL=COPPER` exists too, but a per-device `blkid` keeps the boot log honest
+  about what was probed and skipped.
+- **PID 1 mounts a fresh tmpfs over `/run`, burying anything the initramfs left
+  there.** `mount_if_needed("tmpfs", "/run", "tmpfs")` in `copper-init.c` calls
+  `mount()` unconditionally and only tolerates `EBUSY` — and a second tmpfs over
+  an existing one is a stack, not an error. So markers for later boot stages go
+  on the overlay (the wizard's is `/var/lib/copper/live-boot`), never in `/run`.
 
 ---
 
