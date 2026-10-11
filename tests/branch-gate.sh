@@ -129,7 +129,9 @@ elif out=$(bash tests/persist.sh 2>&1); then
     record persist.sh ok "$n checks"
 else
     record persist.sh bad "a persistence check failed"
-    printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/    /'
+    # The whole transcript, not just the FAIL lines: when a wizard run dies on
+    # the runner the reason is what it printed before it died.
+    printf '%s\n' "$out" | tail -60 | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
