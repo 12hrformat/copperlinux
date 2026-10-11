@@ -403,15 +403,27 @@ else
         fi
     done
 
+    # A non-root X server cannot grab or switch the console VT. With no logind
+    # on this image the ioctls that do it -- KDSETMODE and VT_ACTIVATE -- are
+    # refused unless the caller owns the VT or holds CAP_SYS_TTY_CONFIG, and
+    # Xorg calls setsid() on itself before doing either. -keeptty stops it
+    # detaching from the controlling terminal the login shell already owns, and
+    # -novtswitch stops it trying to move to another one. As root neither flag
+    # is needed, so the long-proven root path is left exactly as it was.
+    xflags=
+    if [ "$(id -u)" != 0 ]; then
+        xflags="-keeptty -novtswitch"
+    fi
+
     # -noreset: without it the server resets itself when the last client
     # disconnects, and that reset closes every input device in the process.
     # Any gap with no clients -- between sessions, after a probe -- would
     # leave the next login with no keyboard and no mouse.
     if [ -n "$modpath" ]; then
-        "$XORG" ":$DISPLAY_NUM" -noreset -modulepath "$modpath" \
+        "$XORG" ":$DISPLAY_NUM" -noreset $xflags -modulepath "$modpath" \
             ${cfg:+-config "$cfg"} > "$XLOG" 2>&1 &
     else
-        "$XORG" ":$DISPLAY_NUM" -noreset \
+        "$XORG" ":$DISPLAY_NUM" -noreset $xflags \
             ${cfg:+-config "$cfg"} > "$XLOG" 2>&1 &
     fi
     xpid=$!

@@ -12,7 +12,9 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <net/if.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -216,6 +218,139 @@ static void bring_up_network(void) {
     start_dhcp(ifname);
 }
 
+/* The session user.
+
+   The wizard creates a named account and writes the login name on the first
+   line of /etc/copper-firstboot.done. Until this existed the shell on tty1 ran
+   as uid 0 -- spawn_tty() forked and exec'd with no setgid/setuid anywhere --
+   while the environment said HOME=/home/<user>. That mismatch is exactly what
+   Firefox refuses to start on:
+
+       Running Firefox as root in a regular user's session is not supported.
+
+   So the shell, and everything it starts (the desktop included), now runs as
+   the wizard's user, and PID 1 keeps root with sudo as the way back up. When
+   there is no marker user -- a first boot before the wizard has run, or an
+   account that no longer resolves -- the session stays root, which is what the
+   image did before. */
+struct session {
+    char name[64];
+    char home[160];
+    uid_t uid;
+    gid_t gid;
+    int ok;
+};
+
+static struct session g_session;
+
+/* Fill `s` from the done-marker's first line, resolved through getpwnam.
+   Returns 1 when there is a usable account, 0 otherwise. */
+static int session_from_marker(const char *path, struct session *s) {
+    memset(s, 0, sizeof *s);
+    FILE *m = fopen(path, "r");
+    if (!m) return 0;
+    char who[64] = "";
+    if (fgets(who, sizeof who, m)) {
+        char *nl = strchr(who, '\n');
+        if (nl) *nl = '\0';
+    }
+    fclose(m);
+    if (!who[0]) return 0;
+    struct passwd *pw = getpwnam(who);
+    if (!pw) return 0;
+    snprintf(s->name, sizeof s->name, "%s", pw->pw_name);
+    snprintf(s->home, sizeof s->home, "%s", pw->pw_dir);
+    s->uid = pw->pw_uid;
+    s->gid = pw->pw_gid;
+    s->ok = 1;
+    return 1;
+}
+
+/* Drop the forked child to the session user. Runs only in the spawn_tty
+   child, never in PID 1. If a step fails the child would rather be a root
+   shell -- the state this image shipped in for months -- than a session that
+   cannot start at all, so it says what went wrong and carries on as it is. */
+static void drop_to_session(const struct session *s) {
+    if (!s->ok) return;
+    if (initgroups(s->name, s->gid) != 0) {
+        fprintf(stderr, "copper: initgroups(%s) failed: %s\n",
+                s->name, strerror(errno));
+        return;
+    }
+    if (setgid(s->gid) != 0) {
+        fprintf(stderr, "copper: setgid(%d) failed: %s\n",
+                (int)s->gid, strerror(errno));
+        return;
+    }
+    if (setuid(s->uid) != 0) {
+        fprintf(stderr, "copper: setuid(%d) failed: %s\n",
+                (int)s->uid, strerror(errno));
+        return;
+    }
+    setenv("HOME", s->home, 1);
+    setenv("USER", s->name, 1);
+    setenv("LOGNAME", s->name, 1);
+}
+
+/* Hand the X server's device nodes to the session user.
+
+   Xorg now runs as that user too. There is no udev on this image, so devtmpfs
+   leaves /dev/input/event* (evdev), /dev/dri/card* (the KMS/modesetting driver)
+   and the framebuffer and console VTs owned by root with modes a plain user
+   cannot open -- Xorg would then start with a dead pointer and no keyboard.
+   Give the session user ownership of exactly those nodes. Best effort: a node
+   that is not present is not an error, and there is only ever one session. */
+static void grant_devices(const struct session *s) {
+    if (!s->ok) return;
+    static const char *subdirs[] = { "/dev/input", "/dev/dri", NULL };
+    char path[320];
+    for (int i = 0; subdirs[i]; i++) {
+        DIR *d = opendir(subdirs[i]);
+        if (!d) continue;
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            snprintf(path, sizeof path, "%s/%s", subdirs[i], e->d_name);
+            (void)chown(path, s->uid, s->gid);
+        }
+        closedir(d);
+    }
+    DIR *d = opendir("/dev");
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *n = e->d_name;
+        if (n[0] == '.') continue;
+        if (strncmp(n, "tty", 3) != 0 && strncmp(n, "fb", 2) != 0 &&
+            strncmp(n, "vcs", 3) != 0 && strcmp(n, "uinput") != 0)
+            continue;
+        snprintf(path, sizeof path, "/dev/%s", n);
+        (void)chown(path, s->uid, s->gid);
+    }
+    closedir(d);
+}
+
+/* Directories the session expects that nothing else has made.
+
+   /dev/shm is where glibc's shm_open() keeps its files; devtmpfs does not
+   create it on its own. /run/user/<uid> is the XDG runtime directory, and
+   nothing here logs in through pam so nothing makes it. startxfce used to
+   create both itself, but it runs as the session user now and a user cannot
+   mkdir under root-owned /dev or /run -- so PID 1 makes them first. Best
+   effort, exactly like the device nodes. */
+static void prepare_session_dirs(const struct session *s) {
+    if (!s->ok) return;
+    mkdir("/dev/shm", 01777);
+    chmod("/dev/shm", 01777);
+    char run[192];
+    snprintf(run, sizeof run, "/run/user/%d", (int)s->uid);
+    mkdir("/run/user", 0755);
+    if (mkdir(run, 0700) == 0 || errno == EEXIST) {
+        (void)chown(run, s->uid, s->gid);
+        (void)chmod(run, 0700);
+    }
+}
+
 /* Returns the child's pid (the caller reaps it), or -1 if the fork failed. */
 static pid_t spawn_tty(int tty) {
     pid_t pid = fork();
@@ -232,6 +367,7 @@ static pid_t spawn_tty(int tty) {
         ioctl(fd, TIOCSCTTY, 0);
         if (fd > 2) close(fd);
     }
+    drop_to_session(&g_session);
     execl("/usr/bin/copper-sh", "copper-sh", (char *)NULL);
     execl("/bin/sh", "sh", (char *)NULL);
     _exit(1);
@@ -316,42 +452,32 @@ int main(void) {
         waitpid(wiz, &wst, 0);
     }
 
-/* Land in the user's own home, not in /.
+/* The session user, and where the shell starts.
 
        This has to happen after the wizard, not before: on a first boot the
        done-marker does not exist yet, so reading it any earlier finds nothing.
        /etc/copper-firstboot.done holds the username on its first line, written
-       by the wizard as it finishes.
+       by the wizard as it finishes. Resolving it here means one read, used
+       both to pick the working directory and to drop the shell's privileges
+       in spawn_tty() below.
 
-       Dropping someone at / is worth avoiding. That is uid 0 sitting next to
-       /boot, /etc and the block devices, with no login in front of it. This
-       does not make the system safe -- init goes straight to a root shell, and
-       pretending otherwise would be worse than saying so plainly -- but the
-       working directory should not be the root of the filesystem. */
-    {
-        char who[64] = "";
-        FILE *m = fopen("/etc/copper-firstboot.done", "r");
-        if (m) {
-            if (fgets(who, sizeof who, m)) {
-                char *nl = strchr(who, '\n');
-                if (nl) *nl = '\0';
-            }
-            fclose(m);
-        }
-        if (who[0]) {
-            char home[160];
-            snprintf(home, sizeof home, "/home/%s", who);
-            /* Only adopt it if it is a real, enterable directory: a stale
-               marker left by a half-finished wizard must not put us somewhere
-               that does not exist. */
-            if (access(home, X_OK) == 0 && chdir(home) == 0) {
-                setenv("HOME", home, 1);
-                setenv("USER", who, 1);
-                setenv("LOGNAME", who, 1);
-            } else {
-                printf("copper: no home directory at %s -- staying in /\n",
-                       home);
-            }
+       Dropping someone at / is worth avoiding: that is the session account
+       sitting next to /boot, /etc and the block devices. The account is no
+       longer root, so this is smaller than it once was, but the working
+       directory still should not be the root of the filesystem. */
+    session_from_marker("/etc/copper-firstboot.done", &g_session);
+    if (g_session.ok) {
+        /* Only adopt the home if it is a real, enterable directory: a stale
+           marker left by a half-finished wizard must not put us somewhere
+           that does not exist. The drop does not depend on this -- the
+           account is real either way, and cwd is not the shell's identity. */
+        if (access(g_session.home, X_OK) == 0 && chdir(g_session.home) == 0) {
+            setenv("HOME", g_session.home, 1);
+            setenv("USER", g_session.name, 1);
+            setenv("LOGNAME", g_session.name, 1);
+        } else {
+            printf("copper: no home directory at %s -- staying in /\n",
+                   g_session.home);
         }
     }
 
@@ -381,6 +507,8 @@ int main(void) {
        same tty, so two shells fought over stdin -- typing came out garbled and
        the banner printed twice. */
     for (;;) {
+        grant_devices(&g_session);
+        prepare_session_dirs(&g_session);
         pid_t session = spawn_tty(1);
         int wst;
         if (session > 0)
