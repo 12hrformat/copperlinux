@@ -43,21 +43,32 @@ only 5 of the 9 packages. Their pages are published now; gone.
 desktop or a shell. The only way off is a forced power-off, which scribbles
 the live overlay and can throw work away.
 
-**Two separate causes:**
+**Two separate causes, both real:**
 
-1. **busybox has no `shutdown` applet at all.** `busybox --list` on a
-   faithful 1.36.1 build shows `shutdown: MIA` while `halt`, `poweroff` and
-   `reboot` are all present — so `shutdown` is simply "command not found".
-   Nothing in the ISO ships one.
-2. **`reboot`/`halt`/`poweroff` without `-f` never call the reboot(2)
-   syscall.** They signal PID 1 and expect init to do the work, and
-   copper-init ignores `SIGINT`/`SIGTERM`/`SIGHUP` (`copper-init.c:269-271`)
-   — so the request silently dies. `reboot -f` would work; nothing invokes
-   it.
+1. **busybox ships no `shutdown` applet.** `busybox --list` on this image's
+   1.36.1 build answers `halt`, `poweroff` and `reboot` but not `shutdown`, so
+   `sudo shutdown now` was "command not found". Nothing in the ISO shipped one.
+2. **`reboot`/`halt`/`poweroff` without `-f` never call `reboot(2)`.** busybox's
+   own help says it: `-f  Force (don't go through init)`. By default they signal
+   PID 1 and expect it to do the orderly shutdown — and copper-init ignored
+   `SIGUSR1`/`SIGUSR2`/`SIGTERM`, so the request died silently. Only
+   `reboot -f` ever worked, and nothing invoked it.
 
-**Fix candidates:** teach copper-init the power signals (sync + `reboot(2)`
-with the right magic), and ship a small `/sbin/shutdown` wrapper since busybox
-will never provide the applet.
+**The fix is in the tree (2026-10-11), but nobody has booted it yet.**
+
+- `copper-init` now answers the power signals busybox init defines — `SIGTERM`
+  → reboot, `SIGUSR2` → poweroff, `SIGUSR1`/`SIGPWR` → halt — with `sync()`
+  then `reboot(2)`. The mapping lives in its own `power_how()` so a unit test
+  can check it without rebooting the machine running the test.
+- A new `/sbin/shutdown` wrapper fills the applet busybox does not have: it maps
+  `-r`/`-h`/`-H`/`now` onto the busybox `reboot`/`poweroff`/`halt` applets,
+  which then signal PID 1. Root only, as before.
+
+**Still open because:** "built" is not "verified". A real boot has to show
+`sudo reboot` restarting the machine and `sudo shutdown now` powering it off.
+`tests/shutdown-gate.sh` proves the wrapper picks the right applet by replacing
+`/sbin` with stubs in a private mount namespace, and `tests/init-session.c`
+checks the signal mapping — but nothing in CI boots the image.
 
 ---
 
@@ -92,29 +103,6 @@ confirm the session comes back and the writable layer is no longer RAM.
 `tests/persist.sh` covers the wizard's disk choices against a stub `mkfs.ext4`
 (nothing real is ever formatted) and runs in CI, but nothing in CI boots the
 image.
-
----
-
-# 21. VMware framebuffer unproven — impact 5/10
-
-**How it affects things:** on real VMware the *display* half of the desktop is
-unconfirmed — the mouse is confirmed to track, the screen is not. VirtualBox
-cannot be tested at all here.
-
-**What happens:** `vmwgfx` probes the adapter correctly — reads the FIFO, the
-VRAM and the SVGA version — then prints:
-
-```
-vmwgfx 0000:00:03.0: [drm] *ERROR* vmwgfx seems to be running on an unsupported hypervisor.
-```
-
-It checks the hypervisor vendor, and QEMU is not VMware. The driver is the
-right one and works right up to its own hardware check. `FB_VESA`/`FB_EFI`
-were never exercised (probe boots with `-kernel`, no VGA BIOS), and
-`cirrus-vga` has no driver — recorded as a gap, not fixed, because nobody
-boots it.
-
-**Status:** only a boot on real VMware settles it.
 
 ---
 
@@ -177,6 +165,14 @@ Three separate things had to be true before XFCE painted *and* Firefox ran:
   that actually skips the grab is **`-sharevts`** — `-novtswitch` is a
   different flag and does not skip it. `-keeptty` keeps the controlling
   terminal the login shell already owns.
+
+**The VMware display (bug 21, boot-verified 2026-10-11).** The
+`*ERROR* vmwgfx seems to be running on an unsupported hypervisor` seen under
+QEMU was QEMU failing VMware's own vendor check, not a driver problem: `vmwgfx`
+is the right driver and it drives the panel on real VMware, where XFCE paints
+and Firefox runs. QEMU can prove a driver *probes*; only the hypervisor the
+driver was written for can prove it *paints*. VirtualBox's `vboxvideo` is still
+untestable here — QEMU has no such display device.
 
 **Why the kconfig assertions exist (a win, kept on purpose):**
 `require_kernel_config` was inverted to *demand* every display driver rather
@@ -439,7 +435,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-24 bugs total: 19 fixed, 1 stopgapped, 4 open.
+24 bugs total: 20 fixed, 1 stopgapped, 3 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -463,7 +459,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 18 | still open | `sudo shutdown` / `sudo reboot` do nothing |  |
 | bug 19 | 12hrformat | the desktop session runs as root — firefox refused to start | (711fcb9) |
 | bug 20 | still open | persistence isn't built — the writable layer is RAM |  |
-| bug 21 | still open | VMware framebuffer unproven |  |
+| bug 21 | 12hrformat | VMware framebuffer unproven — real VMware boot paints XFCE | (boot-verified 2026-10-11) |
 | bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |

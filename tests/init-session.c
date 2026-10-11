@@ -143,6 +143,30 @@ int main(void) {
         }
     }
 
+    /* ------------------------------------------------------ power signals */
+    /* The mapping the busybox halt/poweroff/reboot applets rely on. If these
+       ever swap, `sudo reboot` powers the machine off instead of restarting
+       it. power_how() is separate from the handler precisely so this can be
+       checked without calling reboot(2) on the test machine (bug 18). */
+    if (power_how(SIGTERM) == RB_AUTOBOOT) {
+        printf("ok   SIGTERM maps to reboot\n");
+    } else {
+        printf("FAIL SIGTERM maps to reboot\n");
+        fails++;
+    }
+    if (power_how(SIGUSR2) == RB_POWER_OFF) {
+        printf("ok   SIGUSR2 maps to poweroff\n");
+    } else {
+        printf("FAIL SIGUSR2 maps to poweroff\n");
+        fails++;
+    }
+    if (power_how(SIGUSR1) == RB_HALT_SYSTEM) {
+        printf("ok   SIGUSR1 maps to halt\n");
+    } else {
+        printf("FAIL SIGUSR1 maps to halt\n");
+        fails++;
+    }
+
     if (fails) {
         printf("%d check(s) failed\n", fails);
         return 1;
