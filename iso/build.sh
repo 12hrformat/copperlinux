@@ -550,9 +550,10 @@ build_copper() {
 local SRC="$ROOT/../src"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
+     && [ -x "$TGT/usr/bin/xprobe" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$ROOT/startxfce.sh" \
+        "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" \
         "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
   then
     echo "copper: already built, skipping"; return
@@ -564,6 +565,14 @@ local SRC="$ROOT/../src"
      "$ROOT/src-init/copper-init.c"
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
+  # xprobe: the X server liveness probe startxfce uses before it trusts an
+  # existing display. Static musl like the rest, so it needs nothing from the
+  # display stack and is safe to run before X exists. Without it startxfce
+  # falls back to believing a bare socket file, and on a machine with the
+  # persistence disk the socket outlives the server that made it -- the next
+  # boot then reuses a dead :0 instead of starting one.
+  $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/xprobe" \
+     "$ROOT/x11/probe/xprobe.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
 
   # hotfix tools — copper charge and copper rollback
@@ -583,7 +592,7 @@ local SRC="$ROOT/../src"
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/startxfce \
+           usr/bin/startxfce usr/bin/xprobe \
            usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -603,7 +612,7 @@ local SRC="$ROOT/../src"
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-    "$ROOT/startxfce.sh" \
+    "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" \
     "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 
