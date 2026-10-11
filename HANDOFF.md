@@ -308,11 +308,13 @@ or someone with that access pushing it.
 **Done looks like:** `startxfce4` brings up an XFCE session on the framebuffer.
 Status: **Xorg boots and XFCE paints under QEMU** — measured, with the owner
 confirming input and the PTY fix on real boots. The uid drop is now
-boot-verified as well (2026-10-11: `id` answers the wizard user), but the
-desktop under that user is not — the same boot hit bug 22, the ISO flattening
-`sudo`'s setuid bit, so nothing could be installed. Bug 22's fix is in the
-tree and not booted. The VMware framebuffer on a real VMware boot is also
-still open.
+boot-verified as well (2026-10-11: `id` answers the wizard user). The desktop
+under that user is still not: the first boot after the drop hit bug 22 (the ISO
+flattened `sudo`'s setuid bit) — whose setuid half is now boot-verified — and the
+next boot got Xorg as far as `xf86OpenConsole: Switching VT failed` (bug 23:
+`-novtswitch` never disabled the VT grab; `-sharevts` does). Both fixes are in
+the tree; neither desktop boot is green yet. The VMware framebuffer on a real
+VMware boot is also still open.
 
 Order of the remaining work:
 
@@ -365,11 +367,14 @@ brief below decided, plus the two pieces the brief flagged as the hard part.
   pointer and no keyboard otherwise. It also makes `/dev/shm` and
   `/run/user/<uid>` first — `startxfce` used to, but as the user it cannot
   `mkdir` under the root-owned `/dev` or `/run`.
-- `startxfce` adds `-keeptty -novtswitch` when it is not root. With no logind
-  on this image, a non-root Xorg cannot grab or switch the console VT — the
-  ioctls are refused unless the caller owns the VT — and Xorg calls `setsid()`
-  on itself first. `-keeptty` keeps the controlling terminal the login shell
-  already owns. As root neither flag is passed; that path is unchanged.
+- `startxfce` adds `-keeptty -sharevts -novtswitch` when it is not root. With no
+  logind on this image, a non-root Xorg cannot grab or switch the console VT —
+  the `VT_ACTIVATE` ioctl needs `CAP_SYS_TTY_CONFIG` — and Xorg calls `setsid()`
+  on itself first. `-sharevts` is the flag that actually skips the grab
+  (`xf86OpenConsole()` guards it with `if (!xf86Info.ShareVTs)`); `-novtswitch`
+  alone does not, and a real boot died on exactly that — bug 23. `-keeptty`
+  keeps the controlling terminal the login shell already owns. As root none of
+  these are passed; that path is unchanged.
 
 The brief's third worry, the xorg-wrapper console-user gate, turns out not to
 exist here: there is no `Xorg.wrap` in the image. `/usr/bin/Xorg` is a 274-byte
@@ -391,6 +396,19 @@ painted, and reading the rebuilt ISO back out showed the switch to `-R` then
 exposed stale ownership (`/etc/*` owned by uid 1000, from the cache restore) and
 a `0644` `/etc/shadow`, so `build_iso` now pins ownership `root:root`,
 `/etc/shadow` `0600` and `/tmp` `1777` too.
+
+**Second boot result (2026-10-11): `sudo` is fixed; the VT flags are not.** A
+real boot of the setuid-fixed ISO installed its components through the `sudo`
+password prompt — bug 22's setuid half verified — and got Xorg much further than
+before: it opened its own log under `/home/dragon/.local/share/xorg/`, read the
+input config and found the keyboard and mouse, then died on `xf86OpenConsole:
+Switching VT failed`. That is bug 23: the launcher was passing `-novtswitch`,
+which never disables the VT grab; `-sharevts` does. It is in the launch line now
+(`-keeptty -sharevts -novtswitch`) and asserted by `tests/startxfce-gate.sh`, not
+booted yet. That same boot wrote its input config to `/etc/X11/xorg.conf` —
+expected on that artifact, whose `/etc` was still owned by uid 1000; after the
+`553528f` ownership pin the non-root session falls back to `/tmp/xorg.conf`,
+which the launcher already handles.
 
 ### The desktop session runs as root — brief for the implementer
 
@@ -438,15 +456,19 @@ uid 0. The home-directory block (`copper-init.c:331-356`) only `chdir`s to
    fix means sudo can allocate ptys. `startxfce.sh:60-63` clears `SUDO` when
    `id -u` = 0. *Verify:* `sudo true` from the dropped shell. **[2026-10-11:
    it did not, and not because of sudo's config — the ISO flattened the
-   setuid bit on the way onto the disc. That is bug 22; fixed in `build_iso`,
-   not booted.]**
+   setuid bit on the way onto the disc. That is bug 22; fixed in `build_iso`.
+   2026-10-11 boot: `sudo` now prompts and installs, so this half is verified.
+   The ownership / `/etc/shadow 0600` / `/tmp 1777` hardening from `553528f`
+   still has not booted.]**
 
 **Success check for the implementer:** fresh image through the wizard; console
 `id` shows the wizard username, not uid 0; `sudo whoami` answers `root`;
 `startxfce` gives a desktop whose pointer and keyboard both work and whose
 panel/terminal run as the wizard user. **Status:** implemented 2026-10-11 and
-still unverified — see the fix note above. The xorg-wrapper gate turned out not
-to exist in this image, so it is not a variable.
+still unverified — see the fix note above. A real boot has since confirmed the
+`sudo` half and exposed bug 23 (the VT grab); the `-sharevts` fix is in, not
+booted. The xorg-wrapper gate turned out not to exist in this image, so it is
+not a variable.
 
 ---
 

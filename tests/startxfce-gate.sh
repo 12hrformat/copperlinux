@@ -272,9 +272,12 @@ fi
 echo
 echo "=== case 5b: a non-root session keeps the console VT ==="
 # The session runs as the wizard user now, and a non-root Xorg cannot grab or
-# switch the VT without logind (there is none here). It must be told to keep
-# the controlling terminal it was started from and not switch. id is stubbed
-# so this exercises the non-root branch while the test itself runs as root.
+# switch the VT without logind (there is none here). -sharevts is the flag that
+# actually skips the grab: xf86OpenConsole()'s VT_ACTIVATE path is guarded by
+# `if (!xf86Info.ShareVTs)`, so -novtswitch alone does not avoid it and a real
+# boot died on "xf86OpenConsole: Switching VT failed". It must also keep the
+# controlling terminal it was started from and not switch VTs. id is stubbed so
+# this exercises the non-root branch while the test itself runs as root.
 reset
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/id" <<EOF
@@ -303,6 +306,7 @@ pkill -f "$TMP/Xorg" 2>/dev/null
 eq "  exit code is 0" 0 "$rc"
 args=$(cat "$TMP/xorg.args" 2>/dev/null)
 has "  the non-root server is told to keep the tty" "-keeptty" "$args"
+has "  the non-root server is told to share the VT (skips the VT grab)" "-sharevts" "$args"
 has "  the non-root server is told not to switch VT" "-novtswitch" "$args"
 has "  the server still gets the display" ":0" "$args"
 

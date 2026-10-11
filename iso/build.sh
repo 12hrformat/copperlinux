@@ -68,10 +68,10 @@ mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
 lint_scripts() {
   local s
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
-           "$ROOT/rootfs-overlay/usr/bin/ingot"; do
+           "$ROOT/rootfs-overlay/usr/bin/ingot" "$ROOT/startxfce.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script and ingot parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot and startxfce parse clean"
 }
 
 lint_scripts
@@ -551,7 +551,9 @@ local SRC="$ROOT/../src"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
-        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c"
+        "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
+        "$ROOT/startxfce.sh" \
+        "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
   then
     echo "copper: already built, skipping"; return
   fi
@@ -601,6 +603,7 @@ local SRC="$ROOT/../src"
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
+    "$ROOT/startxfce.sh" \
     "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 

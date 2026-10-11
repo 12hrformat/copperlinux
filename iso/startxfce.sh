@@ -403,16 +403,32 @@ else
         fi
     done
 
-    # A non-root X server cannot grab or switch the console VT. With no logind
-    # on this image the ioctls that do it -- KDSETMODE and VT_ACTIVATE -- are
-    # refused unless the caller owns the VT or holds CAP_SYS_TTY_CONFIG, and
-    # Xorg calls setsid() on itself before doing either. -keeptty stops it
-    # detaching from the controlling terminal the login shell already owns, and
-    # -novtswitch stops it trying to move to another one. As root neither flag
-    # is needed, so the long-proven root path is left exactly as it was.
+    # A non-root X server cannot grab the console VT, and getting this wrong
+    # is not subtle: Xorg exits with "Fatal server error: xf86OpenConsole:
+    # Switching VT failed". The grab is in xf86OpenConsole(), which calls
+    # switch_to() -- a VT_ACTIVATE ioctl -- whenever ShareVTs is off:
+    #
+    #     if (!xf86Info.ShareVTs) {
+    #         if (!switch_to(xf86Info.vtno, "xf86OpenConsole"))
+    #             FatalError("xf86OpenConsole: Switching VT failed\n");
+    #
+    # VT_ACTIVATE needs CAP_SYS_TTY_CONFIG, which no ordinary login has, so a
+    # non-root server must never reach that call. -sharevts sets ShareVTs and
+    # is what actually skips it: the server then adopts the VT it is already on
+    # (parse_vt_settings takes the active VT from VT_GETSTATE instead of
+    # hunting for a free one) instead of trying to move to one. -novtswitch is
+    # NOT enough and never was: it only suppresses the switch the server would
+    # do on a reset, and the block above is not guarded by it. This was
+    # measured -- a real boot passed -keeptty -novtswitch and still died on
+    # "xf86OpenConsole: Switching VT failed".
+    #
+    # -keeptty keeps the server from setsid()ing away from the controlling
+    # terminal the login shell already owns, which is what lets it open the
+    # VT it is sharing. As root the VT grab is permitted, so the long-proven
+    # root path is left exactly as it was and none of this applies.
     xflags=
     if [ "$(id -u)" != 0 ]; then
-        xflags="-keeptty -novtswitch"
+        xflags="-keeptty -sharevts -novtswitch"
     fi
 
     # -noreset: without it the server resets itself when the last client
