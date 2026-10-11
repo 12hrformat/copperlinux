@@ -130,8 +130,8 @@ from artifacts that were taken apart and read before being trusted.
 - **The shipped ISO on VMware, to the framebuffer.** `vmwgfx` probes correctly
   and refuses on QEMU because QEMU is not VMware. The mouse is confirmed on
   real VMware; the *display* is the open half. See BUGS.md #21.
-- **Xorg running as the wizard user.** The session still runs as root; the uid
-  drop is designed and not built.
+- **Xorg running as the wizard user.** The uid drop is built in the tree
+  (2026-10-11) and *not* boot-verified. See "The desktop session runs as root".
 - **Anything on real non-VM hardware.** Every measurement in this document is
   a VM.
 - **Persistence (G6) end to end.** Built; the disk has not been claimed on a
@@ -342,7 +342,37 @@ So the 8 GB bought a *finished install* and an *unusable browser*. Until the
 session actually runs as the wizard user, no browser ships working on Copper —
 and that makes the privilege drop below a blocker for the desktop, not polish.
 `HOME=/root firefox` is the obvious stopgap; it has **not** been boot-tested and
-is not a fix (it just moves the profile to `/root`). Recorded, not patched.
+is not a fix (it just moves the profile to `/root`). Recorded, not patched —
+until 2026-10-11:
+
+**Fix in the tree (2026-10-11), not booted yet.** The drop is built as the
+brief below decided, plus the two pieces the brief flagged as the hard part.
+
+- `spawn_tty`'s child now drops to the wizard user
+  (`initgroups`/`setgid`/`setuid`) before the `exec`, reading the login name
+  from `/etc/copper-firstboot.done`. No marker user — a first boot before the
+  wizard, or a stale account — and the child stays root, which is what the
+  image did before.
+- Xorg runs as that user, so `copper-init` chowns `/dev/input/*`, `/dev/dri/*`,
+  `/dev/fb*` and the tty/VT nodes to the session user at boot. There is no
+  udev, so those are root-owned and a non-root Xorg comes up with a dead
+  pointer and no keyboard otherwise. It also makes `/dev/shm` and
+  `/run/user/<uid>` first — `startxfce` used to, but as the user it cannot
+  `mkdir` under the root-owned `/dev` or `/run`.
+- `startxfce` adds `-keeptty -novtswitch` when it is not root. With no logind
+  on this image, a non-root Xorg cannot grab or switch the console VT — the
+  ioctls are refused unless the caller owns the VT — and Xorg calls `setsid()`
+  on itself first. `-keeptty` keeps the controlling terminal the login shell
+  already owns. As root neither flag is passed; that path is unchanged.
+
+The brief's third worry, the xorg-wrapper console-user gate, turns out not to
+exist here: there is no `Xorg.wrap` in the image. `/usr/bin/Xorg` is a 274-byte
+`sh` script that `exec`s `/usr/lib/xorg/Xorg` directly, so nothing checks the
+console user.
+
+Still **unverified on a boot**: the drop itself, Xorg-as-non-root opening the
+device nodes, and the VT flags. `tests/init-session.sh` proves the in-process
+drop only (and CI runs it); nothing in CI boots the image.
 
 ### The desktop session runs as root — brief for the implementer
 
@@ -393,8 +423,9 @@ uid 0. The home-directory block (`copper-init.c:331-356`) only `chdir`s to
 **Success check for the implementer:** fresh image through the wizard; console
 `id` shows the wizard username, not uid 0; `sudo whoami` answers `root`;
 `startxfce` gives a desktop whose pointer and keyboard both work and whose
-panel/terminal run as the wizard user. **Unverified today:** the uid drop,
-Xorg-as-non-root device access, and the xorg-wrapper gate.
+panel/terminal run as the wizard user. **Status:** implemented 2026-10-11 and
+still unverified — see the fix note above. The xorg-wrapper gate turned out not
+to exist in this image, so it is not a variable.
 
 ---
 

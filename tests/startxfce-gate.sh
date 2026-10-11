@@ -222,6 +222,7 @@ echo "=== case 5: both present, the server opens the display ==="
 reset
 cat > "$TMP/Xorg" <<EOF
 #!/bin/sh
+printf '%s\n' "\$*" > "$TMP/xorg.args"
 sleep 1
 python3 - <<'PY'
 import socket, time
@@ -259,6 +260,51 @@ if [ -f "$TMP/xorg.conf" ]; then
 else
     bad "  the input config was written" "no $TMP/xorg.conf"
 fi
+# The non-root VT flags must NOT appear as root: the image booted for months on
+# this exact root invocation, and the fix must not quietly change it.
+if [ -f "$TMP/xorg.args" ] && grep -q -- '-keeptty' "$TMP/xorg.args"; then
+    bad "  root does not pass the non-root VT flags" \
+        "-keeptty was passed while running as root: $(cat "$TMP/xorg.args")"
+else
+    ok "  root does not pass the non-root VT flags"
+fi
+
+echo
+echo "=== case 5b: a non-root session keeps the console VT ==="
+# The session runs as the wizard user now, and a non-root Xorg cannot grab or
+# switch the VT without logind (there is none here). It must be told to keep
+# the controlling terminal it was started from and not switch. id is stubbed
+# so this exercises the non-root branch while the test itself runs as root.
+reset
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/id" <<EOF
+#!/bin/sh
+# Only the launcher's uid check is being answered; anything else is real.
+if [ "\$1" = "-u" ]; then echo 1000; exit 0; fi
+exec /usr/bin/id "\$@"
+EOF
+chmod +x "$TMP/bin/id"
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" > "$TMP/xorg.args"
+sleep 1
+python3 - <<'PY'
+import socket, time
+s = socket.socket(socket.AF_UNIX)
+s.bind("$TMP/.X11-unix/X0")
+s.listen(1)
+time.sleep(60)
+PY
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(PATH="$TMP/bin:$PATH"; export PATH; run_sut "$TMP/Xorg" "$TMP/startxfce4" 80); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null
+eq "  exit code is 0" 0 "$rc"
+args=$(cat "$TMP/xorg.args" 2>/dev/null)
+has "  the non-root server is told to keep the tty" "-keeptty" "$args"
+has "  the non-root server is told not to switch VT" "-novtswitch" "$args"
+has "  the server still gets the display" ":0" "$args"
 
 echo
 echo "=== case 6: a live X server on the display is reused, not replaced ==="

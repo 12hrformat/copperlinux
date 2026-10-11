@@ -63,28 +63,43 @@ will never provide the applet.
 
 # 19. the desktop session runs as root — impact 7/10
 
-**How it affects things:** every process in the desktop is uid 0. Thunar
-warns "you are logged in as root", every bug the desktop hits is a root bug,
-and anything created in the session is root-owned.
+**How it affects things:** every process in the desktop was uid 0. Thunar warns
+"you are logged in as root", every bug the desktop hits is a root bug,
+anything created in the session is root-owned — and it made the browser
+unusable.
 
-**What happens (verified):** `spawn_tty` (`copper-init.c:220-238`) does
-`setsid()`, opens `/dev/tty1`, dup2s it onto 0/1/2, `TIOCSCTTY`, then
-`execl`s `/usr/bin/copper-sh` — with no `setgid`/`setuid` anywhere, so the
-child stays uid 0. The home-directory block (`copper-init.c:331-356`) only
-`chdir`s into `/home/<user>` and sets `HOME`/`USER`/`LOGNAME`; identity never
-changes.
+**What happened (verified):** `spawn_tty` (`copper-init.c`) did `setsid()`,
+opened `/dev/tty1`, dup2'd it onto 0/1/2, `TIOCSCTTY`, then `execl`'d
+`/usr/bin/copper-sh` — with no `setgid`/`setuid` anywhere, so the child stayed
+uid 0 while `HOME` said `/home/<user>`. Firefox hard-refuses that combination:
+
+    Running Firefox as root in a regular user's session is not supported. ($HOME is /home/dragon which is owned by dragon.)
 
 **Decision (owner, 2026-10-10):** the wizard-created user owns the session;
-PID 1 keeps root; sudo is the elevation path. `iso/sudo/` builds a setuid
-sudo, `sudoers` grants `%wheel ALL=(ALL:ALL) ALL`, and the wizard adds the
-user to `wheel users audio video dialout cdrom` (`copper-firstboot.c:979`)
-already.
+PID 1 keeps root; sudo is the elevation path.
 
-**Not built:** the uid drop itself, plus making Xorg work as that user —
-device-node access (`/dev/input/event*`, `/dev/dri/card*` are root-owned and
-the `/etc/group` has no `input` group), the xorg-wrapper console-user gate,
-and the X authority question. The code-pointed plan is in HANDOFF under "The
-desktop session runs as root — brief for the implementer".
+**The fix is in the tree (2026-10-11), but nobody has booted it yet:**
+
+- `spawn_tty`'s child now resolves the login name from
+  `/etc/copper-firstboot.done` and `initgroups`/`setgid`/`setuid`s to it before
+  the exec. No marker user (first boot, or a stale account) → the child stays
+  root, which is what the image did before.
+- Xorg now runs as that user too, so `copper-init` chowns the nodes a non-root
+  X server opens — `/dev/input/*`, `/dev/dri/*`, `/dev/fb*`, the tty/VT nodes —
+  to the session user at boot. Without udev they are root-owned and the server
+  comes up with a dead pointer and no keyboard. It also makes `/dev/shm` and
+  `/run/user/<uid>` first, because `startxfce` used to but as the user it
+  cannot `mkdir` under the root-owned `/dev` or `/run`.
+- `startxfce` passes `-keeptty -novtswitch` when it is not root: with no
+  logind, a non-root Xorg cannot grab or switch the console VT, and it
+  `setsid()`s itself first. The root path is untouched.
+- `tests/init-session.sh` unit-tests the drop (reads the marker, resolves a
+  real account, forks and asserts the child lands on it). CI runs it.
+
+**Still open because:** "built" is not "verified". Needs a real boot: `id` on
+the console shows the wizard user, `sudo whoami` answers `root`, and
+`startxfce` gives a desktop whose pointer and keyboard both work and whose
+terminal runs `firefox`.
 
 ---
 

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Six gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh and
-# persist.sh need root, because they exercise sockets, staged rootfs trees, the
-# hotfix database and a mount namespace. ingot-gate.sh does not — its install
-# lands in a scratch INGOT_ROOT and its repo is served on localhost — so it runs
-# unprivileged too. CI runs this same file with sudo, so a green build there
-# means every gate ran and none were skipped.
+# Seven gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh
+# and persist.sh need root, because they exercise sockets, staged rootfs trees,
+# the hotfix database and a mount namespace; init-session.sh needs root because
+# it calls setuid. ingot-gate.sh does not — its install lands in a scratch
+# INGOT_ROOT and its repo is served on localhost — so it runs unprivileged too.
+# CI runs this same file with sudo, so a green build there means every gate ran
+# and none were skipped.
 #
 # This file used to carry known-failure classifications: the CI workflow came
 # over from `untested`, and on the old `gui` tree two of its tests failed
@@ -117,6 +118,19 @@ else
     # now and all three apply, so nothing is left to classify: red is red.
     record account-gate.sh bad "exit $?"
     printf '%s\n' "$out" | tail -15 | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/init-session.sh: the console shell drops to the wizard user ---"
+if [ "$ROOT" -ne 1 ]; then
+    record init-session.sh skipped "needs root to call setuid"
+elif out=$(bash tests/init-session.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^ok' || true)
+    record init-session.sh ok "$n checks"
+else
+    record init-session.sh bad "a session-privilege check failed"
+    printf '%s\n' "$out" | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
