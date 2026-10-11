@@ -177,7 +177,7 @@ boots it.
 **How it affects things:** `sudo` refuses every request — `/usr/bin/sudo must be
 owned by uid 0 and have the setuid bit set` — so there is no way to elevate.
 The wizard's user cannot install a package, edit a system file or shut the
-machine down. The same flattening shipped `/etc/shadow` world-readable.
+machine down.
 
 **What happens (verified, 2026-10-11):** a real boot as the wizard user ran
 `startxfce`, which offered to install its components and then:
@@ -206,22 +206,45 @@ rationalised flavour that throws the special bits away.
 **Fix in the tree (2026-10-11), not booted yet.** `grub-mkrescue` has no switch
 for this and reaches `xorriso` through `PATH`, so `build_iso` puts a one-job
 filter in front of it that rewrites exactly `-r` to `-R` — the same Rock Ridge
-without the rationalisation, which keeps the modes the staging tree already
-has. Measured on a synthetic tree: with the filter, a `4755` sudo and a `0000`
-shadow come back out of the finished ISO as `4755` and `0000`; without it they
-flatten to `555` and `444`. `build_iso` now reads `/usr/bin/sudo` back out of
-the ISO it just wrote and fails unless it is `4755`, and it folds `$SELF` into
-the ISO stamp so a change to the filter cannot be skipped against an unchanged
-tree.
+without the rationalisation, which keeps the modes and the ownership the
+staging tree has. Measured on a synthetic tree: with the filter, `4755` sudo and
+`0600` shadow come back out of the finished ISO as `4755` and `0600`; without it
+they flatten to `555` and `444`. `build_iso` folds `$SELF` into the ISO stamp so
+a change to the filter cannot be skipped against an unchanged tree.
+
+**The filter alone was not enough, and the artifact said so.** `-r` had also
+been hiding two things the tree itself had wrong. Reading the built ISO back out
+— the same way the gate below does — found 49 files owned by a normal user and a
+world-readable `/etc/shadow`:
+
+    644 uid1000:uid1000 /etc/shadow     <- should be 0600 root:root
+    644 uid1000:uid1000 /etc/passwd
+   1777 uid1000:uid1000 /tmp
+
+- **Ownership.** The workflow restores `iso/work` through `actions/cache` as the
+  unprivileged runner, and every stage whose stamp then matches is skipped, so
+  its output (`etc/*`, `boot/*`) stays owned by uid 1000. `-r` had forced `0:0`;
+  the image has only ever run root-owned. `build_iso` now chowns every entry that
+  is not already `root:root` back to it — and only those, because `chown` clears
+  setuid on regular files even when the owner does not change (measured), so sudo
+  is left alone and then `chmod 4755`ed once more as a belt.
+- **`/etc/shadow`** ships `0644` in git and is copied with `cp -a`, so it was
+  world-readable even before this change. There is no shadow group on this image
+  and root reads it directly, so `build_iso` pins it `0600`.
+
+A pleasant side effect of `-R`: the setuid/setgid helpers that arrived with the
+Ubuntu packages (`mount`, `umount`, `chsh`, `gpasswd`, `unix_chkpwd`, …) keep
+their bits now instead of being flattened to `555`.
 
 The same flattening made `/tmp` `555 root:root`, and `/tmp` is on the overlay
 rather than its own tmpfs. Xorg creates its lock file and socket there
 (`/tmp/.X0-lock`, `/tmp/.X11-unix`) before it paints, and `startxfce` redirects
 Xorg's log to `/tmp/xorg.log` — all of which a non-root session cannot do on a
 `555` directory, so this is as likely as anything to be why the desktop did not
-come up on the boot above. `build_iso` now pins `/tmp` to `1777` in the tree
-before packaging (a non-root write through a `1777` lower dir copies it up
-correctly — checked), and `-R` carries that mode to the disc.
+come up on the boot above. `build_iso` now pins `/tmp` to `1777` (a non-root
+write through a `1777` lower dir copies it up correctly — checked), and the
+package gate reads `/etc/shadow` back out of the disc beside `sudo` and requires
+`0600`.
 
 **Still open because:** "built" is not "verified". Needs a real boot: `sudo
 whoami` answers `root`, `sudo ingot install firefox` installs, and

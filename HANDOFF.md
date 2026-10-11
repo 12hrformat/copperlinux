@@ -385,7 +385,12 @@ drop only (and CI runs it); nothing in CI boots the image.
 root. It then exposed bug 22: `sudo` in the image is not setuid (grub-mkrescue
 writes the live root as rationalised Rock Ridge and flattens the mode), so
 `sudo whoami` failed and `startxfce` could not install its components. Fixed in
-`build_iso` (bug 22); the boot test for that is still pending.
+`build_iso` (bug 22); the boot test for that is still pending. The same
+flattening made `/tmp` `555`, which likely killed the non-root Xorg before it
+painted, and reading the rebuilt ISO back out showed the switch to `-R` then
+exposed stale ownership (`/etc/*` owned by uid 1000, from the cache restore) and
+a `0644` `/etc/shadow`, so `build_iso` now pins ownership `root:root`,
+`/etc/shadow` `0600` and `/tmp` `1777` too.
 
 ### The desktop session runs as root — brief for the implementer
 
