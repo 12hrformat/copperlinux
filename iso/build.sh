@@ -550,10 +550,10 @@ build_copper() {
 local SRC="$ROOT/../src"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
-     && [ -x "$TGT/usr/bin/xprobe" ] \
+     && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" \
+        "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
         "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
   then
     echo "copper: already built, skipping"; return
@@ -586,13 +586,18 @@ local SRC="$ROOT/../src"
   # command-not-found from copper-sh.
   install -m 0755 "$ROOT/startxfce.sh" "$TGT/usr/bin/startxfce"
 
+  # shutdown: busybox has no such applet, so `sudo shutdown now` had nothing
+  # to run. The wrapper maps its flags onto the busybox halt/poweroff/reboot
+  # applets, which signal PID 1; see on_power_signal() in copper-init.c.
+  install -m 0755 "$ROOT/shutdown.sh" "$TGT/sbin/shutdown"
+
   # switch_root is going to need all of these, and a staged tree missing one
   # of them is a black screen on a machine with no shell to debug it from.
   # Say it here, where it costs a second. (The udhcpc lease script is checked
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/startxfce usr/bin/xprobe \
+           usr/bin/startxfce usr/bin/xprobe sbin/shutdown \
            usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -612,7 +617,7 @@ local SRC="$ROOT/../src"
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-    "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" \
+    "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
     "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 

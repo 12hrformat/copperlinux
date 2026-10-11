@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Seven gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh
-# and persist.sh need root, because they exercise sockets, staged rootfs trees,
-# the hotfix database and a mount namespace; init-session.sh needs root because
-# it calls setuid. ingot-gate.sh does not — its install lands in a scratch
-# INGOT_ROOT and its repo is served on localhost — so it runs unprivileged too.
-# CI runs this same file with sudo, so a green build there means every gate ran
-# and none were skipped.
+# Eight gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
+# persist.sh and shutdown-gate.sh need root, because they exercise sockets,
+# staged rootfs trees, the hotfix database, a mount namespace and a private
+# /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh does
+# not — its install lands in a scratch INGOT_ROOT and its repo is served on
+# localhost — so it runs unprivileged too. CI runs this same file with sudo, so
+# a green build there means every gate ran and none were skipped.
 #
 # This file used to carry known-failure classifications: the CI workflow came
 # over from `untested`, and on the old `gui` tree two of its tests failed
@@ -146,6 +146,26 @@ else
     # The whole transcript, not just the FAIL lines: when a wizard run dies on
     # the runner the reason is what it printed before it died.
     printf '%s\n' "$out" | tail -60 | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/shutdown-gate.sh: shutdown maps flags onto the right applet ---"
+# Needs root for the private mount namespace it uses to replace /sbin with
+# stubs. The mapping is the whole risk (bug 18): `shutdown -r now` must reboot,
+# not power off.
+if [ "$ROOT" -ne 1 ]; then
+    record shutdown-gate.sh skipped "needs root for the mount namespace"
+elif out=$(bash tests/shutdown-gate.sh 2>&1); then
+    if printf '%s' "$out" | grep -q '^skip:'; then
+        record shutdown-gate.sh skipped "no private mount namespace"
+    else
+        n=$(printf '%s' "$out" | grep -c '^ok' || true)
+        record shutdown-gate.sh ok "$n checks"
+    fi
+else
+    record shutdown-gate.sh bad "a shutdown-wrapper check failed"
+    printf '%s\n' "$out" | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -373,6 +374,37 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
+/* Which reboot(2) action an incoming power signal means.
+
+   These are busybox init's signal names, chosen so the busybox halt /
+   poweroff / reboot applets and our /sbin/shutdown all agree on one
+   convention:
+
+       SIGTERM -> reboot      SIGUSR2 -> poweroff      SIGUSR1 -> halt
+
+   Kept as its own function so the mapping is unit-testable without actually
+   rebooting the machine that runs the test -- see tests/init-session.c. */
+static int power_how(int sig) {
+    if (sig == SIGTERM) return RB_AUTOBOOT;
+    if (sig == SIGUSR2) return RB_POWER_OFF;
+    return RB_HALT_SYSTEM;              /* SIGUSR1, SIGPWR */
+}
+
+/* The power request handler.
+
+   busybox's halt/poweroff/reboot applets do NOT call reboot(2) unless given
+   -f; by default they signal PID 1 and expect it to do the orderly shutdown
+   ("go through init"). Copper's PID 1 used to ignore SIGUSR1/SIGUSR2/SIGTERM,
+   so `sudo reboot` and `sudo poweroff` silently did nothing (bug 18).
+   sync() twice -- the second pass is the usual belt and braces for the
+   persisted overlay upper -- then hand the machine to the kernel. */
+static void on_power_signal(int sig) {
+    sync();
+    sync();
+    reboot(power_how(sig));
+    _exit(0);                           /* only if reboot(2) failed */
+}
+
 int main(void) {
     console_stdio();
 
@@ -402,8 +434,22 @@ int main(void) {
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            1);
 
+    /* Power signals get real handlers (see on_power_signal). SIGINT and
+       SIGHUP stay ignored: Ctrl-Alt-Del and a terminal hangup are not things
+       this init should act on. SIGCHLD is left at its default, because the
+       reaper below relies on waitpid. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_power_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);      /* reboot */
+    sigaction(SIGUSR1, &sa, NULL);      /* halt */
+    sigaction(SIGUSR2, &sa, NULL);      /* poweroff */
+#ifdef SIGPWR
+    sigaction(SIGPWR, &sa, NULL);       /* halt (ACPI power button) */
+#endif
     signal(SIGINT, SIG_IGN);
-    signal(SIGTERM, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
 

@@ -31,8 +31,9 @@ that make it *Copper* are written by hand.
 - speaks to **drivers** (wifi, bluetooth, firmware) and reaches the **internet**
 
 The desktop is done: XFCE is packaged into the ISO and paints a desktop under
-QEMU, with ingot as the package manager. Remaining work is the session user,
-plus confirming persistence and the VMware framebuffer on real hardware.
+QEMU and on real VMware (2026-10-11), with ingot as the package manager. The
+session user is done and boot-verified. Remaining work is confirming
+persistence (bug 20) and the two-boot `/tmp` case (bug 24) on a real boot.
 
 Upstream projects are reference material. Nothing gets packaged as-is, and
 nothing gets stamped as Copper without being checked.
@@ -104,6 +105,9 @@ from artifacts that were taken apart and read before being trusted.
   pointer on a real boot.
 - **The devpts / PTY fix** — owner-confirmed: the XFCE terminal opens a real
   pty and `sudo` allocates ptys without error.
+- **The display on real VMware** (2026-10-11): the boot that painted XFCE and
+  ran Firefox was a VMware guest, so `vmwgfx` drives the panel there. Bug 21
+  closed.
 - **`copper charge` and `copper rollback` on a booted VM** — apply / backup /
   idempotent-skip / restore all confirmed on the live system (the four
   defects that made it non-functional in the first place are bug 10 in
@@ -127,9 +131,9 @@ from artifacts that were taken apart and read before being trusted.
   `nslookup example.com` and a plain `wget` haven't all been run. The ingot
   payload downloads went over the real network and came through fine, but that
   specific three-command checklist is still unpaid.
-- **The shipped ISO on VMware, to the framebuffer.** `vmwgfx` probes correctly
-  and refuses on QEMU because QEMU is not VMware. The mouse is confirmed on
-  real VMware; the *display* is the open half. See BUGS.md #21.
+- **VirtualBox's `vboxvideo`**, which cannot be probed at all: QEMU has no such
+  display device. Every other display in the matrix has now been seen, on QEMU
+  or on real VMware.
 - **Xorg running as the wizard user — closed, boot-verified (2026-10-11).** A
   real boot logs in as the wizard user (`id` answers the user, not root),
   `startxfce` with no `sudo` paints XFCE, and **Firefox and nmap run in the
@@ -308,19 +312,19 @@ or someone with that access pushing it.
 **Done looks like:** `startxfce4` brings up an XFCE session on the framebuffer.
 Status: **done and boot-verified (2026-10-11).** A real boot of the current ISO
 logs in as the wizard user, `startxfce` (no `sudo`) paints XFCE, and **Firefox
-and nmap run in the session** — bugs 19, 22 and 23 closed. What remains around
-the desktop is the edges, not "does it work": the VMware framebuffer on a real
-VMware boot (bug 21), a persisted `/tmp` making the second boot reuse a dead
-display (bug 24, fixed in the tree, needs a two-boot test), and
-`sudo shutdown`/`sudo reboot` doing nothing (bug 18).
+and nmap run in the session** — bugs 19, 22 and 23 closed. That boot was a
+VMware guest, which also settles the VMware framebuffer — bug 21 closed. What
+remains is the edges, not "does it work": a persisted `/tmp` making the second
+boot reuse a dead display (bug 24, fixed in the tree, needs a two-boot test) and
+`sudo shutdown`/`sudo reboot` (bug 18, fixed in the tree, needs a boot).
 
-Order of the remaining work — 1 and 2 are done (boot-verified 2026-10-11):
+Order of the remaining work — 1–3 are done (boot-verified 2026-10-11):
 
 1. ~~Drop privileges in the session shell.~~ Done — bug 19.
 2. ~~Xorg as the wizard user, device nodes and VT flags sorted.~~ Done — bug 23.
-3. Still to confirm: the VMware framebuffer on real VMware (bug 21), the
-   persisted `/tmp` two-boot case (bug 24), and `sudo shutdown`/`reboot`
-   (bug 18).
+3. ~~The VMware framebuffer.~~ Done — bug 21, on the same VMware boot.
+4. Still to confirm: the persisted `/tmp` two-boot case (bug 24) and
+   `sudo shutdown`/`reboot` (bug 18).
 
 CI's six-hour cap is a real constraint on the heavy build stages; `restore-keys`
 is what makes a warm cache survive an unrelated change (that bug is 2 in BUGS.md's
@@ -412,8 +416,10 @@ which the launcher already handles.
 **Third boot result (2026-10-11): green.** A real boot of the current ISO (the
 `-sharevts` line plus the `553528f` ownership/mode pins) logs in as the wizard
 user, `startxfce` with no `sudo` paints XFCE, and **Firefox and nmap run in the
-session** — bugs 19, 22 and 23 closed together. Still unverified on a boot: the
-persisted `/tmp` two-boot case (bug 24) and `sudo shutdown`/`reboot` (bug 18).
+session** — bugs 19, 22 and 23 closed together. That guest is VMware, so the
+display half of bug 21 is closed as well. Still unverified on a boot: the
+persisted `/tmp` two-boot case (bug 24) and `sudo shutdown`/`reboot` (bug 18,
+fixed in the tree after this boot).
 
 ### The desktop session runs as root — brief for the implementer
 
@@ -525,9 +531,9 @@ Carried over from the pacman work, still true:
   back after kconfig has had its say and refuse to continue, listing what went
   missing.
 - `build_copper` — checks the staged tree contains the binaries and lease
-  script `switch_root` needs, and that `sbin/init` is a symlink to
-  `/usr/bin/copper-init`. Uses `readlink`, not `-e` (bug 5 in BUGS.md's
-  tracker).
+  script `switch_root` needs, that `/sbin/shutdown` is installed (bug 18), and
+  that `sbin/init` is a symlink to `/usr/bin/copper-init`. Uses `readlink`, not
+  `-e` (bug 5 in BUGS.md's tracker).
 
 ---
 
@@ -566,12 +572,14 @@ iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1
 iso/startxfce.sh           the XFCE launcher: probe the display, exec startxfce4
 iso/x11/probe/xprobe.c     X server liveness probe, static, raw wire protocol
+iso/shutdown.sh            /sbin/shutdown: maps flags onto busybox halt/poweroff/reboot
 iso/firstboot/copper-firstboot.c   the OOBE wizard  (full run now verified)
 iso/rootfs-overlay/       /etc and friends that land in the rootfs
 iso/rootfs-overlay/usr/share/udhcpc/default.script   our DHCP lease script
 src/                      copper-sh: main.c, builtins.c, builtins.h
 tests/smoke.sh            19-assertion shell smoke test
 tests/account-gate.sh     asserts the shipped account/answer path
+tests/shutdown-gate.sh    proves /sbin/shutdown maps flags to the right applet
 .github/workflows/build-iso.yml   per-stage CI steps + workspace cache
 ```
 
