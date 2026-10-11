@@ -304,6 +304,41 @@ as the wizard user paints XFCE, and `firefox` runs in its terminal.
 
 ---
 
+# 24. a persisted /tmp makes startxfce reuse a dead display — impact 5/10
+
+**How it affects things:** on the machine that has the persistence disk, the
+second boot can come back with no desktop. `startxfce` announces
+`an X server is already on :0, using it` and hands XFCE a display that nothing
+is listening on, so the session hangs against a server that is not there.
+
+**What happens:** `display_live()` treats the very existence of
+`/tmp/.X11-unix/X0` as proof that a server is listening. It is not: X does not
+remove the socket when it exits, and with persistence the writable layer is a
+disk, so `/tmp` comes back with the socket the last boot left behind. The
+launcher reuses it instead of starting a real server.
+
+**Root cause:** `startxfce` prefers a liveness probe when the image has one —
+`$COPPER_XPROBE`, then `/usr/bin/xprobe`, then `xdpyinfo` — and only falls back
+to trusting the bare socket when it has none. `xprobe` is in the repo
+(`iso/x11/probe/xprobe.c`, written for exactly this) but `build_copper` never
+compiled or installed it, and `x11-utils` (`xdpyinfo`) is not in the image, so
+the socket-only fallback was the only path the image ever had. That was
+harmless while the writable layer was RAM and every boot began with an empty
+`/tmp`; it is not harmless once persistence puts `/tmp` on the disk.
+
+**Fix in the tree (2026-10-11), not booted yet.** `build_copper` now compiles
+`iso/x11/probe/xprobe.c` — static musl, like the other in-image binaries — to
+`/usr/bin/xprobe`, lists it in the stage's existence loop, and folds it into
+both the skip check and the stamp, so a change to the probe cannot be skipped
+against an unchanged tree. `startxfce` already prefers it; only the build was
+missing.
+
+**Still open because:** "built" is not "verified". Needs a boot with the
+persistence disk: start a desktop, reboot, and `startxfce` must start a fresh
+server rather than announce the stale one.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -571,7 +606,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-23 bugs total: 16 fixed, 1 stopgapped, 6 open.
+24 bugs total: 16 fixed, 1 stopgapped, 7 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -598,3 +633,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 21 | still open | VMware framebuffer unproven |  |
 | bug 22 | still open | ISO rationalised Rock Ridge flattened modes — sudo lost setuid |  |
 | bug 23 | still open | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag |  |
+| bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |
