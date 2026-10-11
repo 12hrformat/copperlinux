@@ -61,60 +61,6 @@ will never provide the applet.
 
 ---
 
-# 19. the desktop session runs as root — impact 7/10
-
-**How it affects things:** every process in the desktop was uid 0. Thunar warns
-"you are logged in as root", every bug the desktop hits is a root bug,
-anything created in the session is root-owned — and it made the browser
-unusable.
-
-**What happened (verified):** `spawn_tty` (`copper-init.c`) did `setsid()`,
-opened `/dev/tty1`, dup2'd it onto 0/1/2, `TIOCSCTTY`, then `execl`'d
-`/usr/bin/copper-sh` — with no `setgid`/`setuid` anywhere, so the child stayed
-uid 0 while `HOME` said `/home/<user>`. Firefox hard-refuses that combination:
-
-    Running Firefox as root in a regular user's session is not supported. ($HOME is /home/dragon which is owned by dragon.)
-
-**Decision (owner, 2026-10-10):** the wizard-created user owns the session;
-PID 1 keeps root; sudo is the elevation path.
-
-**The fix is in the tree (2026-10-11), but nobody has booted it yet:**
-
-- `spawn_tty`'s child now resolves the login name from
-  `/etc/copper-firstboot.done` and `initgroups`/`setgid`/`setuid`s to it before
-  the exec. No marker user (first boot, or a stale account) → the child stays
-  root, which is what the image did before.
-- Xorg now runs as that user too, so `copper-init` chowns the nodes a non-root
-  X server opens — `/dev/input/*`, `/dev/dri/*`, `/dev/fb*`, the tty/VT nodes —
-  to the session user at boot. Without udev they are root-owned and the server
-  comes up with a dead pointer and no keyboard. It also makes `/dev/shm` and
-  `/run/user/<uid>` first, because `startxfce` used to but as the user it
-  cannot `mkdir` under the root-owned `/dev` or `/run`.
-- `startxfce` passes `-keeptty -novtswitch` when it is not root: with no
-  logind, a non-root Xorg cannot grab or switch the console VT, and it
-  `setsid()`s itself first. The root path is untouched.
-- `tests/init-session.sh` unit-tests the drop (reads the marker, resolves a
-  real account, forks and asserts the child lands on it). CI runs it.
-
-**Still open because:** "built" is not "verified". Needs a real boot: `id` on
-the console shows the wizard user, `sudo whoami` answers `root`, and
-`startxfce` gives a desktop whose pointer and keyboard both work and whose
-terminal runs `firefox`.
-
-**First boot result (2026-10-11): the drop landed.** A real boot of the
-`711fcb9` ISO showed
-
-    dragon@copper:~$ id
-    uid=1000(dragon) gid=1000(dragon) groups=wheel,dialout,cdrom,audio,video,users,dragon,dragon
-
-so the shell is no longer root and Firefox's "root in a regular user's
-session" refusal is addressed. The desktop half is still unverified, and the
-same boot exposed bug 22: the ISO flattened `sudo`'s setuid bit, so
-`sudo whoami` failed and the install prompt could install nothing — including
-the browser. Fix for that is in the tree, not booted.
-
----
-
 # 20. persistence isn't built — the writable layer is RAM — impact 10/10
 
 **How it affects things:** every reboot throws your files away, and the disk
@@ -172,138 +118,6 @@ boots it.
 
 ---
 
-# 22. file modes are flattened into the ISO, so `sudo` loses setuid — impact 9/10
-
-**How it affects things:** `sudo` refuses every request — `/usr/bin/sudo must be
-owned by uid 0 and have the setuid bit set` — so there is no way to elevate.
-The wizard's user cannot install a package, edit a system file or shut the
-machine down.
-
-**What happens (verified, 2026-10-11):** a real boot as the wizard user ran
-`startxfce`, which offered to install its components and then:
-
-    startxfce:    firefox ...
-    sudo: /usr/bin/sudo must be owned by uid 0 and have the setuid bit set
-    startxfce:    could not install firefox, continuing without it
-
-`sudo ingot install firefox` said the same thing.
-
-**Root cause:** `build_sudo` stages sudo correctly — it does `chmod 4755
-"$TGT/usr/bin/sudo"` and a gate that fails the build if the bit is missing — so
-the staging tree is right. The bit is lost one step later, in `build_iso`:
-`grub-mkrescue` builds the live root filesystem as ISO9660 and passes xorriso
-**`-r`**, "rationalised" Rock Ridge. That is not plain Rock Ridge — it forces
-uid/gid to 0 and rewrites every mode to `444` (files) or `555` (executables),
-dropping setuid/setgid and any `0000`. Mounting the shipped ISO shows it —
-every file is `444`, every binary `555`:
-
-    444 root:root /etc/shadow      <- shipped world-readable
-    555 root:root /usr/bin/sudo    <- 4755 in the staging tree it came from
-
-The ISO does carry Rock Ridge (long names and modes survive); it is only the
-rationalised flavour that throws the special bits away.
-
-**Fix in the tree (2026-10-11), not booted yet.** `grub-mkrescue` has no switch
-for this and reaches `xorriso` through `PATH`, so `build_iso` puts a one-job
-filter in front of it that rewrites exactly `-r` to `-R` — the same Rock Ridge
-without the rationalisation, which keeps the modes and the ownership the
-staging tree has. Measured on a synthetic tree: with the filter, `4755` sudo and
-`0600` shadow come back out of the finished ISO as `4755` and `0600`; without it
-they flatten to `555` and `444`. `build_iso` folds `$SELF` into the ISO stamp so
-a change to the filter cannot be skipped against an unchanged tree.
-
-**The filter alone was not enough, and the artifact said so.** `-r` had also
-been hiding two things the tree itself had wrong. Reading the built ISO back out
-— the same way the gate below does — found 49 files owned by a normal user and a
-world-readable `/etc/shadow`:
-
-    644 uid1000:uid1000 /etc/shadow     <- should be 0600 root:root
-    644 uid1000:uid1000 /etc/passwd
-   1777 uid1000:uid1000 /tmp
-
-- **Ownership.** The workflow restores `iso/work` through `actions/cache` as the
-  unprivileged runner, and every stage whose stamp then matches is skipped, so
-  its output (`etc/*`, `boot/*`) stays owned by uid 1000. `-r` had forced `0:0`;
-  the image has only ever run root-owned. `build_iso` now chowns every entry that
-  is not already `root:root` back to it — and only those, because `chown` clears
-  setuid on regular files even when the owner does not change (measured), so sudo
-  is left alone and then `chmod 4755`ed once more as a belt.
-- **`/etc/shadow`** ships `0644` in git and is copied with `cp -a`, so it was
-  world-readable even before this change. There is no shadow group on this image
-  and root reads it directly, so `build_iso` pins it `0600`.
-
-A pleasant side effect of `-R`: the setuid/setgid helpers that arrived with the
-Ubuntu packages (`mount`, `umount`, `chsh`, `gpasswd`, `unix_chkpwd`, …) keep
-their bits now instead of being flattened to `555`.
-
-The same flattening made `/tmp` `555 root:root`, and `/tmp` is on the overlay
-rather than its own tmpfs. Xorg creates its lock file and socket there
-(`/tmp/.X0-lock`, `/tmp/.X11-unix`) before it paints, and `startxfce` redirects
-Xorg's log to `/tmp/xorg.log` — all of which a non-root session cannot do on a
-`555` directory, so this is as likely as anything to be why the desktop did not
-come up on the boot above. `build_iso` now pins `/tmp` to `1777` (a non-root
-write through a `1777` lower dir copies it up correctly — checked), and the
-package gate reads `/etc/shadow` back out of the disc beside `sudo` and requires
-`0600`.
-
-**Boot result (2026-10-11): the setuid half is verified.** A real boot of a
-setuid-fixed ISO showed `startxfce` install its components through the password
-prompt — `sudo` prompted, and firefox/mousepad/ristretto downloaded and
-installed — so `/usr/bin/sudo` is setuid on the booted machine and elevation
-works. What is still unverified is the later hardening: the ownership
-`root:root` and `/etc/shadow 0600` / `/tmp 1777` pins come from `553528f`, which
-has not booted. *Verify next boot:* `sudo whoami` answers `root` and
-`ls -l /etc/shadow` is not world-readable.
-
----
-
-# 23. a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag — impact 7/10
-
-**How it affects things:** `startxfce` as the wizard user gets no desktop at all.
-Xorg opens its log, reads the input config, finds the keyboard and mouse, and
-then dies before it paints anything:
-
-```
-(EE) Fatal server error:
-(EE) xf86OpenConsole: Switching VT failed
-```
-
-**What happens (verified, 2026-10-11):** a real boot as the wizard user ran
-`startxfce`; it printed `starting /usr/bin/Xorg on :0`, hit the fatal above, and
-gave the prompt straight back. No pointer, no panel, nothing on the screen.
-
-**Root cause:** the launcher passed `-keeptty -novtswitch`, with a comment that
-claimed `-novtswitch` stops Xorg moving to another VT. It does not. In
-`xf86OpenConsole()` (`hw/xfree86/os-support/linux/lnx_init.c`) the VT grab is
-gated on whether the server *shares* the VT, not on the no-switch flag:
-
-```c
-    if (!xf86Info.ShareVTs) {
-        ...
-        if (!switch_to(xf86Info.vtno, "xf86OpenConsole"))
-            FatalError("xf86OpenConsole: Switching VT failed\n");
-    }
-```
-
-`switch_to()` is a `VT_ACTIVATE` ioctl. For a normal user that is `EPERM` — VT
-switching needs `CAP_SYS_TTY_CONFIG`, and there is no logind here to grant it —
-so the call always fails and the server always dies. `-novtswitch` only
-suppresses the switch the server does on a *reset*; it never reaches this block.
-
-**Fix in the tree (2026-10-11), not booted yet.** Add `-sharevts` to the non-root
-launch, now `-keeptty -sharevts -novtswitch`. `-sharevts` sets `xf86Info.ShareVTs`,
-which skips the grab outright and tells the server to use the VT it is already
-on (`linux_parse_vt_settings` then takes the current active VT instead of hunting
-for a free one). `-keeptty` still stops the server `setsid()`ing away from the
-controlling terminal the login shell owns. The root path is untouched — as root
-the grab is permitted and none of these flags are passed.
-`tests/startxfce-gate.sh` now asserts `-sharevts` in the non-root invocation.
-
-**Still open because:** "built" is not "verified". Needs a real boot: `startxfce`
-as the wizard user paints XFCE, and `firefox` runs in its terminal.
-
----
-
 # 24. a persisted /tmp makes startxfce reuse a dead display — impact 5/10
 
 **How it affects things:** on the machine that has the persistence disk, the
@@ -344,6 +158,25 @@ server rather than announce the stale one.
 Fixed bugs were removed from the list above per the rules. The lessons they
 cost are preserved below so they don't have to be learned twice. Their full
 records — number, name, who fixed them — are in the tracker at the bottom.
+
+**The desktop as a real user (bugs 19/22/23, boot-verified 2026-10-11).**
+Three separate things had to be true before XFCE painted *and* Firefox ran:
+
+- **The session must not be root.** `spawn_tty`'s child drops to the wizard
+  user before it runs the shell (PID 1 stays root; `sudo` is the way back up).
+  Without it Firefox hit its "running as root in a regular user's session"
+  refusal — the browser was never the bug.
+- **The ISO cannot rewrite the modes it copies.** `grub-mkrescue` invokes
+  xorriso with `-r` (rationalised Rock Ridge), which forces uid/gid 0 and
+  **flattens file modes** — that is what silently ate `sudo`'s setuid bit.
+  Wrapping `xorriso` to rewrite `-r` into `-R`, plus explicit ownership/mode
+  pins for `/usr/bin/sudo`, `/etc/shadow` and `/tmp`, is what keeps them.
+- **A non-root X server must not try to grab a VT.** Xorg calls `setsid()`
+  first and `VT_ACTIVATE` needs `CAP_SYS_TTY_CONFIG`, so a user-owned Xorg dies
+  in `xf86OpenConsole()`. The guard is `if (!xf86Info.ShareVTs)`, so the flag
+  that actually skips the grab is **`-sharevts`** — `-novtswitch` is a
+  different flag and does not skip it. `-keeptty` keeps the controlling
+  terminal the login shell already owns.
 
 **Why the kconfig assertions exist (a win, kept on purpose):**
 `require_kernel_config` was inverted to *demand* every display driver rather
@@ -606,7 +439,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-24 bugs total: 16 fixed, 1 stopgapped, 7 open.
+24 bugs total: 19 fixed, 1 stopgapped, 4 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -628,9 +461,9 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 16 | 12hrformat | payload downloads hung — busybox internal TLS | (99515d1) |
 | bug 17 | 12hrformat | startxfce false-started on a dead server / missing XFCE | (1bf9a4f) |
 | bug 18 | still open | `sudo shutdown` / `sudo reboot` do nothing |  |
-| bug 19 | still open | the desktop session runs as root |  |
+| bug 19 | 12hrformat | the desktop session runs as root — firefox refused to start | (711fcb9) |
 | bug 20 | still open | persistence isn't built — the writable layer is RAM |  |
 | bug 21 | still open | VMware framebuffer unproven |  |
-| bug 22 | still open | ISO rationalised Rock Ridge flattened modes — sudo lost setuid |  |
-| bug 23 | still open | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag |  |
+| bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
+| bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |
