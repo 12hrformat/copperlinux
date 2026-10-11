@@ -246,9 +246,61 @@ write through a `1777` lower dir copies it up correctly — checked), and the
 package gate reads `/etc/shadow` back out of the disc beside `sudo` and requires
 `0600`.
 
-**Still open because:** "built" is not "verified". Needs a real boot: `sudo
-whoami` answers `root`, `sudo ingot install firefox` installs, and
-`ls -l /etc/shadow` is no longer world-readable.
+**Boot result (2026-10-11): the setuid half is verified.** A real boot of a
+setuid-fixed ISO showed `startxfce` install its components through the password
+prompt — `sudo` prompted, and firefox/mousepad/ristretto downloaded and
+installed — so `/usr/bin/sudo` is setuid on the booted machine and elevation
+works. What is still unverified is the later hardening: the ownership
+`root:root` and `/etc/shadow 0600` / `/tmp 1777` pins come from `553528f`, which
+has not booted. *Verify next boot:* `sudo whoami` answers `root` and
+`ls -l /etc/shadow` is not world-readable.
+
+---
+
+# 23. a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag — impact 7/10
+
+**How it affects things:** `startxfce` as the wizard user gets no desktop at all.
+Xorg opens its log, reads the input config, finds the keyboard and mouse, and
+then dies before it paints anything:
+
+```
+(EE) Fatal server error:
+(EE) xf86OpenConsole: Switching VT failed
+```
+
+**What happens (verified, 2026-10-11):** a real boot as the wizard user ran
+`startxfce`; it printed `starting /usr/bin/Xorg on :0`, hit the fatal above, and
+gave the prompt straight back. No pointer, no panel, nothing on the screen.
+
+**Root cause:** the launcher passed `-keeptty -novtswitch`, with a comment that
+claimed `-novtswitch` stops Xorg moving to another VT. It does not. In
+`xf86OpenConsole()` (`hw/xfree86/os-support/linux/lnx_init.c`) the VT grab is
+gated on whether the server *shares* the VT, not on the no-switch flag:
+
+```c
+    if (!xf86Info.ShareVTs) {
+        ...
+        if (!switch_to(xf86Info.vtno, "xf86OpenConsole"))
+            FatalError("xf86OpenConsole: Switching VT failed\n");
+    }
+```
+
+`switch_to()` is a `VT_ACTIVATE` ioctl. For a normal user that is `EPERM` — VT
+switching needs `CAP_SYS_TTY_CONFIG`, and there is no logind here to grant it —
+so the call always fails and the server always dies. `-novtswitch` only
+suppresses the switch the server does on a *reset*; it never reaches this block.
+
+**Fix in the tree (2026-10-11), not booted yet.** Add `-sharevts` to the non-root
+launch, now `-keeptty -sharevts -novtswitch`. `-sharevts` sets `xf86Info.ShareVTs`,
+which skips the grab outright and tells the server to use the VT it is already
+on (`linux_parse_vt_settings` then takes the current active VT instead of hunting
+for a free one). `-keeptty` still stops the server `setsid()`ing away from the
+controlling terminal the login shell owns. The root path is untouched — as root
+the grab is permitted and none of these flags are passed.
+`tests/startxfce-gate.sh` now asserts `-sharevts` in the non-root invocation.
+
+**Still open because:** "built" is not "verified". Needs a real boot: `startxfce`
+as the wizard user paints XFCE, and `firefox` runs in its terminal.
 
 ---
 
@@ -339,12 +391,26 @@ meson.build`, which points at the project rather than at the misplaced flag.
 on the transfer appearing to succeed — a truncated tarball extracts halfway
 and then reports a build error against the source.
 
-**Any change to a cache-key file is a full kernel rebuild.** The CI cache key
-hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
-`iso/rootfs-overlay/**`, `iso/src-init/**`, `iso/firstboot/**` and `src/**`.
-A change to *any one* of those throws away the whole `iso/work/` cache. The
-cache is saved even on failure (`if: always()`), so a red run still warms the
-next one. Batch changes; don't dribble.
+**Any change to a cache-key file forces the heavy stages to re-run.** The CI
+cache key hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
+`iso/rootfs-overlay/**`, `iso/src-init/**`, `iso/firstboot/**`, `src/**` and
+`iso/sudo/**`. `restore-keys` still restores the previous `iso/work/` on an
+unrelated key, so the key is only a hint — what actually keeps a restored tree
+honest is the per-stage stamp. A stage whose inputs moved re-runs even on a
+cache hit (the kernel is the expensive one, ~7 min cold), and a warm
+source/object tree makes the re-run cheap. Batch changes; don't dribble.
+
+**A stage's skip-check and its stamp must name the identical file list — and
+every file the stage installs must be in it.** `stamped_skip` and `stamp_set`
+both hash `cat "$@"`, so if their argument lists differ by even one file the
+stamp can never match and the stage re-runs on every build.
+`build_copper` had exactly that: `stamp_set` hashed three hotfix scripts that
+`stamped_skip` did not, so the stage silently never skipped. That mismatch also
+hid a second gap — the stage installs `iso/startxfce.sh`
+(`install -m 0755 "$ROOT/startxfce.sh" "$TGT/usr/bin/startxfce"`) but *neither*
+list hashed it, so the only reason a launcher edit ever reached the ISO was the
+always-rerun accident. Both lists now carry `startxfce.sh` and all three hotfix
+scripts. When a stamp looks like it is not skipping, diff the two lists first.
 
 **A cached musl toolchain is only usable at the path it was built at.**
 `musl-gcc` is a wrapper that names its specs file and its crt/lib objects by
@@ -505,7 +571,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-22 bugs total: 16 fixed, 1 stopgapped, 5 open.
+23 bugs total: 16 fixed, 1 stopgapped, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -531,3 +597,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 20 | still open | persistence isn't built — the writable layer is RAM |  |
 | bug 21 | still open | VMware framebuffer unproven |  |
 | bug 22 | still open | ISO rationalised Rock Ridge flattened modes — sudo lost setuid |  |
+| bug 23 | still open | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag |  |
