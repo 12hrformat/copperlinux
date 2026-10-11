@@ -31,8 +31,8 @@ that make it *Copper* are written by hand.
 - speaks to **drivers** (wifi, bluetooth, firmware) and reaches the **internet**
 
 The desktop is done: XFCE is packaged into the ISO and paints a desktop under
-QEMU, with ingot as the package manager. Remaining work is the session user +
-persistence, plus confirming the VMware framebuffer on real hardware.
+QEMU, with ingot as the package manager. Remaining work is the session user,
+plus confirming persistence and the VMware framebuffer on real hardware.
 
 Upstream projects are reference material. Nothing gets packaged as-is, and
 nothing gets stamped as Copper without being checked.
@@ -134,7 +134,8 @@ from artifacts that were taken apart and read before being trusted.
   drop is designed and not built.
 - **Anything on real non-VM hardware.** Every measurement in this document is
   a VM.
-- **Persistence (G6) end to end.** Designed; disk not yet claimed at boot.
+- **Persistence (G6) end to end.** Built; the disk has not been claimed on a
+  real boot yet.
 
 **A note on green CI runs:** a green run does not mean the artifact is
 correct. Run `36220249701` was fully green and shipped an ISO built from the
@@ -255,38 +256,44 @@ interface-selection bug that broke wired DHCP is already handled for wifi:
 source, `CONFIG_BT=y` with the protocol drivers. BlueZ wants a D-Bus daemon;
 that's the part to budget time for.
 
-## G6 — Persistence ⚠️ current work
+## G6 — Persistence ✅ built / ⚠️ not yet booted
 
 **Done looks like:** a reboot keeps your files, and the 10 GB disk you gave
 the VM actually gets written to instead of sitting there doing nothing.
 
-The writable top layer of the overlay is a tmpfs today, so every session is
+The writable top layer of the overlay is a tmpfs, so every session is
 throwaway — and that is the same reason `ingot install firefox` died of ENOSPC
 on a machine with a 10 GB disk: the upper is pure RAM, and firefox's payload +
-unpack tree need ~570 MB of it. Stopgap (landed): cap the upper tmpfs at 50%
-so a firefox-sized install fits in the current ISO. Real fix below.
+unpack tree need ~570 MB of it. Stopgap (landed): cap the upper tmpfs at 50% so
+a firefox-sized install fits. Real fix, now in the tree: the upper moves to a
+disk.
 
-**The plan: same overlay, different `upperdir` — the upper goes on a disk.**
-
-- **The label is the handshake.** We declare a filesystem label, `COPPER`.
-  `iso/live/init` scans the disks that aren't the boot medium at boot, and if
-  one carries a `COPPER`-labeled ext4 partition it mounts that where the tmpfs
-  used to go. No label → tmpfs fallback, ISO still boots anywhere. Label-first
-  is the safety: we never touch a random disk with real data on it, because we
-  only claim what we labeled ourselves.
-- **The wizard picks the disk.** Last page of `copper-firstboot`: list the
-  spare disks, the user picks one, we wipe + format ext4 with the `COPPER`
-  label, and tell them it takes effect on the next boot. Explicit choice, not
-  "grab the first disk we see".
+- **The label is the handshake.** A disk carrying the ext4 label `COPPER` is
+  claimed as the overlay upper. `iso/live/init` probes every non-medium disk for
+  it and falls back to the tmpfs when there is none, so the ISO still boots
+  anywhere. Label-first is the safety: we only ever claim a disk we labelled
+  ourselves.
+- **The wizard picks the disk.** Last page of `copper-firstboot`: lists the
+  spare whole disks, the user picks one and types `ERASE`, then it runs
+  `mkfs.ext4 -q -F -L COPPER`. The medium it booted from and anything mounted
+  are never offered, and the page only runs on a real Copper boot (`/init`
+  leaves `/var/lib/copper/live-boot`).
 - **It activates on the next boot, not mid-session.** Hot-swapping the upper
-  under a live overlay is the kind of fragile shit we don't ship. Turn it on
-  at boot, reboot once, and every boot after is persistent.
-- **Where it goes:** `iso/live/init` does the detect-and-mount; the wizard's
-  last page does the format (`mkfs.ext4 -L COPPER`, so the image needs an ext4
-  mkfs); the label contract lives in one place so both halves agree.
+  under a live overlay is the kind of fragile shit we don't ship. Turn it on at
+  boot, reboot once, and every boot after is persistent.
+- **Two build facts it rests on:** busybox's `mke2fs` applet only makes ext2 and
+  overlayfs refuses that as an upper, so the real `mkfs.ext4` (e2fsprogs, gui
+  stage) is mandatory and the gui stage now fails the build without it; and PID
+  1 remounts a fresh tmpfs over `/run`, so the marker lives on the overlay
+  (`/var/lib/copper/live-boot`), never in `/run`. See BUGS.md config facts.
+- **Tested where it can be:** `tests/persist.sh` drives the real wizard against
+  a stub `mkfs.ext4` in a mount namespace — nothing real is formatted — and runs
+  in CI via `tests/branch-gate.sh`.
 
-**Boot-verification is the blocker.** Everything above is design; confirming it
-needs a fresh CI-built ISO and a real boot.
+**Boot-verification is the blocker.** Everything above is built, but built is
+not booted. It needs a fresh CI-built ISO with a spare disk: format it in the
+wizard, reboot, confirm the session comes back and the upper is the disk. That
+is bug 20's open question.
 
 ## G7 — Land `patch-1`
 
@@ -488,7 +495,10 @@ VMware Workstation, guest OS **Linux / Other Linux 6.x kernel 64-bit**, 2 GB,
 the CD drive with **Connected at power on** ticked.
 
 **Give the guest a spare disk for the G6 persistence test.** A second virtual
-disk (ext4 target, 10 GB is plenty) is what the wizard will offer to claim.
+disk (10 GB is plenty, leave it unformatted) is what the wizard's last page will
+offer to claim. Pick it, type `ERASE`, then reboot: the session should come back
+with your files, and `/` should be the disk, not RAM. That is the boot nobody
+has done yet — the one that closes bug 20.
 
 Then **Add… → Serial Port**, "This end is connected to" → **Output to file** →
 a `.txt` path (VMware insists on `.txt` and will warn the file doesn't exist;

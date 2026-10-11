@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Five gates: smoke.sh always; startxfce-gate.sh, charge.sh and
-# account-gate.sh need root, because they exercise sockets, staged rootfs
-# trees and the hotfix database. ingot-gate.sh does not — its install lands
-# in a scratch INGOT_ROOT and its repo is served on localhost — so it runs
+# Six gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh and
+# persist.sh need root, because they exercise sockets, staged rootfs trees, the
+# hotfix database and a mount namespace. ingot-gate.sh does not — its install
+# lands in a scratch INGOT_ROOT and its repo is served on localhost — so it runs
 # unprivileged too. CI runs this same file with sudo, so a green build there
 # means every gate ran and none were skipped.
 #
@@ -117,6 +117,19 @@ else
     # now and all three apply, so nothing is left to classify: red is red.
     record account-gate.sh bad "exit $?"
     printf '%s\n' "$out" | tail -15 | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/persist.sh: the wizard's disk choice for persistence ---"
+if [ "$ROOT" -ne 1 ]; then
+    record persist.sh skipped "needs root for the mount namespace"
+elif out=$(bash tests/persist.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^ok' || true)
+    record persist.sh ok "$n checks"
+else
+    record persist.sh bad "a persistence check failed"
+    printf '%s\n' "$out" | grep '^FAIL' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------

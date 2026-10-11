@@ -45,6 +45,14 @@ STEPS = [
     ("Timezone, e.g. Europe/London",  "UTC"),
 ]
 
+# Extra prompts to answer after the form, each "prompt|answer". account.sh
+# passes none and gets exactly the old run; tests/persist.sh uses them to drive
+# the persistence page, whose prompts differ from run to run (a disk may or may
+# not be picked, and the confirmation only appears when one is).
+for _arg in sys.argv[2:]:
+    _prompt, _, _answer = _arg.partition("|")
+    STEPS.append((_prompt, _answer))
+
 master, slave = pty.openpty()
 
 # 100x30: big enough that the wizard does not have to truncate anything, so a

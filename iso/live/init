@@ -53,24 +53,80 @@ say "initramfs up, medium is $MEDIA"
 
 # Writable top layer over the read-only ISO root.
 #
-# The tmpfs goes on /mnt/upper FIRST and upper/work are made inside it after.
-# That order is the whole trick: a directory created before something is
-# mounted on top of it is covered by that mount and stops existing, so the
-# overlay then fails with ENOENT on upperdir while the tmpfs sitting right
-# there looks perfectly healthy. build.sh pre-creates these same two
-# directories in the cpio, and the tmpfs hides those just as thoroughly.
+# Everything the session does -- a shell, ingot packages, a home directory --
+# lands in an overlay upper on top of the read-only ISO. Where that upper lives
+# is the only question: RAM, or a disk the user handed over on first boot.
 #
-# Size: this layer must hold every ingot install a session can ask for, and
-# packages are big -- firefox's 120M payload plus its ~450M unpacked tree
-# coexist in here (the payload is removed only after unpacking), which is
-# already 570M. A 25% cap is 512M on a 2G VM and dies mid-unpack. 50% is the
-# live-session balance: enough headroom for firefox-class installs while
-# leaving the other half of RAM to the running system.
-if ! /bin/busybox mount -t tmpfs -o size=50% tmpfs /mnt/upper; then
-    rescue "cannot mount tmpfs on /mnt/upper (no writable layer for the session)"
+# A disk qualifies by carrying the filesystem label COPPER. The first-boot
+# wizard writes that label when someone picks a spare disk, and nothing here
+# touches a disk on the strength of a guess. No labeled disk, or one that will
+# not mount, and this falls back to RAM exactly as it always did -- a broken
+# persistent disk must never cost anyone a boot.
+#
+# upper/ and work/ are made INSIDE whatever gets mounted. That order is the
+# whole trick: a directory created before something is mounted on top of it is
+# covered by that mount and stops existing, so the overlay then fails with
+# ENOENT on upperdir while the mount underneath looks perfectly healthy.
+# build.sh pre-creates these same two directories in the cpio, and any mount
+# hides those just as thoroughly.
+
+# The device the upper actually landed on. Empty means RAM.
+UPPER_DEV=""
+find_upper() {
+    for dev in /dev/sd[a-z][0-9]* /dev/sd[a-z] \
+               /dev/vd[a-z][0-9]* /dev/vd[a-z] \
+               /dev/nvme[0-9]n[0-9]p[0-9]* /dev/nvme[0-9]n[0-9] \
+               /dev/mmcblk[0-9]p[0-9]* /dev/mmcblk[0-9]; do
+        [ -b "$dev" ] || continue
+        # Never the disc we booted from, and never a partition of it.
+        [ "$dev" = "$MEDIA" ] && continue
+        case "$dev"  in "$MEDIA"*) continue ;; esac
+        case "$MEDIA" in "$dev"*)  continue ;; esac
+        # Anything already mounted belongs to somebody else.
+        /bin/busybox grep -q "^$dev " /proc/mounts 2>/dev/null && continue
+        # One probe per candidate: ask the filesystem for its own label.
+        info=$(/bin/busybox blkid "$dev" 2>/dev/null) || continue
+        case "$info" in
+            *'LABEL="COPPER"'*) UPPER_DEV="$dev"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+if find_upper; then
+    say "persistent upper: $UPPER_DEV carries the COPPER label"
+    if ! /bin/busybox mount -t ext4 -o rw "$UPPER_DEV" /mnt/upper; then
+        say "$UPPER_DEV would not mount -- running this session in RAM"
+        UPPER_DEV=""
+    fi
 fi
+
+if [ -z "$UPPER_DEV" ]; then
+    # Size: this layer must hold every ingot install a session can ask for, and
+    # packages are big -- firefox's 120M payload plus its ~450M unpacked tree
+    # coexist in here (the payload is removed only after unpacking), which is
+    # already 570M. A 25% cap is 512M on a 2G VM and dies mid-unpack. 50% is the
+    # live-session balance: enough headroom for firefox-class installs while
+    # leaving the other half of RAM to the running system.
+    if ! /bin/busybox mount -t tmpfs -o size=50% tmpfs /mnt/upper; then
+        rescue "cannot mount tmpfs on /mnt/upper (no writable layer for the session)"
+    fi
+    say "writable layer is RAM -- nothing here survives a reboot"
+else
+    say "writable layer is $UPPER_DEV -- files survive a reboot"
+fi
+
 if ! /bin/busybox mkdir -p /mnt/upper/upper /mnt/upper/work; then
-    rescue "cannot create /mnt/upper/upper and /mnt/upper/work inside the tmpfs"
+    rescue "cannot create /mnt/upper/upper and /mnt/upper/work in the writable layer"
+fi
+
+# A session that ended without a clean unmount (power cut, reset button) can
+# leave the overlay's workdir dirty, and the overlay then refuses to mount on
+# top of it. work/ is scratch that overlay rebuilds, so clear it; upper/ holds
+# the user's files and is never touched.
+if [ -n "$UPPER_DEV" ]; then
+    /bin/busybox rm -rf /mnt/upper/work 2>/dev/null
+    /bin/busybox mkdir -p /mnt/upper/work
 fi
 
 /bin/busybox mount -t overlay overlay \
@@ -91,6 +147,18 @@ fi
 [ -e /mnt/merged/dev/ptmx ] || /bin/busybox ln -s pts/ptmx /mnt/merged/dev/ptmx 2>/dev/null
 /bin/busybox mkdir -p /mnt/merged/run
 /bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null
+
+# Tell the first-boot wizard what this boot looks like. It runs once, from the
+# merged root, and needs two facts it cannot work out for itself: which disc
+# this machine booted from (so it never offers to wipe the medium it is running
+# from) and where the writable layer ended up. The file goes on the overlay,
+# not in /run, because copper-init mounts a fresh tmpfs over /run a moment
+# later and would bury anything left there.
+/bin/busybox mkdir -p /mnt/merged/var/lib/copper
+{
+    echo "media=$MEDIA"
+    echo "upper=${UPPER_DEV:-ram}"
+} > /mnt/merged/var/lib/copper/live-boot
 
 # switch_root on a root with no init gives one bare "not found" and nothing
 # to go on, so name the file that isn't there.

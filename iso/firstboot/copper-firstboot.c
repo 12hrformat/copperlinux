@@ -31,9 +31,9 @@ static void banner(void) {
     printf("         Welcome to Copper Linux\n");
     printf("===================================================\n");
     printf("Made by farcrowx and 12hrformat\n");
-    printf("A couple of questions and you're in. (This is a live\n");
-    printf("session, so answers apply for now — persistence is\n");
-    printf("coming in a later build.)\n\n");
+    printf("A couple of questions and you're in. This is a live\n");
+    printf("session: it runs from the ISO, and at the end you can\n");
+    printf("hand it a spare disk so your files are kept.\n\n");
 }
 
 /* Set once stdin runs out. Any prompt that loops on a rejected answer has to
@@ -873,6 +873,213 @@ static void screen_done(const char *name) {
     clr();
 }
 
+/* ------------------------------------------------------------------ */
+/*  the last page: a disk to keep files on                             */
+/* ------------------------------------------------------------------ */
+
+/* Copper runs from the ISO, so out of the box every change is gone at the next
+   reboot. This page is where that changes: it offers the spare disks, formats
+   whichever one is picked, and labels it COPPER. /init reads that label on the
+   next boot and mounts the disk as the overlay's writable layer, and from then
+   on the session is saved.
+
+   Two things keep this from being dangerous. It only runs on a real Copper
+   boot -- /init drops the marker below while it sets the machine up, and
+   without it this returns immediately, so a test bench that happens to own a
+   spare disk is never offered a format. And a disk is only ever wiped after it
+   was printed in the list and the user typed ERASE at it. */
+#define PERSIST_MARKER "/var/lib/copper/live-boot"
+#define PERSIST_MAX_DISKS 16
+#define PERSIST_NAME 32
+
+/* The whole disk the marker says this machine booted from, without /dev/.
+   Empty when the marker did not name one. */
+static char boot_media_disk[PERSIST_NAME];
+
+static void read_boot_marker(void) {
+    boot_media_disk[0] = '\0';
+    FILE *f = fopen(PERSIST_MARKER, "r");
+    if (!f) return;
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        char *nl = strpbrk(line, "\r\n");
+        if (nl) *nl = '\0';
+        if (strncmp(line, "media=", 6) != 0) continue;
+        const char *d = line + 6;
+        if (strncmp(d, "/dev/", 5) == 0) d += 5;
+        snprintf(boot_media_disk, sizeof boot_media_disk, "%s", d);
+    }
+    fclose(f);
+}
+
+/* Is `disk` (a whole-disk name like "sdb") the medium this system booted from?
+   Named either as the whole disk or as one of its partitions. */
+static int is_boot_medium(const char *disk) {
+    if (!boot_media_disk[0]) return 0;
+    size_t dl = strlen(disk), ml = strlen(boot_media_disk);
+    if (dl == ml) return strcmp(disk, boot_media_disk) == 0;
+    /* the boot device is a partition of this disk, e.g. sdb1 of sdb */
+    return ml > dl && strncmp(boot_media_disk, disk, dl) == 0;
+}
+
+/* A whole-disk name /sys/block could hold that a person might attach: sd*,
+   vd*, nvme*, mmcblk*. sr* is the disc, and loop, ram, dm- and md are not
+   storage anyone hands over. /sys/block lists whole disks only -- partitions
+   live below them -- so nothing here can be a partition. */
+static int is_disk_name(const char *n) {
+    return strncmp(n, "sd", 2) == 0 || strncmp(n, "vd", 2) == 0 ||
+           strncmp(n, "nvme", 4) == 0 || strncmp(n, "mmcblk", 6) == 0;
+}
+
+/* Is any part of `disk` mounted? /proc/mounts names the source of every mount,
+   so a line whose device is the disk itself or one of its partitions means the
+   disk is in use and must not be wiped. Any doubt refuses. */
+static int disk_in_use(const char *disk) {
+    FILE *f = fopen("/proc/mounts", "r");
+    if (!f) return 1;                    /* cannot prove it is free: refuse */
+    char line[512];
+    size_t dl = strlen(disk);
+    int used = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *sp = strchr(line, ' ');
+        if (!sp) continue;
+        *sp = '\0';
+        const char *dev = line;
+        if (strncmp(dev, "/dev/", 5) == 0) dev += 5;
+        if (strncmp(dev, disk, dl) != 0) continue;
+        char nxt = dev[dl];
+        if (nxt == '\0' || (nxt >= '0' && nxt <= '9') || nxt == 'p') {
+            used = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return used;
+}
+
+static int list_spare_disks(char disks[][PERSIST_NAME]) {
+    DIR *d = opendir("/sys/block");
+    if (!d) return 0;
+    struct dirent *de;
+    int n = 0;
+    while ((de = readdir(d)) != NULL && n < PERSIST_MAX_DISKS) {
+        if (de->d_name[0] == '.') continue;
+        if (!is_disk_name(de->d_name)) continue;
+        if (is_boot_medium(de->d_name)) continue;
+        if (disk_in_use(de->d_name)) continue;
+        snprintf(disks[n], PERSIST_NAME, "%.*s", PERSIST_NAME - 1, de->d_name);
+        n++;
+    }
+    closedir(d);
+    return n;
+}
+
+/* Size in bytes from sysfs, or 0 when it cannot be read. */
+static unsigned long long disk_bytes(const char *disk) {
+    char path[128];
+    snprintf(path, sizeof path, "/sys/block/%s/size", disk);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    unsigned long long sectors = 0;
+    if (fscanf(f, "%llu", &sectors) != 1) sectors = 0;
+    fclose(f);
+    return sectors * 512;
+}
+
+static void disk_size_str(const char *disk, char *out, size_t cap) {
+    unsigned long long b = disk_bytes(disk);
+    if (b == 0) { out[0] = '\0'; return; }
+    if (b >= 1000000000ULL)
+        snprintf(out, cap, "%.1f GB", (double)b / 1000000000.0);
+    else
+        snprintf(out, cap, "%.0f MB", (double)b / 1000000.0);
+}
+
+/* Returns 1 if the page was shown, 0 if it was skipped because this is not a
+   live Copper boot. main() uses that to decide whether to hold the screen. */
+static int offer_persistence(void) {
+    if (access(PERSIST_MARKER, R_OK) != 0) return 0;
+    read_boot_marker();
+
+    char disks[PERSIST_MAX_DISKS][PERSIST_NAME];
+    int n = list_spare_disks(disks);
+
+    printf("\n");
+    printf("Keeping your files\n");
+    if (n == 0) {
+        printf("  Copper is running live, so nothing is saved when you reboot, and\n");
+        printf("  no spare disk is attached that could change that. Add one (on\n");
+        printf("  VMware: the VM's settings) and the next fresh boot will offer it.\n");
+        return 1;
+    }
+    printf("  Copper is running live, so nothing is saved when you reboot. Pick a\n");
+    printf("  disk below and it is wiped, formatted and then keeps your files from\n");
+    printf("  the next boot on. Press Enter alone to leave everything as it is.\n");
+    printf("\n");
+    for (int i = 0; i < n; i++) {
+        char sz[32];
+        disk_size_str(disks[i], sz, sizeof sz);
+        printf("      %-12s %s\n", disks[i], sz);
+    }
+    printf("\n");
+    printf("Disk to keep files on [none]: ");
+    fflush(stdout);
+
+    char pick[64];
+    if (!read_line(pick, sizeof pick) || !pick[0]) {
+        printf("Nothing selected — this session stays in RAM.\n");
+        return 1;
+    }
+    const char *dev = pick;
+    if (strncmp(dev, "/dev/", 5) == 0) dev += 5;
+
+    int idx = -1;
+    for (int i = 0; i < n; i++)
+        if (strcmp(disks[i], dev) == 0) { idx = i; break; }
+    if (idx < 0) {
+        printf("\"%s\" is not one of the disks above — nothing was touched.\n", pick);
+        return 1;
+    }
+
+    printf("\n  WARNING: /dev/%s will be erased completely.\n", dev);
+    printf("  Type ERASE (capital letters) to go ahead: ");
+    fflush(stdout);
+    char confirm[64];
+    if (!read_line(confirm, sizeof confirm) || strcmp(confirm, "ERASE") != 0) {
+        printf("Not confirmed — /dev/%s was left alone.\n", dev);
+        return 1;
+    }
+
+    printf("\nFormatting /dev/%s ...\n", dev);
+    fflush(stdout);
+    /* mkfs.ext4 is a glibc binary from e2fsprogs (see iso/build.sh). Search for
+       it rather than trusting PATH: the wizard's PATH is whatever copper-init
+       handed down, and the tool has moved between /sbin and /usr/sbin before.
+       -F overrides mkfs's "this looks like a whole disk" refusal, which is
+       exactly what a disk with no partitions is. */
+    char why[1024] = "";
+    if (run_capture(why, sizeof why,
+                    "if command -v mkfs.ext4 >/dev/null 2>&1; then "
+                    "mkfs.ext4 -q -F -L COPPER /dev/%s; "
+                    "elif [ -x /sbin/mkfs.ext4 ]; then "
+                    "/sbin/mkfs.ext4 -q -F -L COPPER /dev/%s; "
+                    "elif [ -x /usr/sbin/mkfs.ext4 ]; then "
+                    "/usr/sbin/mkfs.ext4 -q -F -L COPPER /dev/%s; "
+                    "else echo 'mkfs.ext4 is not in this image'; exit 127; fi",
+                    dev, dev, dev) != 0) {
+        printf("Could not format /dev/%s.\n", dev);
+        if (why[0]) printf("  %s\n", why);
+        printf("Persistence stays off; this session is unaffected.\n");
+        return 1;
+    }
+    /* mkfs writes the superblock and returns; get it on the platter before
+       telling someone their files are safe. */
+    run_quiet("/bin/busybox sync");
+    printf("\nDone. /dev/%s is labeled COPPER.\n", dev);
+    printf("Reboot to turn persistence on — after that your files are kept.\n");
+    return 1;
+}
+
 int main(void) {
     /* Every one of these is FIELD_CAP, not a snug 64 or 128. The values have
        already been validated -- a username is capped at 32, a hostname at 63,
@@ -1026,6 +1233,19 @@ int main(void) {
             fprintf(m, "%s\n%s\n", user, name);
             fclose(m);
         }
+    }
+
+    /* Offer a disk for persistence. Written after the done-marker on purpose:
+       if this is interrupted the account is already finished, so a reboot
+       reopens the shell instead of re-asking a question that was answered.
+       offer_persistence() returns 0 unless /init left its marker, and the
+       screen is held only when something was actually shown -- a serial
+       console gets the lines above it and does not need the pause. */
+    if (offer_persistence() && ui_fancy) {
+        printf("\nPress Enter to continue. ");
+        fflush(stdout);
+        char hold[8];
+        read_line(hold, sizeof hold);
     }
 
     screen_done(name);
