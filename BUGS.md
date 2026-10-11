@@ -1,6 +1,8 @@
 # BUGS.md
 
-> please note down all the bugs you come across in h1 heading (#) thier name and how they affect things on a scale of 1-10 remove any bugs if fixed and please write in this format [bug number [] fixed by [] ] at the bottom of the file so we can track how many bugs were there and who fixed them
+> please note down all the bugs you come across in h1 heading (#) thier name and how they affect things on a scale of 1-10.
+
+> remove any bugs if fixed and please write in this format [bug number [] fixed by [] ] at the bottom of the file so we can track how many bugs were there and who fixed them
 
 Only bugs that are not fixed live here. Fixed ones are removed from the list —
 their graves are in the tracker at the bottom of the file.
@@ -363,23 +365,25 @@ Each of these cost a wrong turn once. All were checked against real sources.
 
 # bug tracker
 
-every bug we ever hit and who killed it. no name = still open.
+Every bug we ever hit and who killed it. No name = still open.
 21 bugs total: 16 fixed, 1 stopgapped, 4 open.
 
-bug 1 fixed by farcrowx   overlay dirs were created before the tmpfs hid them (3ae61c1)
-bug 2 fixed by farcrowx   CI shipped the previous commit's init — green run, stale ISO (d9b1ce1)
-bug 3 fixed by farcrowx   $0 is relative after the script cd's, and the stamps ate it (307d6b9)
-bug 4 fixed by farcrowx   rescue check -x followed an absolute symlink into the initramfs (b7facc7)
-bug 5 fixed by farcrowx   build gate -e followed the symlink into the build host (0cf3fd9)
-bug 6 fixed by farcrowx   stale files survived in the cached staging trees (0cf3fd9)
-bug 7 fixed by farcrowx   last console= is /dev/console — serial stole the screen (971b6e5)
-bug 8 fixed by farcrowx   serial log got 0 bytes under quiet (9750dac)
-bug 9 fixed by farcrowx   DHCP discovered into sit0, eth0 never came up (2601222)
-bug 10 fixed by 12hrformat        copper charge/rollback — four defects, each making it dead (ab6c17f, b811a15)
-bug 11 fixed by 12hrformat        GdkPixbuf loaders absent → XFCE crash loop (6ebc11a)
-bug 12 fixed by 12hrformat        icons still failed: mime database + SVG loaders (12e7c86, 0770d98)
-bug 13 fixed by 12hrformat        VMware mouse dead — launcher picked the wrong device (7df142c, cc1ad9b)
-bug 14 fixed by 12hrformat        no /dev/pts — sudo and the terminal died (9d2705c)
-bug 15 still                      firefox install dies of ENOSPC (2026-10-10)
-bug 16 fixed by 12hrformat        payload downloads hung — busybox internal TLS (99515d1)
-bug 17 fixed by 12hrformat        startxfce false-started on a dead server / missing XFCE (1bf9a4f)
+| bug number | fixed by | what was the bug | commit |
+| --- | --- | --- | --- |
+| bug 1 | farcrowx | overlay dirs were created before the tmpfs hid them | (3ae61c1) |
+| bug 2 | farcrowx | CI shipped the previous commit's init — green run, stale ISO | (d9b1ce1) |
+| bug 3 | farcrowx | $0 is relative after the script cd's, and the stamps ate it | (307d6b9) |
+| bug 4 | farcrowx | rescue check -x followed an absolute symlink into the initramfs | (b7facc7) |
+| bug 5 | farcrowx | build gate -e followed the symlink into the build host | (0cf3fd9) |
+| bug 6 | farcrowx | stale files survived in the cached staging trees | (0cf3fd9) |
+| bug 7 | farcrowx | last console= is /dev/console — serial stole the screen | (971b6e5) |
+| bug 8 | farcrowx | serial log got 0 bytes under quiet | (9750dac) |
+| bug 9 | farcrowx | DHCP discovered into sit0, eth0 never came up | (2601222) |
+| bug 10 | 12hrformat | copper charge/rollback — four defects, each making it dead | (ab6c17f, b811a15) |
+| bug 11 | 12hrformat | GdkPixbuf loaders absent → XFCE crash loop | (6ebc11a) |
+| bug 12 | 12hrformat | icons still failed: mime database + SVG loaders | (12e7c86, 0770d98) |
+| bug 13 | 12hrformat | VMware mouse dead — launcher picked the wrong device | (7df142c, cc1ad9b) |
+| bug 14 | 12hrformat | no /dev/pts — sudo and the terminal died | (9d2705c) |
+| bug 15 | still open | firefox install dies of ENOSPC | (2026-10-10) |
+| bug 16 | 12hrformat | payload downloads hung — busybox internal TLS | (99515d1) |
+| bug 17 | 12hrformat | startxfce false-started on a dead server / missing XFCE | (1bf9a4f) |
