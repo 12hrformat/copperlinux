@@ -130,11 +130,11 @@ from artifacts that were taken apart and read before being trusted.
 - **The shipped ISO on VMware, to the framebuffer.** `vmwgfx` probes correctly
   and refuses on QEMU because QEMU is not VMware. The mouse is confirmed on
   real VMware; the *display* is the open half. See BUGS.md #21.
-- **Xorg running as the wizard user.** The uid drop is **boot-verified
-  (2026-10-11)**: a real boot shows `id` answering the wizard user, not root.
-  What is not verified is the desktop under that user — the same boot hit bug
-  22 (the ISO flattened `sudo`'s setuid bit, so nothing could be installed),
-  fixed in the tree and not booted. See "The desktop session runs as root".
+- **Xorg running as the wizard user — closed, boot-verified (2026-10-11).** A
+  real boot logs in as the wizard user (`id` answers the user, not root),
+  `startxfce` with no `sudo` paints XFCE, and **Firefox and nmap run in the
+  session**. That is bugs 19, 22 and 23 together: the uid drop, the ISO mode
+  pins, and the `-sharevts` VT flag. See BUGS.md.
 - **Anything on real non-VM hardware.** Every measurement in this document is
   a VM.
 - **Persistence (G6) end to end.** Built; the disk has not been claimed on a
@@ -306,23 +306,21 @@ or someone with that access pushing it.
 ## G8 — A desktop: XFCE ✅ / finishing
 
 **Done looks like:** `startxfce4` brings up an XFCE session on the framebuffer.
-Status: **Xorg boots and XFCE paints under QEMU** — measured, with the owner
-confirming input and the PTY fix on real boots. The uid drop is now
-boot-verified as well (2026-10-11: `id` answers the wizard user). The desktop
-under that user is still not: the first boot after the drop hit bug 22 (the ISO
-flattened `sudo`'s setuid bit) — whose setuid half is now boot-verified — and the
-next boot got Xorg as far as `xf86OpenConsole: Switching VT failed` (bug 23:
-`-novtswitch` never disabled the VT grab; `-sharevts` does). Both fixes are in
-the tree; neither desktop boot is green yet. The VMware framebuffer on a real
-VMware boot is also still open.
+Status: **done and boot-verified (2026-10-11).** A real boot of the current ISO
+logs in as the wizard user, `startxfce` (no `sudo`) paints XFCE, and **Firefox
+and nmap run in the session** — bugs 19, 22 and 23 closed. What remains around
+the desktop is the edges, not "does it work": the VMware framebuffer on a real
+VMware boot (bug 21), a persisted `/tmp` making the second boot reuse a dead
+display (bug 24, fixed in the tree, needs a two-boot test), and
+`sudo shutdown`/`sudo reboot` doing nothing (bug 18).
 
-Order of the remaining work:
+Order of the remaining work — 1 and 2 are done (boot-verified 2026-10-11):
 
-1. **Drop privileges in the session shell.** The uid drop is designed (see the
-   brief below); needs building and a boot test.
-2. **Xorg as the wizard user**, with device-node, xorg-wrapper, and X
-   authority sorted.
-3. Boot-test as that user, and confirm the VMware framebuffer on real VMware.
+1. ~~Drop privileges in the session shell.~~ Done — bug 19.
+2. ~~Xorg as the wizard user, device nodes and VT flags sorted.~~ Done — bug 23.
+3. Still to confirm: the VMware framebuffer on real VMware (bug 21), the
+   persisted `/tmp` two-boot case (bug 24), and `sudo shutdown`/`reboot`
+   (bug 18).
 
 CI's six-hour cap is a real constraint on the heavy build stages; `restore-keys`
 is what makes a warm cache survive an unrelated change (that bug is 2 in BUGS.md's
@@ -353,7 +351,7 @@ and that makes the privilege drop below a blocker for the desktop, not polish.
 is not a fix (it just moves the profile to `/root`). Recorded, not patched —
 until 2026-10-11:
 
-**Fix in the tree (2026-10-11), not booted yet.** The drop is built as the
+**Fix (2026-10-11), boot-verified.** The drop is built as the
 brief below decided, plus the two pieces the brief flagged as the hard part.
 
 - `spawn_tty`'s child now drops to the wizard user
@@ -381,9 +379,10 @@ exist here: there is no `Xorg.wrap` in the image. `/usr/bin/Xorg` is a 274-byte
 `sh` script that `exec`s `/usr/lib/xorg/Xorg` directly, so nothing checks the
 console user.
 
-Still **unverified on a boot**: the drop itself, Xorg-as-non-root opening the
-device nodes, and the VT flags. `tests/init-session.sh` proves the in-process
-drop only (and CI runs it); nothing in CI boots the image.
+**Now boot-verified** (see the third boot result below): the drop itself,
+Xorg-as-non-root opening the device nodes, and the VT flags.
+`tests/init-session.sh` covers the in-process drop in CI; the rest is a
+real-boot fact.
 
 **First boot result (2026-10-11).** The drop landed — a real boot of the
 `711fcb9` ISO printed `id` as the wizard user, so the session is no longer
@@ -409,6 +408,12 @@ booted yet. That same boot wrote its input config to `/etc/X11/xorg.conf` —
 expected on that artifact, whose `/etc` was still owned by uid 1000; after the
 `553528f` ownership pin the non-root session falls back to `/tmp/xorg.conf`,
 which the launcher already handles.
+
+**Third boot result (2026-10-11): green.** A real boot of the current ISO (the
+`-sharevts` line plus the `553528f` ownership/mode pins) logs in as the wizard
+user, `startxfce` with no `sudo` paints XFCE, and **Firefox and nmap run in the
+session** — bugs 19, 22 and 23 closed together. Still unverified on a boot: the
+persisted `/tmp` two-boot case (bug 24) and `sudo shutdown`/`reboot` (bug 18).
 
 ### The desktop session runs as root — brief for the implementer
 
