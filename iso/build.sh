@@ -1326,14 +1326,77 @@ build_iso() {
   # part of the tree that gets hashed, which is the tree that gets packaged.
   mkdir -p "$TGT/boot/grub"
   cp "$ROOT/boot/grub.cfg" "$TGT/boot/grub/grub.cfg"
-  local want; want=$(tree_hash "$TGT")
+  # A live session writes to /tmp: Xorg's lock file and socket
+  # (/tmp/.X0-lock, /tmp/.X11-unix), startxfce's log, ingot's JSON. /tmp is on
+  # the overlay, not its own tmpfs, so the mode in this tree is the mode the
+  # session gets -- and grub-mkrescue's old -r flattened it to 555 root-owned,
+  # which is fatal for a non-root Xorg: it cannot create its lock file and dies
+  # before it paints. Pin the real mode so packaging cannot decide it. (Pinned
+  # before the tree hash below so it is part of what gets stamped.)
+  mkdir -p "$TGT/tmp"
+  chmod 1777 "$TGT/tmp"
+  # Fold this script into the stamp as well as the tree. The ISO is produced
+  # by grub-mkrescue plus the xorriso filter below; without $SELF here, a
+  # change to either of those against an unchanged tree would skip the rebuild
+  # and ship the previous ISO. Every other stage folds $SELF in for this
+  # reason.
+  local want; want=$( { cat "$SELF"; tree_hash "$TGT"; } | sha256sum | cut -d' ' -f1 )
   if [ -s "$OUT/copper.iso" ] && [ -s "$WORK/iso.stamp" ] \
      && [ "$(cat "$WORK/iso.stamp")" = "$want" ]; then
     echo "iso: already built, skipping"; return
   fi
+
+  # grub-mkrescue hardcodes xorriso's -r, "rationalised" Rock Ridge: every
+  # mode is flattened to 444 (files) or 555 (executables), uid/gid forced to
+  # 0, and setuid/setgid stripped. That is how the live image lost
+  # /usr/bin/sudo's setuid bit -- sudo then refused every elevation with
+  # "must be owned by uid 0 and have the setuid bit set", so a normal user
+  # could not install anything -- and it left /etc/shadow readable by
+  # everyone. -R is the same Rock Ridge without the rationalisation, so it
+  # keeps the modes the staging tree already has (validated by build_sudo).
+  #
+  # grub-mkrescue offers no option to change this and reaches xorriso through
+  # PATH, so a one-job filter sits in front of it and rewrites exactly -r.
+  local REAL_XORRISO XW
+  REAL_XORRISO=$(command -v xorriso) || { echo "iso: xorriso not found" >&2; exit 1; }
+  XW="$WORK/iso-xorriso"
+  rm -rf "$XW"; mkdir -p "$XW"
+  cat > "$XW/xorriso" <<'WRAP'
+#!/bin/sh
+# Exec the real xorriso with grub-mkrescue's -r turned into -R. COPPER_REAL_XORRISO
+# is set by the caller so this does not recursively find itself on PATH.
+real=${COPPER_REAL_XORRISO:?}
+n=$#
+i=0
+while [ "$i" -lt "$n" ]; do
+    i=$((i + 1))
+    a=$1; shift
+    [ "$a" = "-r" ] && a="-R"
+    set -- "$@" "$a"
+done
+exec "$real" "$@"
+WRAP
+  chmod 0755 "$XW/xorriso"
   echo "==> grub-mkrescue"
-  grub-mkrescue -o "$OUT/copper.iso" "$TGT"
+  PATH="$XW:$PATH" COPPER_REAL_XORRISO="$REAL_XORRISO" \
+    grub-mkrescue -o "$OUT/copper.iso" "$TGT"
   [ -s "$OUT/copper.iso" ] || { echo "grub-mkrescue failed"; exit 1; }
+
+  # Check the mode in the artifact, not in the tree it came from: the tree was
+  # already verified by build_sudo, and the whole point here is that the ISO
+  # layer between them used to drop the bit. Read it back out with xorriso so
+  # the gate needs no loop device.
+  local ex="$WORK/iso-extract"
+  rm -rf "$ex"; mkdir -p "$ex"
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/bin/sudo "$ex/sudo" >/dev/null 2>&1 || true
+  if [ "$(stat -c '%a' "$ex/sudo" 2>/dev/null)" != "4755" ]; then
+    echo "iso: /usr/bin/sudo in the ISO is mode $(stat -c '%a' "$ex/sudo" 2>/dev/null || echo 'missing'), not 4755" >&2
+    echo "iso: the booted image would not be able to elevate" >&2
+    exit 1
+  fi
+  echo "  iso: /usr/bin/sudo is setuid 4755 inside the image"
+
   echo "$want" > "$WORK/iso.stamp"
   ls -lh "$OUT/copper.iso"
   sha256sum "$OUT/copper.iso"

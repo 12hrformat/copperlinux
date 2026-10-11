@@ -130,8 +130,11 @@ from artifacts that were taken apart and read before being trusted.
 - **The shipped ISO on VMware, to the framebuffer.** `vmwgfx` probes correctly
   and refuses on QEMU because QEMU is not VMware. The mouse is confirmed on
   real VMware; the *display* is the open half. See BUGS.md #21.
-- **Xorg running as the wizard user.** The uid drop is built in the tree
-  (2026-10-11) and *not* boot-verified. See "The desktop session runs as root".
+- **Xorg running as the wizard user.** The uid drop is **boot-verified
+  (2026-10-11)**: a real boot shows `id` answering the wizard user, not root.
+  What is not verified is the desktop under that user — the same boot hit bug
+  22 (the ISO flattened `sudo`'s setuid bit, so nothing could be installed),
+  fixed in the tree and not booted. See "The desktop session runs as root".
 - **Anything on real non-VM hardware.** Every measurement in this document is
   a VM.
 - **Persistence (G6) end to end.** Built; the disk has not been claimed on a
@@ -304,9 +307,12 @@ or someone with that access pushing it.
 
 **Done looks like:** `startxfce4` brings up an XFCE session on the framebuffer.
 Status: **Xorg boots and XFCE paints under QEMU** — measured, with the owner
-confirming input and the PTY fix on real boots. What remains is running the
-session as the wizard user instead of root, plus confirming the VMware
-framebuffer on an actual VMware boot.
+confirming input and the PTY fix on real boots. The uid drop is now
+boot-verified as well (2026-10-11: `id` answers the wizard user), but the
+desktop under that user is not — the same boot hit bug 22, the ISO flattening
+`sudo`'s setuid bit, so nothing could be installed. Bug 22's fix is in the
+tree and not booted. The VMware framebuffer on a real VMware boot is also
+still open.
 
 Order of the remaining work:
 
@@ -374,6 +380,13 @@ Still **unverified on a boot**: the drop itself, Xorg-as-non-root opening the
 device nodes, and the VT flags. `tests/init-session.sh` proves the in-process
 drop only (and CI runs it); nothing in CI boots the image.
 
+**First boot result (2026-10-11).** The drop landed — a real boot of the
+`711fcb9` ISO printed `id` as the wizard user, so the session is no longer
+root. It then exposed bug 22: `sudo` in the image is not setuid (grub-mkrescue
+writes the live root as rationalised Rock Ridge and flattens the mode), so
+`sudo whoami` failed and `startxfce` could not install its components. Fixed in
+`build_iso` (bug 22); the boot test for that is still pending.
+
 ### The desktop session runs as root — brief for the implementer
 
 Status 2026-10-10. Decision is made (owner): **the wizard-created user owns
@@ -418,7 +431,10 @@ uid 0. The home-directory block (`copper-init.c:331-356`) only `chdir`s to
 3. **sudo already ships and should just work.** Setuid-root sudo,
    `%wheel ALL=(ALL:ALL) ALL`, wizard puts the user in `wheel`, and the devpts
    fix means sudo can allocate ptys. `startxfce.sh:60-63` clears `SUDO` when
-   `id -u` = 0. *Verify:* `sudo true` from the dropped shell.
+   `id -u` = 0. *Verify:* `sudo true` from the dropped shell. **[2026-10-11:
+   it did not, and not because of sudo's config — the ISO flattened the
+   setuid bit on the way onto the disc. That is bug 22; fixed in `build_iso`,
+   not booted.]**
 
 **Success check for the implementer:** fresh image through the wizard; console
 `id` shows the wizard username, not uid 0; `sudo whoami` answers `root`;
