@@ -419,3 +419,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 15 | still open | firefox install dies of ENOSPC | (2026-10-10) |
 | bug 16 | 12hrformat | payload downloads hung — busybox internal TLS | (99515d1) |
 | bug 17 | 12hrformat | startxfce false-started on a dead server / missing XFCE | (1bf9a4f) |
+| bug 18 | still open | `sudo shutdown` / `sudo reboot` do nothing |  |
+| bug 19 | still open | the desktop session runs as root |  |
+| bug 20 | still open | persistence isn't built — the writable layer is RAM |  |
+| bug 21 | still open | VMware framebuffer unproven |  |
