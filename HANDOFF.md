@@ -320,6 +320,30 @@ CI's six-hour cap is a real constraint on the heavy build stages; `restore-keys`
 is what makes a warm cache survive an unrelated change (that bug is 2 in BUGS.md's
   tracker).
 
+### The root session, first real casualty: Firefox (verified 2026-10-11)
+
+Running the session as root stopped being a paper problem on a real boot. A
+VMware guest given **8 GB of RAM** (still on the RAM overlay — persistence is
+not on yet) reached the network, `ingot install firefox` went through, `startxfce`
+painted XFCE — and then the browser would not start:
+
+```
+dragon@copper:~$ firefox
+Running Firefox as root in a regular user's session is not supported.  ($HOME is /home/dragon which is owned by dragon.)
+```
+
+Clicking the browser icon fails too, with XFCE's generic **"Input/output
+error."** Two different messages, one cause: the process is uid 0 while `$HOME`
+is the wizard user's home, `/home/dragon`, owned by `dragon`. Firefox
+hard-refuses that combination — this is the uid drop below that was designed and
+never built. Neither Firefox nor ingot is at fault.
+
+So the 8 GB bought a *finished install* and an *unusable browser*. Until the
+session actually runs as the wizard user, no browser ships working on Copper —
+and that makes the privilege drop below a blocker for the desktop, not polish.
+`HOME=/root firefox` is the obvious stopgap; it has **not** been boot-tested and
+is not a fix (it just moves the profile to `/root`). Recorded, not patched.
+
 ### The desktop session runs as root — brief for the implementer
 
 Status 2026-10-10. Decision is made (owner): **the wizard-created user owns
