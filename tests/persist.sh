@@ -81,6 +81,13 @@ exit 0
 EOF
 chmod +x "$ROOT/bin/mkfs.ext4"
 
+# Run the driver from inside the sandbox directory rather than from the repo.
+# The wizard runs with a private /home (see below), and on a CI runner the repo
+# lives *under* /home -- so calling "$REPO/tests/firstboot-drive.py" would have
+# that path disappear the moment /home is bound, and python3 would report the
+# script missing. The copy is in $ROOT under /tmp, which nothing here shadows.
+cp "$DRIVER" "$ROOT/driver.py"
+
 # run_wizard [prompt|answer ...]
 #   Drives the wizard in the namespace and leaves its transcript in $out and its
 #   exit status in $rc. The extra steps are passed through to the driver.
@@ -92,7 +99,7 @@ run_wizard() {
         mount --bind '$ROOT/etc'  /etc  || exit 1
         mount --bind '$ROOT/home' /home || exit 1
         cd /tmp
-        PATH='$ROOT/bin:/usr/bin:/bin' exec python3 '$DRIVER' '$WIZ' \"\$@\"
+        PATH='$ROOT/bin:/usr/bin:/bin' exec python3 '$ROOT/driver.py' '$WIZ' \"\$@\"
     " sh "$@" 2>&1)
     rc=$?
 }
