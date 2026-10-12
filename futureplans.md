@@ -43,3 +43,24 @@ Also on the pile (not blockers, noted for later):
 - sudo must actually work on the image first — `ingot install` needs root to write into `/`, and the live user isn't root. sudoers + wheel group are already staged
 - busybox wget's TLS: the openssl-helper path verifies certs (openssl + ca-certificates now ship in the image); only the internal-TLS fallback skips verification, so don't trust a mirror if that note prints
 - "real url" for our own payloads will likely be GitHub Releases (Pages won't serve 100 MB files forever)
+
+---
+
+## towards Copper Linux v1.2
+
+the next tag. copper stops being "a desktop that works" and becomes the version
+we'd hand someone, once these land. right now v1.2 is a target, not a date:
+
+- [ ] **grow the ingot repo** — more packages than the current handful
+      (firefox, mousepad, ristretto, xfce4-taskmanager, xarchiver). the repo is
+      the product; five packages is a demo. this is the `add more packages in
+      ingot repo` line above, with a number on it.
+- [ ] **more terminal commands** — keep filling in the base so a fresh shell
+      answers what people actually type. busybox + coreutils already cover a
+      lot; this is about the gaps.
+- [ ] **more than XFCE** — XFCE ships today. v1.2 adds other desktops and
+      window managers people can pick, starting with **Awesome** and
+      **Hyprland**, and more after those. (hyprland is wayland and drags in a
+      compositor stack — that is the real work here, not one more package.)
+- [ ] **then tag it** — when those are in and booted on a real VM:
+      **Copper Linux v1.2**.
