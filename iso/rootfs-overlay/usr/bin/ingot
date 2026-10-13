@@ -324,6 +324,72 @@ cmd_install() { # cmd_install <name>
   mv "$MAN/$name.installed.tmp" "$MAN/$name.installed"
   rm -f "/tmp/$name" "$payload"
   echo "ingot: installed $name"
+
+  fastfetch_branding "$name"
+}
+
+# ---- the fastfetch welcome ------------------------------------------------
+#
+# fastfetch carries a logo for the distros it knows and Copper is not one of
+# them, so a fresh install shows a generic penguin. Copper's own logo is a
+# config, not part of the payload, so the offer is made here once the binary
+# is actually on disk: Enter takes the default (Y), a no gets a sulk.
+#
+# The offer only happens when BOTH ends are a terminal. A scripted or piped
+# install -- and the gate test, which captures stdout -- must never block on
+# a read with nobody there to answer it. The files land under $ROOT, so a
+# rootless test that points INGOT_ROOT at a scratch tree writes there and
+# never near the real /etc.
+fastfetch_branding() { # fastfetch_branding <name>
+  [ "$1" = fastfetch ] || return 0
+  [ -t 0 ] && [ -t 1 ] || return 0
+  # Someone who already picked a config keeps it; do not ask twice.
+  [ -f "$ROOT/etc/fastfetch/config.jsonc" ] && return 0
+
+  printf "\nhey, as of now copper linux's logo isnt in fastfetch\n" >&2
+  printf 'do you wanna apply a custom config file for fastfetch? (Y/n) ' >&2
+
+  answer=
+  read -r answer || answer=
+
+  case "$answer" in
+    ''|[Yy]|[Yy][Ee][Ss]) ;;
+    *)
+      printf 'you are sure? its not like i want you to use my config anyways b-baka (,,>﹏<,,)\n' >&2
+      return 0
+      ;;
+  esac
+
+  mkdir -p "$ROOT/etc/fastfetch" "$ROOT/usr/share/copper" || return 0
+
+  # Replace this art with Copper's own; it is the one thing here meant to be
+  # edited, and the config below only points at it.
+  cat > "$ROOT/usr/share/copper/fastfetch-logo.txt" <<'COPPER_LOGO'
+         ____________________
+       /                      \
+      |  29               Cu   |
+      |                        |
+      |  Copper    63.546 u    |
+       \______________________/
+COPPER_LOGO
+
+  cat > "$ROOT/etc/fastfetch/config.jsonc" <<'COPPER_CONFIG'
+{
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+    "logo": {
+        "type": "file",
+        "source": "/usr/share/copper/fastfetch-logo.txt",
+        "padding": {
+            "top": 1,
+            "left": 3,
+            "right": 4
+        }
+    }
+}
+COPPER_CONFIG
+
+  echo "ingot: applied the Copper fastfetch config" >&2
+  return 0
 }
 
 cmd_remove() { # cmd_remove <name>
