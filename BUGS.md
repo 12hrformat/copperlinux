@@ -135,9 +135,37 @@ both the skip check and the stamp, so a change to the probe cannot be skipped
 against an unchanged tree. `startxfce` already prefers it; only the build was
 missing.
 
+**Hardened (2026-10-14), still not booted.** Three residual ways the same
+symptom could return were closed, each with a regression test:
+
+- **The probe could hang.** `xprobe` set no receive timeout, so a socket that
+  accepts a connection and then never answers (a server still starting, or a
+  wedged one) blocked it forever — and the launcher with it. It now sets
+  `SO_RCVTIMEO`/`SO_SNDTIMEO` (`XPROBE_TIMEOUT`, default 5s) and returns a
+  distinct code instead of blocking.
+- **The probe said only "alive / not alive".** A timeout, a permission
+  failure or a malformed reply all looked like "not alive", and the launcher
+  deleted the socket on any negative — including a live server it merely could
+  not speak to yet. `xprobe` now exits `0` live, `1` not-live (no socket /
+  refused / peer closed), `2` usage, `3` unknown (timeout / permission /
+  auth / malformed); `startxfce` only clears the socket on `1` and leaves it
+  alone on `3`.
+- **A rootfs with no probe at all.** The bare socket-existence fallback *is*
+  the bug. With no probe, `startxfce` now consults `/proc/net/unix`
+  (busybox-safe, exact pathname match) and treats "bound" as live, "absent"
+  as dead, and "cannot read" as unknown — never as live.
+
+Regression tests: `tests/xprobe-gate.sh` drives the real compiled binary
+against a synthetic X server (no third-party deps, skips cleanly without a C
+compiler) and is wired into `tests/branch-gate.sh` and the ISO workflow;
+`tests/startxfce-gate.sh` gained cases 16-21 for the no-probe fallback, live
+reuse, the unknown-leaves-the-socket rule, the bounded startup timeout,
+`XPROBE_TIMEOUT` passthrough and a probe stuck at "not live".
+
 **Still open because:** "built" is not "verified". Needs a boot with the
 persistence disk: start a desktop, reboot, and `startxfce` must start a fresh
-server rather than announce the stale one.
+server rather than announce the stale one. For this change a full ISO build
+and a VM reboot were **not** run; verification stopped at the passing gates.
 
 ---
 

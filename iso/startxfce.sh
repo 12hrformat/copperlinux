@@ -36,9 +36,11 @@
 #     "never opened the display" about a server that is working. Learning which
 #     display the server chose means parsing its log or querying it, and POSIX
 #     sh can do neither.
-#   - Once xdpyinfo exists, the wait loop runs it every iteration, so a slow
-#     probe multiplies the timeout by its own runtime. Harmless now -- with no
-#     probe the loop only stats a socket -- and worth tightening when it lands.
+#   - The wait loop runs the probe every iteration, so a slow probe adds its
+#     own runtime to each try. The probe is bounded now: xprobe gives up after
+#     XPROBE_TIMEOUT seconds and reports the display unknown instead of
+#     blocking, so the loop always ends -- but a machine where each probe takes
+#     the full timeout still stretches the wait by that much.
 #   - The timeout is 10s where sleep accepts fractions and 100s where it does
 #     not, because of the fallback in the wait loop. Same image, a tenfold
 #     difference in how long a failure appears to hang.
@@ -80,7 +82,10 @@ Environment, all optional:
   COPPER_XLOG        where the X server logs     (default /tmp/xorg.log)
   COPPER_SESSIONLOG  where XFCE's output goes    (default /tmp/session.log)
   COPPER_XPROBE      X client used to check whether a display really
-                     answers                         (default /usr/bin/xdpyinfo)
+                     answers     (default: the first of /usr/bin/xprobe and
+                     /usr/bin/xdpyinfo; the kernel's socket table if neither)
+  XPROBE_TIMEOUT     seconds xprobe waits for a display to answer before it
+                     reports it unknown and the launcher moves on  (default 5)
   COPPER_XORGCONF    where the generated input config is written
                      (default /etc/X11/xorg.conf; falls back to /tmp/xorg.conf
                      when the login cannot write there)
@@ -150,25 +155,70 @@ done
 # socket and reads the geometry back, needing nothing but libc. xdpyinfo would do
 # the same job but arrives as part of x11-utils, which is another package to
 # build and stage before the display can be checked. Either is accepted, and the
-# probe found first is the one used; the socket test is the fallback when neither
-# is installed, and that fallback is the weaker of the three.
+# probe found first is the one used.
+#
+# xprobe's exit code is part of its contract with this script, because it decides
+# what is safe to do next (the same codes are written down in xprobe.c):
+#
+#   0  live      the display answered the handshake; reuse it
+#   1  not live  no socket, or the connection was refused; the file is stale and
+#                may be cleared before a fresh server starts
+#   2  usage     xprobe was called wrongly; never produced from here
+#   3  unknown   something was reached but would not answer -- a timeout, a
+#                permission or authorisation failure, a malformed reply. NOT
+#                proof the socket is stale, so nothing is removed on this answer
+#
+# When no probe is installed the socket file is still not proof. The kernel's
+# socket table is asked instead: /proc/net/unix lists a socket a process is
+# bound to and forgets one whose process is gone, which is exactly the
+# difference a bare file cannot show. If even that is unreadable the answer is
+# unknown, never live, so a missing probe can never make a stale socket look
+# alive.
 XPROBE=${COPPER_XPROBE:-}
 if [ -z "$XPROBE" ]; then
     for cand in /usr/bin/xprobe /usr/bin/xdpyinfo; do
         if [ -x "$cand" ]; then XPROBE=$cand; break; fi
     done
 fi
+XPROBE_TIMEOUT=${XPROBE_TIMEOUT:-5}
 
-display_live() {
-    [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] || return 1
+# Is a process actually bound to this unix socket path?
+#   0 bound, 1 not bound, 2 cannot tell.
+socket_bound() {
+    [ -r /proc/net/unix ] || return 2
+    _sock_want=$1
+    # The path is the eighth column of /proc/net/unix. A line with no path (the
+    # header, or a socket that was never bound to one) leaves _f8 empty and
+    # matches nothing, which is right.
+    while read -r _f1 _f2 _f3 _f4 _f5 _f6 _f7 _f8; do
+        [ "$_f8" = "$_sock_want" ] && return 0
+    done < /proc/net/unix
+    return 1
+}
+
+# The whole liveness decision, in one place, so the reuse check and the wait
+# loop cannot drift apart. Prints exactly one word -- live, dead, or unknown --
+# so callers read it with $(display_state) and no diagnostic can leak into the
+# answer.
+display_state() {
+    _ds_sock="$XSOCKDIR/X$DISPLAY_NUM"
+    [ -S "$_ds_sock" ] || { echo dead; return 0; }
     if [ -n "$XPROBE" ] && [ -x "$XPROBE" ]; then
-        DISPLAY=":$DISPLAY_NUM" "$XPROBE" >/dev/null 2>&1 && return 0
-        # The socket is there and nothing answers it: a stale socket from a
-        # session that did not clean up. Treated as no display, so a fresh
-        # server gets a chance to replace it.
-        return 1
+        DISPLAY=":$DISPLAY_NUM" XPROBE_SOCKET_DIR="$XSOCKDIR" \
+            XPROBE_TIMEOUT="$XPROBE_TIMEOUT" "$XPROBE" >/dev/null 2>&1
+        case "$?" in
+            0) echo live ;;
+            1) echo dead ;;
+            *) echo unknown ;;
+        esac
+        return 0
     fi
-    return 0
+    socket_bound "$_ds_sock"
+    case "$?" in
+        0) echo live ;;
+        1) echo dead ;;
+        *) echo unknown ;;
+    esac
 }
 
 # What is installed decides this before anything else, and independently of
@@ -269,7 +319,16 @@ if [ -n "$missing" ]; then
     fi
 fi
 
-if display_live; then
+# If the caller wanted a probe and none is installed, say so once, rather than
+# letting the weaker socket-table fallback pass silently for the life of the
+# image.
+if [ -z "$XPROBE" ] || [ ! -x "$XPROBE" ]; then
+    say "no X liveness probe (looked for \$COPPER_XPROBE, /usr/bin/xprobe,"
+    say "  /usr/bin/xdpyinfo); checking the kernel's socket table instead."
+fi
+
+disp_state=$(display_state)
+if [ "$disp_state" = live ]; then
     say "an X server is already on :$DISPLAY_NUM, using it"
 else
     if [ "$have_xorg" != 1 ]; then
@@ -278,12 +337,24 @@ else
     fi
 
     say "starting $XORG on :$DISPLAY_NUM, log in $XLOG"
-    # display_live() rejected this socket, so nothing is listening on it. Some
-    # servers refuse to bind over a socket file that already exists, so clear
-    # it before starting.
-    if [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] && [ -w "$XSOCKDIR" ]; then
-        rm -f "$XSOCKDIR/X$DISPLAY_NUM" 2>/dev/null
-    fi
+    # Clear the socket only when the display is known to be dead. "dead" is
+    # positive evidence -- no socket at all, or a connection that was refused.
+    # "unknown" means something was reached but would not answer, which may be a
+    # server still starting or one this user may not talk to; removing its
+    # socket would break it, so it is left alone and the start proceeds.
+    case "$disp_state" in
+        dead)
+            # Some servers refuse to bind over a socket file that already
+            # exists, so a socket known to be stale is cleared first.
+            if [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] && [ -w "$XSOCKDIR" ]; then
+                rm -f "$XSOCKDIR/X$DISPLAY_NUM" 2>/dev/null
+            fi
+            ;;
+        unknown)
+            say "a socket exists on :$DISPLAY_NUM but the display did not answer;"
+            say "  leaving it in place in case a server is still starting."
+            ;;
+    esac
 
     # Input devices, and the config that names them.
     #
@@ -451,7 +522,7 @@ else
     # identical if all you do is count to a limit.
     i=0
     while [ "$i" -lt "$WAIT_TRIES" ]; do
-        if display_live; then
+        if [ "$(display_state)" = live ]; then
             break
         fi
         if ! kill -0 "$xpid" 2>/dev/null; then
@@ -463,7 +534,7 @@ else
         sleep 0.1 2>/dev/null || sleep 1
     done
 
-    if ! display_live; then
+    if [ "$(display_state)" != live ]; then
         say "the X server is running but never opened :$DISPLAY_NUM."
         say "its log says:"
         sed 's/^/  /' "$XLOG" 2>/dev/null

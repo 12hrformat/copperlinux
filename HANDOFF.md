@@ -315,7 +315,9 @@ logs in as the wizard user, `startxfce` (no `sudo`) paints XFCE, and **Firefox
 and nmap run in the session** — bugs 19, 22 and 23 closed. That boot was a
 VMware guest, which also settles the VMware framebuffer — bug 21 closed. What
 remains is the edges, not "does it work": a persisted `/tmp` making the second
-boot reuse a dead display (bug 24, fixed in the tree, needs a two-boot test) and
+boot reuse a dead display (bug 24 — the build integration is fixed in the tree
+and the residual hang / false-live paths are now hardened, with real-binary and
+launcher regression gates, but the two-boot test is still owed) and
 `sudo shutdown`/`sudo reboot` (bug 18, fixed in the tree, needs a boot).
 
 Order of the remaining work — 1–3 are done (boot-verified 2026-10-11):
@@ -546,6 +548,8 @@ Carried over from the pacman work, still true:
 - `iso/build.sh` **gui stage only** (~895-995) — apt package list at 916,
   unpack, loader copy, gates.
 - `tests/startxfce-gate.sh` — CI runs it every push; keep it green.
+- `tests/xprobe-gate.sh` — drives the real `xprobe` binary against a synthetic
+  X server; runs via `tests/branch-gate.sh` and the ISO workflow. Keep it green.
 
 **Not yours — do not restructure:**
 
@@ -580,6 +584,8 @@ src/                      copper-sh: main.c, builtins.c, builtins.h
 tests/smoke.sh            19-assertion shell smoke test
 tests/account-gate.sh     asserts the shipped account/answer path
 tests/shutdown-gate.sh    proves /sbin/shutdown maps flags to the right applet
+tests/startxfce-gate.sh   21 cases: the launcher's display states and exit codes
+tests/xprobe-gate.sh      the real xprobe binary vs a synthetic X server
 .github/workflows/build-iso.yml   per-stage CI steps + workspace cache
 ```
 
