@@ -92,6 +92,12 @@ hasnt() {
 # empty for cases 1, 2 and 7, where "is a server already there" must be false.
 PROBE=$TMP/no-such-xdpyinfo
 
+# A socket directory of its own for the probe-driven cases (16 onward). See case
+# 16 for why: a stub's python child can keep an unlinked socket's pathname
+# listed in /proc/net/unix, and the socket-table fallback would then read a path
+# another case bound as still live.
+PSOCK="$TMP/probe-cases/.X11-unix"
+
 run_sut() {
     # The three settings are saved before the shift, because shift renumbers the
     # positional parameters and they are gone afterwards.
@@ -587,6 +593,241 @@ out=$(run_sut "$TMP/nope/Xorg" "$TMP/startxfce4" 5); rc=$?
 APPS_MANIFEST=
 eq "  no prompt, straight to the X check" 20 "$rc"
 hasnt "  never asked about components" "do you want to install" "$out"
+
+echo
+echo "=== case 16: a stale socket with NO probe is still not trusted (socket table) ==="
+# The image ships with xprobe built in, but an older image -- or a rootfs that
+# failed to stage it -- has neither xprobe nor xdpyinfo. A missing probe must
+# not silently turn a stale socket into a live server, so the kernel's socket
+# table is asked instead: /proc/net/unix lists a socket a process is bound to
+# and forgets one whose process is gone. COPPER_XPROBE is deliberately left
+# pointing at a binary that does not exist, and a bound-then-closed socket must
+# read as dead, be cleared, and be replaced.
+#
+# These probe cases use a socket path of their own. A stub's python child can
+# outlive the stub shell it was launched from, and the kernel keeps listing an
+# unlinked-but-open socket's pathname in /proc/net/unix -- so a path an earlier
+# case bound would make this case's socket-table answer read "live" for a file
+# that refuses connections. A directory nothing else has touched keeps the
+# fallback honest.
+reset
+mkdir -p "$PSOCK"
+python3 -c "import socket,sys
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.close()"
+if [ -S "$PSOCK/X0" ]; then
+    ok "  set up: a stale socket file exists with nothing listening on it"
+else
+    bad "  set up: a stale socket" "could not create one"
+fi
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+# Binds without unlinking: success proves the launcher cleared the stale
+# socket first (a leftover file makes python's bind raise EADDRINUSE).
+sleep 1
+python3 -c "import socket,time
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.listen(1)
+time.sleep(60)"
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$PROBE" COPPER_XORGCONF="$TMP/xorg.conf" \
+      COPPER_XFCE_APPS="$TMP/no-apps" COPPER_INGOT=ingot COPPER_SUDO="" \
+      XSOCKDIR="$PSOCK" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null; pkill -f "$PSOCK" 2>/dev/null
+eq "  a missing probe is not false success; a fresh server was started" 0 "$rc"
+has "  says the probe is missing and names the fallback" "no X liveness probe" "$out"
+has "  names the socket-table fallback" "checking the kernel's socket table" "$out"
+has "  started its own server" "starting $TMP/Xorg" "$out"
+has "  the display came up (so the stale socket was cleared)" "X server is up" "$out"
+
+echo
+echo "=== case 17: a probe that answers live reuses the display ==="
+# The probe's exit codes are the whole contract: 0 means live. With a real
+# listener present and a probe saying "live", the launcher reuses the display
+# instead of starting a second server that would fight for the socket.
+reset
+mkdir -p "$PSOCK"
+python3 -c "import socket,time
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.listen(1)
+time.sleep(60)" &
+spid=$!
+sleep 1
+printf '#!/bin/sh\necho "ERROR: this stub must not run"\nexit 99\n' > "$TMP/Xorg"
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\necho "DISPLAY=$DISPLAY" > %s/session.env\n' "$TMP" > "$TMP/startxfce4"
+chmod +x "$TMP/startxfce4"
+cat > "$TMP/probe" <<'PROBE_EOF'
+#!/bin/sh
+exit 0
+PROBE_EOF
+chmod +x "$TMP/probe"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$TMP/probe" COPPER_XORGCONF="$TMP/xorg.conf" \
+      XSOCKDIR="$PSOCK" WAIT_TRIES=5 sh "$SUT" 2>&1); rc=$?
+kill "$spid" 2>/dev/null
+eq "  exit code is 0" 0 "$rc"
+has "  reused the running server" "already on" "$out"
+hasnt "  did not start a second server" "starting $TMP/Xorg" "$out"
+if [ -s "$TMP/session.env" ]; then
+    ok "  the session ran on the existing server"
+else
+    bad "  the session ran on the existing server" "session.env missing"
+fi
+
+echo
+echo "=== case 18: an unanswered ('unknown') probe does NOT clear the socket ==="
+# Exit 3 is the contract for "something is there but will not answer": a server
+# still starting, one this user may not speak to, or a kernel that will not
+# report. None of that is proof the socket is stale, so the launcher leaves the
+# file alone and gives a fresh server its chance anyway.
+reset
+mkdir -p "$PSOCK"
+python3 -c "import socket,sys
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.close()"
+cat > "$TMP/probe" <<'PROBE_EOF'
+#!/bin/sh
+exit 3
+PROBE_EOF
+chmod +x "$TMP/probe"
+# The stub server dies immediately. The launcher must not have deleted the
+# socket before starting it: the "unknown" answer forbids that.
+printf '#!/bin/sh\nexit 0\n' > "$TMP/Xorg"; chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$TMP/probe" COPPER_XORGCONF="$TMP/xorg.conf" \
+      XSOCKDIR="$PSOCK" WAIT_TRIES=5 sh "$SUT" 2>&1); rc=$?
+eq "  an unknown display still fails cleanly, not a hang or false success" 23 "$rc"
+has "  says it is leaving the socket in place" "leaving it in place" "$out"
+has "  blames the display that did not answer" "did not answer" "$out"
+if [ -S "$PSOCK/X0" ]; then
+    ok "  the socket survived the unknown answer"
+else
+    bad "  the socket survived the unknown answer" "it was removed despite 'unknown'"
+fi
+
+echo
+echo "=== case 19: a server that never answers times out instead of hanging ==="
+# The server holds the socket but its handshake never completes -- the 'mute'
+# state xprobe reports as exit 3. The launcher must neither hang nor claim
+# success: it polls, the probe keeps saying unknown, and the bounded wait runs
+# out with exit 22 naming the display.
+reset
+mkdir -p "$PSOCK"
+python3 -c "import socket,sys
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.close()"
+cat > "$TMP/probe" <<'PROBE_EOF'
+#!/bin/sh
+exit 3
+PROBE_EOF
+chmod +x "$TMP/probe"
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+sleep 1
+python3 -c "import os,socket,time
+if os.path.exists('$PSOCK/X0'): os.unlink('$PSOCK/X0')
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.listen(1)
+time.sleep(60)"
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$TMP/probe" COPPER_XORGCONF="$TMP/xorg.conf" \
+      XSOCKDIR="$PSOCK" WAIT_TRIES=5 sh "$SUT" 2>&1); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null; pkill -f "$PSOCK" 2>/dev/null
+eq "  bounded wait, nonzero exit, no hang" 22 "$rc"
+has "  says the display never opened" "never opened" "$out"
+has "  still kept the socket for the unknown display" "leaving it in place" "$out"
+
+echo
+echo "=== case 20: XPROBE_TIMEOUT reaches the probe ==="
+# display_state runs the probe with the caller's XPROBE_TIMEOUT. The probe
+# records what it was given; if it saw the default 5 instead of 7, the wiring
+# is wrong and the bounded-wait guarantee silently returns to the default.
+reset
+mkdir -p "$PSOCK"
+python3 -c "import socket,time
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.listen(1)
+time.sleep(60)" &
+spid=$!
+sleep 1
+printf '#!/bin/sh\necho "ERROR: this stub must not run"\nexit 99\n' > "$TMP/Xorg"
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+cat > "$TMP/probe" <<PROBE_EOF
+#!/bin/sh
+echo "timeout=\$XPROBE_TIMEOUT" > "$TMP/probe.env"
+exit 0
+PROBE_EOF
+chmod +x "$TMP/probe"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$TMP/probe" COPPER_XORGCONF="$TMP/xorg.conf" \
+      XSOCKDIR="$PSOCK" WAIT_TRIES=5 XPROBE_TIMEOUT=7 \
+      sh "$SUT" 2>&1); rc=$?
+kill "$spid" 2>/dev/null
+eq "  exit code is 0" 0 "$rc"
+has "  reused the running server" "already on" "$out"
+if grep -q '^timeout=7$' "$TMP/probe.env" 2>/dev/null; then
+    ok "  the probe was given XPROBE_TIMEOUT=7"
+else
+    bad "  the probe was given XPROBE_TIMEOUT=7" "probe saw: $(cat "$TMP/probe.env" 2>/dev/null)"
+fi
+
+echo
+echo "=== case 21: a probe stuck at 'not live' cannot wedge the launcher ==="
+# A probe that answers 1 to everything reports a healthy server as dead. The
+# launcher must not hang, must not claim success, and must end with a nonzero
+# exit naming the display. The Xorg stub binds without unlinking: reaching exit
+# 22 also proves the stale socket was cleared (a leftover file would make the
+# bind fail and the run end as exit 23 instead).
+reset
+mkdir -p "$PSOCK"
+python3 -c "import socket,sys
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.close()"
+cat > "$TMP/probe" <<'PROBE_EOF'
+#!/bin/sh
+exit 1
+PROBE_EOF
+chmod +x "$TMP/probe"
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+sleep 1
+python3 -c "import socket,time
+s = socket.socket(socket.AF_UNIX)
+s.bind('$PSOCK/X0')
+s.listen(1)
+time.sleep(60)"
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$TMP/probe" COPPER_XORGCONF="$TMP/xorg.conf" \
+      XSOCKDIR="$PSOCK" WAIT_TRIES=5 sh "$SUT" 2>&1); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null; pkill -f "$PSOCK" 2>/dev/null
+eq "  the wait ends, with a nonzero exit" 22 "$rc"
+has "  says the display never opened" "never opened" "$out"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
