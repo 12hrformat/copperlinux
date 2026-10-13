@@ -258,20 +258,6 @@ static int read_line_edited(char *buf, size_t cap, const char *prompt) {
 
 /* ---------------------------------------------------------------- */
 
-static void banner(void) {
-    puts("");
-    puts("        ___           Copper Linux v0.1.0-dev");
-    puts("       /   \\          Shell:  copper-sh");
-    puts("      | C L |         Status: in development");
-    puts("       \\___/          Type \"help\" for the builtins");
-    puts("      /     \\");
-    puts("     /       \\        (yeah it's a real shell)");
-    puts("    /_________\\");
-    puts("");
-}
-
-/* ---------------------------------------------------------------- */
-
 /* Who the prompt should say you are. Both were hardcoded as "copper", which
    meant the prompt still read copper@copper after the first-boot wizard had
    made a real account and handed over to it. Ask the system, and fall back to
@@ -647,7 +633,7 @@ int b_history(int argc, char **argv) {
 int main(void) {
     signal(SIGINT, SIG_IGN);             /* ctrl-c must not kill the shell */
     resolve_prompt_identity();
-    banner();
+    puts("\033[37mWelcome to \033[32mCopper Linux!\033[0m");
 
     if (enable_raw_mode() == 0)
         atexit(disable_raw_mode);
