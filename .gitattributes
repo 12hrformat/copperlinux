@@ -10,7 +10,16 @@
 # fail their lookups; and the scripts we hand to busybox ash turn each line
 # into "command not found" at boot — on a machine with no shell to log into
 # and fix it with.
-* text eol=lf
+#
+# It must stay `text=auto`. A bare `text` here says "this file is text even if
+# it is obviously not", and git then strips every CRLF byte pair out of the
+# blob on commit. That is invisible for source but fatal for an archive: it is
+# how iso/plymouth/plymouth-frames.zip was destroyed — the committed blob has
+# zero CRLF pairs (a 28 MB binary should have hundreds), so every member's
+# deflate stream past the first two fails its CRC and the zip cannot even
+# list. `auto` runs the same binary detection git uses everywhere else and
+# leaves such files byte-for-byte alone.
+* text=auto eol=lf
 
 # The scripts busybox ash runs don't end in .sh at all: the initramfs init has
 # no extension, and the DHCP lease script is *.script.
