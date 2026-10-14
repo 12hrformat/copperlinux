@@ -56,7 +56,7 @@ jobs:
           for s in tests/smoke.sh tests/charge.sh tests/account-gate.sh \
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
-                   tests/ingot-gate.sh tests/shutdown-gate.sh; do
+                   tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1

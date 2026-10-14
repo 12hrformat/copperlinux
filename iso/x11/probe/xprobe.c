@@ -17,6 +17,27 @@
  *
  * Output is one line per fact, "name=value", so a test can grep for a value
  * rather than match prose.
+ *
+ * Exit codes -- a contract with startxfce, which decides what is safe to do
+ * next from them. Everything used to be 1, which threw away the one
+ * distinction that matters on a machine whose /tmp persists: whether the
+ * socket refused the connection (it is stale and may be cleared) or was
+ * reached but would not answer (it may be a server still starting, or one we
+ * are not permitted to talk to, and must be left alone).
+ *
+ *   0  live       the handshake and the GetGeometry round trip both completed.
+ *   1  not live   no socket, or the connection was refused / the peer closed
+ *                 without answering. Positive evidence nothing usable is
+ *                 listening; a stale socket file.
+ *   2  usage      a bad or missing DISPLAY, or an unknown option. Never
+ *                 produced by startxfce, which always passes ":$DISPLAY_NUM".
+ *   3  unknown    something was reached but the answer did not arrive or did
+ *                 not parse: a timeout, a permission or authorisation refusal,
+ *                 a malformed reply. NOT proof the socket is stale.
+ *
+ * Every socket operation is bounded by SO_RCVTIMEO/SO_SNDTIMEO, so a listener
+ * that accepts the connection and then says nothing returns "unknown" after
+ * XPROBE_TIMEOUT seconds instead of hanging the caller forever.
  */
 
 #include <errno.h>
@@ -25,12 +46,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 /* X11 core protocol, little-endian, from Xproto.h. Only the fields read here. */
 
 #define X_TCP_PORT 6000
+
+/* Exit codes, restated here so the code reads the same as the header. */
+#define XP_LIVE     0
+#define XP_NOTLIVE  1
+#define XP_USAGE    2
+#define XP_UNKNOWN  3
+
+/* Seconds a connect, a write, or a read may block before the display is called
+   unknown. Overridable through XPROBE_TIMEOUT so a test can make a hang fail
+   fast, and so a slow machine can be given more room than the caller's loop. */
+#define XP_DEFAULT_TIMEOUT 5
 
 struct setup_request {
     uint8_t  byte_order;      /* 0x6c = 'l', little endian */
@@ -110,8 +143,10 @@ static int read_all(int fd, void *p, size_t n) {
     char *c = p;
     while (n) {
         ssize_t r = read(fd, c, n);
-        if (r == 0)
-            return -1;          /* closed: truncated reply */
+        if (r == 0) {
+            errno = EPIPE;      /* closed: truncated reply, peer is gone */
+            return -1;
+        }
         if (r < 0) {
             if (errno == EINTR)
                 continue;
@@ -121,6 +156,32 @@ static int read_all(int fd, void *p, size_t n) {
         n -= (size_t)r;
     }
     return 0;
+}
+
+/* Bound every socket operation, so a listener that accepts the connection and
+   then says nothing cannot hang the caller. SO_RCVTIMEO/SO_SNDTIMEO make the
+   blocking calls fail with EAGAIN after tv instead of waiting forever. */
+static int set_timeout(int fd, int seconds) {
+    struct timeval tv;
+
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) < 0)
+        return -1;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) < 0)
+        return -1;
+    return 0;
+}
+
+/* Turn the errno left by a failed write/read into an exit code. A peer that
+   closed, or a connection that was refused, is positive evidence nothing
+   usable is listening; a timeout or a permission error is not, and must not be
+   read as permission to clear the socket. */
+static int io_failure_code(void) {
+    if (errno == EPIPE || errno == ECONNRESET || errno == ECONNREFUSED ||
+        errno == ENOENT)
+        return XP_NOTLIVE;
+    return XP_UNKNOWN;
 }
 
 static uint32_t rd32(const unsigned char *p) {
@@ -149,8 +210,10 @@ static uint16_t rd16(const unsigned char *p) {
 int main(int argc, char **argv) {
     const char *display_arg = NULL;
     const char *sockdir;
+    const char *tmo;
     int use_unix = 1;
     int display_num = -1;
+    int timeout = XP_DEFAULT_TIMEOUT;
     struct sockaddr_un sun;
     struct setup_request req;
     struct setup_reply rep;
@@ -167,7 +230,7 @@ int main(int argc, char **argv) {
             display_arg = argv[i];
         } else {
             fprintf(stderr, "xprobe: unknown option %s\n", argv[i]);
-            return 2;
+            return XP_USAGE;
         }
     }
     if (!display_arg)
@@ -179,9 +242,19 @@ int main(int argc, char **argv) {
     sockdir = getenv("XPROBE_SOCKET_DIR");
     if (!sockdir || !*sockdir)
         sockdir = "/tmp/.X11-unix";
+    /* How long any single socket operation may block. Bad values are ignored
+       rather than fatal: a misconfigured timeout must not stop the probe from
+       doing its job. */
+    tmo = getenv("XPROBE_TIMEOUT");
+    if (tmo && *tmo) {
+        char *end;
+        long v = strtol(tmo, &end, 10);
+        if (*end == '\0' && v > 0 && v <= 3600)
+            timeout = (int)v;
+    }
     if (!display_arg || !*display_arg) {
         fprintf(stderr, "xprobe: no DISPLAY, nothing to connect to\n");
-        return 2;
+        return XP_USAGE;
     }
 
     /* DISPLAY is ":N", ":N.S", "host:N", or "unix:N". Only :N and unix:N are
@@ -200,7 +273,7 @@ int main(int argc, char **argv) {
         if (!colon) {
             fprintf(stderr, "xprobe: DISPLAY=%s has no display number\n",
                     display_arg);
-            return 2;
+            return XP_USAGE;
         }
         hl = (size_t)(colon - display_arg);
         if (hl >= sizeof host)
@@ -212,13 +285,13 @@ int main(int argc, char **argv) {
         if (host[0] && strcmp(host, "unix") != 0) {
             fprintf(stderr, "xprobe: DISPLAY=%s names a host, and this has no "
                             "network stack to reach it\n", display_arg);
-            return 2;
+            return XP_USAGE;
         }
         display_num = (int)strtol(rest, NULL, 10);
         if (display_num < 0) {
             fprintf(stderr, "xprobe: DISPLAY=%s has no display number\n",
                     display_arg);
-            return 2;
+            return XP_USAGE;
         }
         /* A screen suffix (.S) is legal and ignored here: the handshake
            reports every screen and picking between them is a client's job. */
@@ -229,8 +302,13 @@ int main(int argc, char **argv) {
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         fprintf(stderr, "xprobe: socket: %s\n", strerror(errno));
-        return 1;
+        return XP_UNKNOWN;
     }
+    /* Bound every operation on this socket before it is used, including the
+       handshake reads below, so nothing here can block the caller forever. */
+    if (set_timeout(fd, timeout) < 0)
+        fprintf(stderr, "xprobe: set_timeout: %s (continuing)\n",
+                strerror(errno));
     memset(&sun, 0, sizeof sun);
     sun.sun_family = AF_UNIX;
     /* The abstract socket is /tmp/.X11-unix/XN; the filesystem path is what a
@@ -241,7 +319,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "xprobe: socket path for display %d does not fit in "
                         "sun_path\n", display_num);
         close(fd);
-        return 2;
+        return XP_USAGE;
     }
     if (connect(fd, (struct sockaddr *)&sun, sizeof sun) < 0) {
         int saved = errno;
@@ -254,7 +332,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "xprobe: socket path for display %d does not fit "
                             "in sun_path\n", display_num);
             close(fd);
-            return 2;
+            return XP_USAGE;
         }
         if (connect(fd, (struct sockaddr *)&sun,
                     (socklen_t)(sizeof(sun.sun_family) + 1 +
@@ -264,13 +342,22 @@ int main(int argc, char **argv) {
                the two: "No such file" means no server ever got here, and
                "Connection refused" means one did and is now gone. */
             char path[sizeof sun.sun_path];
+            int ab = errno;
 
             snprintf(path, sizeof path, "%s/X%d", sockdir, display_num);
             fprintf(stderr, "xprobe: connect %s: %s\n", path, strerror(saved));
             fprintf(stderr, "xprobe: (abstract) %s: %s\n", sun.sun_path + 1,
-                    strerror(errno));
+                    strerror(ab));
             close(fd);
-            return 1;
+            /* "No such file" on both means no server ever used this display;
+               "Connection refused" means one did and is gone. Either is proof
+               the socket is not live. A permission error is neither, and is
+               reported as unknown so the caller does not clear a socket it
+               cannot see into. */
+            if (saved == ENOENT || saved == ECONNREFUSED ||
+                ab == ENOENT || ab == ECONNREFUSED)
+                return XP_NOTLIVE;
+            return XP_UNKNOWN;
         }
     }
     printf("connected=yes\n");
@@ -284,15 +371,26 @@ int main(int argc, char **argv) {
     req.protocol_major = 11;
     req.protocol_minor = 0;
     if (write_all(fd, &req, sizeof req) < 0) {
+        int code = io_failure_code();
+
         fprintf(stderr, "xprobe: write setup: %s\n", strerror(errno));
         close(fd);
-        return 1;
+        return code;
     }
 
     if (read_all(fd, &rep, sizeof rep) < 0) {
-        fprintf(stderr, "xprobe: server closed during the handshake\n");
+        int code = io_failure_code();
+
+        /* A timeout is not a closed connection, and saying so is the useful
+           part of the report: "server closed" would send someone looking for
+           a crash that never happened. */
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            fprintf(stderr, "xprobe: timed out waiting for the server's reply "
+                            "(XPROBE_TIMEOUT seconds)\n");
+        else
+            fprintf(stderr, "xprobe: server closed during the handshake\n");
         close(fd);
-        return 1;
+        return code;
     }
     printf("handshake.major=%u\n", rd16((unsigned char *)&rep.protocol_major));
     printf("handshake.minor=%u\n", rd16((unsigned char *)&rep.protocol_minor));
@@ -308,7 +406,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "xprobe: the server wants authorisation; start it "
                             "with -auth for a real client\n");
             close(fd);
-            return 1;
+            /* A live server we are not allowed to talk to. Not stale. */
+            return XP_UNKNOWN;
         }
         printf("handshake.status=failed\n");
         want = extra < sizeof reason ? extra : (uint32_t)sizeof reason;
@@ -318,7 +417,9 @@ int main(int argc, char **argv) {
         else
             fprintf(stderr, "xprobe: server refused the connection\n");
         close(fd);
-        return 1;
+        /* The server answered, so something is there; it just would not let
+           this client in. Unknown, not dead: do not clear the socket. */
+        return XP_UNKNOWN;
     }
     printf("handshake.status=success\n");
 
@@ -326,7 +427,9 @@ int main(int argc, char **argv) {
     if (read_all(fd, &body, sizeof body) < 0) {
         fprintf(stderr, "xprobe: truncated setup reply\n");
         close(fd);
-        return 1;
+        /* The handshake already succeeded, so a server is here; it just did
+           not finish talking. Unknown, so the socket is not cleared. */
+        return XP_UNKNOWN;
     }
     {
         /* The setup reply is vendor string, then pixmap formats, then the
@@ -360,7 +463,7 @@ int main(int argc, char **argv) {
                             "declared, %u needed for vendor, formats and one "
                             "screen)\n", rest, want);
             close(fd);
-            return 1;
+            return XP_UNKNOWN;
         }
         memset(vendorbuf, 0, sizeof vendorbuf);
         if (read_all(fd, vendorbuf, vendor_pad) < 0 ||
@@ -368,7 +471,7 @@ int main(int argc, char **argv) {
             read_all(fd, screenbuf, sizeof screenbuf) < 0) {
             fprintf(stderr, "xprobe: truncated setup reply\n");
             close(fd);
-            return 1;
+            return XP_UNKNOWN;
         }
         /* Drain to the end of the reply, so the next read on this socket is
            the GetGeometry answer and not the tail of the handshake. */
@@ -376,7 +479,7 @@ int main(int argc, char **argv) {
         if (left && skip_bytes(fd, left) < 0) {
             fprintf(stderr, "xprobe: truncated setup reply\n");
             close(fd);
-            return 1;
+            return XP_UNKNOWN;
         }
 
         vendor = (const char *)vendorbuf;
@@ -442,9 +545,11 @@ int main(int argc, char **argv) {
             g.drawable = root;
             if (write_all(fd, &g, sizeof g) < 0 ||
                 read_all(fd, &gr, sizeof gr) < 0) {
+                int code = io_failure_code();
+
                 fprintf(stderr, "xprobe: GetGeometry did not come back\n");
                 close(fd);
-                return 1;
+                return code;
             }
             /* Byte 0 is the packet kind: 1 is a reply, 0 is an error whose
                code is in byte 1. A sequence number is never zero, so testing
@@ -457,7 +562,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "xprobe: server sent error %u for GetGeometry\n",
                         gr.depth);
                 close(fd);
-                return 1;
+                return XP_UNKNOWN;
             }
             printf("getgeometry.status=ok\n");
             printf("getgeometry.sequence=%u\n", rd16((unsigned char *)&gr.sequence));
@@ -471,5 +576,5 @@ int main(int argc, char **argv) {
 
     printf("probe=ok\n");
     close(fd);
-    return 0;
+    return XP_LIVE;
 }
