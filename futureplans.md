@@ -11,7 +11,7 @@
 [] custom artwork (wallpapers, icons, etc)
 [x] make a discord?
 [] make some custom tools for deadlight linux
-[x] make a plymouth boot splash for copper (frames are in `iso/plymouth/plymouth-frames.zip`)
+[x] make a plymouth boot splash for copper (frames and theme are in `iso/plymouth/copper/`)
 [] update: Now that the gui is working make it so gui automatically starts as soon as user enters
 [] add persistence (see BUGS.md)
 [] add a way to install copper and deadlight linux to a hard drive (like archinstall or debian installer)

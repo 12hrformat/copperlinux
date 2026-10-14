@@ -14,7 +14,7 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | sudo | initramfs | iso
+# Stages: kernel | base | tools | copper | rootfs | gui | plymouth | sudo | initramfs | iso
 #
 # Stages share iso/work/, so CI can run them one step at a time and each
 # step skips straight past whatever is already built.
@@ -1243,6 +1243,146 @@ build_gui() {
 }
 
 # ---------------------------------------------------------------
+# 6f. the boot splash: Plymouth, staged the way the desktop is
+# ---------------------------------------------------------------
+# Plymouth is the boot splash engine: it takes the console over early, draws a
+# theme, and hands the console back when it is told to quit. It is the same
+# kind of thing as the desktop -- a real project's binary rather than something
+# Copper builds -- so it arrives the same way, from packages unpacked at build
+# time.
+#
+# Building it from source is the obvious alternative and was tried first. The
+# no-udev build is broken upstream in the version this targets: in 24.004.60
+# add_input_devices_to_renderer() is defined inside `#ifdef HAVE_UDEV` but
+# called outside it (src/libply-splash-core/ply-device-manager.c:318 defines,
+# :1133 calls), so -Dudev=disabled does not compile. It must not be built with
+# udev either: that links udev's enumeration path, which finds no device
+# without the udev daemon running, and this image runs no udev.
+#
+# It does not need udev at runtime. plymouthd reads a documented kernel command
+# line switch, `plymouth.ignore-udev` -- src/main.c sets
+# PLY_DEVICE_MANAGER_FLAGS_IGNORE_UDEV on it -- and skips udev entirely, taking
+# its own fallback path: PLY_RENDERER_TYPE_AUTO, which tries DRM and then the
+# framebuffer. grub.cfg passes that switch. The libraries still link libudev
+# (libply-splash-core.so.5 NEEDs libudev.so.1), so the library is staged, but
+# no code path ever calls into the daemon.
+#
+# Only what the live image uses is copied out of the packages: the daemon, the
+# control client, the four libply libraries, the script and text plugins and
+# the two renderers. The systemd units, the SysV init script and the
+# initramfs-tools hooks the package also ships are left behind on purpose.
+build_plymouth() {
+  if [ -e "$TGT/usr/sbin/plymouthd" ] \
+     && stamped_skip "$WORK/plymouth.stamp" "$SELF" \
+        "$ROOT/plymouth/copper/copper.plymouth" \
+        "$ROOT/plymouth/copper/copper.script" \
+        "$ROOT/plymouth/copper/frames/"*.png; then
+    echo "plymouth: already staged, skipping"; return
+  fi
+  echo "==> boot splash (Plymouth)"
+  local DP="$DL/plymouth" STAGE="$WORK/plymouth-root" deb n png="" p
+  rm -rf "$DP"; mkdir -p "$DP"
+
+  apt-get update -qq
+
+  # noble renamed the PNG library for the 64-bit time_t transition
+  # (libpng16-16 became libpng16-16t64); ask the host which name it carries,
+  # the same way the gui stage asks for alsa.
+  for p in libpng16-16t64 libpng16-16; do
+    if apt-cache show "$p" >/dev/null 2>&1; then png=$p; break; fi
+  done
+
+  # plymouth and libplymouth5 are the splash; the rest are libraries their
+  # binaries and renderers link against. Most already arrive through the gui
+  # closure, but naming them keeps this stage self-contained. apt-get download
+  # resolves no dependencies, which is what is wanted: an install would pull
+  # systemd and udev in as packaging dependencies.
+  local pkgs="plymouth libplymouth5 libdrm2 libudev1 libevdev2 libxkbcommon0"
+  [ -n "$png" ] && pkgs="$pkgs $png"
+  ( cd "$DP" && apt-get -o APT::Sandbox::User=root download $pkgs )
+
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  for deb in "$DP"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  n=$(ls "$DP"/*.deb | wc -l)
+  echo "  $n packages unpacked"
+
+  # Daemon and control client.
+  install -D -m 0755 "$STAGE/usr/sbin/plymouthd" "$TGT/usr/sbin/plymouthd"
+  install -D -m 0755 "$STAGE/usr/bin/plymouth" "$TGT/usr/bin/plymouth"
+
+  # Plugins and renderers. `script` is the engine the theme uses; `text` is a
+  # fallback for machines where no pixel display comes up.
+  mkdir -p "$TGT/usr/lib/x86_64-linux-gnu/plymouth/renderers"
+  cp -a "$STAGE/usr/lib/x86_64-linux-gnu/plymouth/." \
+        "$TGT/usr/lib/x86_64-linux-gnu/plymouth/"
+
+  # The libply libraries and everything the plugins link against. -n so a
+  # library the gui closure already staged keeps its (possibly newer) copy.
+  for deb in "$STAGE"/usr/lib/x86_64-linux-gnu/*; do
+    case "${deb##*/}" in
+      libply*.so*|libdrm.so*|libpng16.so*|libudev.so*|libevdev.so*|libxkbcommon.so*) ;;
+      *) continue ;;
+    esac
+    cp -a -n "$deb" "$TGT/usr/lib/x86_64-linux-gnu/"
+  done
+
+  # The theme: the owner's frames and the script that steps through them. It is
+  # data, so it is copied whole rather than installed piecemeal.
+  rm -rf "$TGT/usr/share/plymouth/themes/copper"
+  mkdir -p "$TGT/usr/share/plymouth/themes/copper"
+  cp -a "$ROOT/plymouth/copper/." "$TGT/usr/share/plymouth/themes/copper/"
+
+  # Which theme to load. plymouthd reads the [Daemon] Theme key from here (or
+  # the plymouth.splash= switch on the kernel command line). The package ships
+  # no config of its own, so without this it falls back to a compiled-in
+  # default theme that is not ours.
+  mkdir -p "$TGT/etc/plymouth" "$TGT/var/lib/plymouth"
+  cat > "$TGT/etc/plymouth/plymouthd.conf" <<'CONF'
+[Daemon]
+Theme=copper
+CONF
+
+  local f
+  for f in usr/sbin/plymouthd usr/bin/plymouth \
+           usr/lib/x86_64-linux-gnu/plymouth/script.so \
+           usr/lib/x86_64-linux-gnu/plymouth/renderers/drm.so \
+           usr/lib/x86_64-linux-gnu/plymouth/renderers/frame-buffer.so \
+           usr/lib/x86_64-linux-gnu/libply-splash-core.so.5 \
+           usr/share/plymouth/themes/copper/copper.plymouth \
+           usr/share/plymouth/themes/copper/copper.script \
+           usr/share/plymouth/themes/copper/frames/1.png \
+           usr/share/plymouth/themes/copper/frames/150.png \
+           etc/plymouth/plymouthd.conf; do
+    if [ ! -e "$TGT/$f" ]; then
+      echo "plymouth: $f did not arrive from the packages" >&2
+      exit 1
+    fi
+  done
+
+  # And that they run in the target root, not merely exist. --help runs the
+  # dynamic loader over every NEEDED library and exits; a missing libudev,
+  # libevdev or libpng fails the build here instead of turning into a splash
+  # that silently never appears on a machine nobody can log in to.
+  if ! chroot "$TGT" /usr/sbin/plymouthd --help >/dev/null 2>&1; then
+    echo "plymouth: plymouthd does not run inside the staged rootfs" >&2
+    exit 1
+  fi
+  if ! chroot "$TGT" /usr/bin/plymouth --help >/dev/null 2>&1; then
+    echo "plymouth: the plymouth client does not run inside the staged rootfs" >&2
+    exit 1
+  fi
+
+  n=$(find "$TGT/usr/share/plymouth/themes/copper/frames" -name '*.png' | wc -l)
+  echo "  splash staged: $n frames, $(du -sh "$TGT/usr/share/plymouth/themes/copper" | cut -f1)"
+  stamp_set "$WORK/plymouth.stamp" "$SELF" \
+    "$ROOT/plymouth/copper/copper.plymouth" \
+    "$ROOT/plymouth/copper/copper.script" \
+    "$ROOT/plymouth/copper/frames/"*.png
+}
+
+# ---------------------------------------------------------------
 # 6b. sudo — real privilege elevation, staged with the glibc closure
 # ---------------------------------------------------------------
 # sudo is a glibc binary and the base image is musl, so it gets built on the
@@ -1468,6 +1608,7 @@ full() {
   build_copper
   build_rootfs
   build_gui
+  build_plymouth
   build_sudo
   build_initramfs
   build_iso
@@ -1480,11 +1621,12 @@ case "$STAGE" in
   copper)     build_musl; build_copper ;;
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
-  sudo)       build_rootfs; build_gui; build_sudo ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_sudo; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_sudo; build_initramfs; build_iso ;;
+  plymouth)   build_rootfs; build_gui; build_plymouth ;;
+  sudo)       build_rootfs; build_gui; build_plymouth; build_sudo ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|sudo|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|plymouth|sudo|initramfs|iso|all)"; exit 2 ;;
 esac
 
 echo "==> done"

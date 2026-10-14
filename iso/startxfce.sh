@@ -139,6 +139,24 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# The boot splash, defensively.
+#
+# copper-init starts Plymouth and quits it again before it ever spawns the
+# login shell, so by the time a person runs startxfce there is normally nothing
+# left to quit. This is the safety net for the paths that skip that hand-off:
+# a session started by hand, from a script, or on a machine whose init left the
+# daemon up. A splash still holding the console is why Xorg fails with
+# "Switching VT failed", and why an interactive prompt down this script would
+# be invisible, so it is quit before any of that. The test is a ping, not a
+# blind quit, so a machine built without the splash says nothing and does
+# nothing; and --check, which exits above, never reaches here and never draws
+# on the splash.
+if command -v plymouth >/dev/null 2>&1 &&
+   plymouth --ping >/dev/null 2>&1; then
+    say "quitting the boot splash before starting the desktop"
+    plymouth quit >/dev/null 2>&1 || :
+fi
+
 # An X server already on this display is reused rather than replaced. Two
 # servers on one display is a confusing failure: the second refuses the socket,
 # or replaces the first, and the client ends up talking to whichever won.
