@@ -23,6 +23,34 @@
 
 ---
 
+## ranked next steps (written down 2026-10-14)
+
+Ordered by what unblocks the most. This is the short list behind the
+checkboxes above, with the reasoning kept so it doesn't have to be re-derived.
+
+1. **A real installer** — the `install to a hard drive` / `archinstall` lines
+   above (custom-made is the preferred one). Biggest hole: right now Copper is
+   a live ISO plus the labelled-disk overlay trick for persistence. A real
+   installer also retires bug 15 and bug 20's stopgap — real disk root, real
+   space, no 50% tmpfs cap.
+2. **Session auto-start** — the `gui automatically starts as soon as user
+   enters` line. Today: boot → wizard → bare prompt → you type `startxfce`. A
+   login/session step that asks once and remembers turns that into a desktop a
+   normal person can reach.
+3. **Grow the ingot repo** — `add more packages`. Five packages is a demo; the
+   repo is the product.
+4. **More terminal commands / improve the tty** — the `improve the tty` line.
+5. **More desktops** — Awesome, then Hyprland. The Wayland/compositor stack is
+   the real work, not one more package.
+6. **Custom artwork** — wallpapers, icons. Cheap, high-visible identity.
+7. **Docs site + custom domain** — the two unchecked lines at the top.
+
+**WiFi (G4) is in progress as of 2026-10-14** — kernel `CFG80211`/`MAC80211`
+symbols, a static-musl `wpa_supplicant`, and firmware blobs. Design is in
+`HANDOFF.md` under G4.
+
+---
+
 ## ingot — the todo, in the order we do it
 
 How it works (decided, don't re-decide): `ingot install nmap` fetches the
