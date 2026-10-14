@@ -515,6 +515,55 @@ Each of these cost a wrong turn once. All were checked against real sources.
   `mount()` unconditionally and only tolerates `EBUSY` — and a second tmpfs over
   an existing one is a stack, not an error. So markers for later boot stages go
   on the overlay (the wizard's is `/var/lib/copper/live-boot`), never in `/run`.
+- **musl ships no kernel UAPI headers.** There is no `linux/`, no `asm/`, no
+  `asm-generic/`. Building `libnl` or `wpa_supplicant` static against musl
+  therefore fails in `linux/netlink.h` → `asm/types.h` → not found, and adding
+  only `asm-generic` just moves the error one file along. The `wifi` stage makes
+  a shim directory of symlinks into the host's `linux-libc-dev` (Debian/Ubuntu
+  put `asm/` under the multiarch triple) and passes it with **`-idirafter`**,
+  which is what puts the kernel headers *after* musl's own on the search path
+  instead of in front of them.
+- **`wpa_supplicant`'s kconfig does not find libnl on its own.** `CONFIG_LIBNL32=y`
+  is resolved through pkg-config, so `PKG_CONFIG_PATH` has to point at the
+  prefix libnl was installed into (`$WP/lib/pkgconfig`), and the sources also
+  want `-I$WP/include/libnl3`. Miss it and the error is
+  `Package 'libnl-3.0' not found`, which reads like libnl is absent when only
+  the path is.
+- **`CONFIG_TLS` defaults to `openssl`.** A static musl build then fails at
+  `openssl/opensslv.h`. wpa_supplicant carries its own implementation:
+  `CONFIG_TLS=internal` with `CONFIG_INTERNAL_LIBTOMMATH=y` (its bundled bignum)
+  removes the OpenSSL dependency entirely, which is what the image ships.
+- **A managed wireless interface reports `ARPHRD_ETHER` (1), exactly like a
+  wired NIC.** `/sys/class/net/<if>/type` cannot tell them apart — so the old
+  `first_nonloop_iface()` type test would have handed an unassociated `wlan0` to
+  `udhcpc`. cfg80211 gives each wireless interface a `wireless` subdirectory
+  under its sysfs entry; that directory's presence is the test
+  (`is_wireless()` in `copper-init.c`).
+- **`BRCMFMAC_PCI` does not exist.** The Broadcom PCIe symbol is
+  `BRCMFMAC_PCIE`; requesting the other one is silently dropped, the same trap
+  as `DRM_VMWGFX`. Every symbol now asserted =y for wireless was run through
+  this kernel's `olddefconfig` first, so the assert list contains only names
+  that survived.
+- **Ubuntu's `linux-firmware` is zstd-compressed, every file, as `<name>.zst`.**
+  A kernel without `CONFIG_FW_LOADER_COMPRESS_ZSTD` requests `<name>`, finds
+  nothing, and fails the load with `-ENOENT`. The driver is present, the blob is
+  visible in the image, and the radio still comes up dead — which points at the
+  driver, the interface or the supplicant, and not at a kconfig symbol. The
+  `wifi` stage keeps the compressed names it was shipped with (decompressing on
+  the build host would only inflate the ISO) and asserts the option is `=y`.
+- **`linux-firmware` is a metapackage on noble, not the files.** The `.deb` apt
+  downloads is a 1.8 kB stub that carries no firmware; the blobs arrive as split
+  subpackages (`linux-firmware-intel-wireless`, `linux-firmware-realtek`, and
+  friends). Unpacking only the package named `linux-firmware` leaves the staging
+  tree empty, and the glob that looks right — `linux-firmware_*.deb` — does not
+  match the split names, so the build stops at its own "did not unpack" check
+  with the download sitting right there. Every `.deb` apt fetched is unpacked.
+- **`regulatory.db` is not in `linux-firmware`.** It is its own package,
+  `wireless-regdb`, which recommends nothing and is recommended by nothing, so
+  asking apt for `linux-firmware` alone gives a radio that loads firmware and
+  then has no regdomain. Both are downloaded. It is also the one staged file
+  that is *not* compressed — a small detail that makes a `.zst`-only sweep look
+  complete while skipping it.
 
 ---
 
