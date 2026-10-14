@@ -169,6 +169,56 @@ and a VM reboot were **not** run; verification stopped at the passing gates.
 
 ---
 
+# 25. the boot splash never draws a frame — impact 3/10
+
+**How it affects things:** the Copper boot splash does not appear. A real boot
+shows the built-in Plymouth text "details" screen at most, never the 150
+frames. Nothing else breaks — the boot, the session and XFCE are all
+unaffected — so this is cosmetic, but the feature is 100% absent.
+
+**What happens:** a real boot of the shipped ISO showed no frames (2026-10-14).
+Reproduced headlessly in QEMU against the exact built artifact: the display
+switches to graphics at ~20 s, then stays essentially blank — ~60 non-blank
+samples out of 10 556 over 230+ s, a few hundred pixels of small centred text.
+A rendered Copper frame at that resolution would light ~9 400 pixels per
+sample. Nothing was ever drawn.
+
+**Root cause:** the command line ends `console=ttyS0,115200 console=tty0`, so
+the kernel reports **two** active consoles in
+`/sys/class/tty/console/active`. Plymouth's device manager
+(`ply-device-manager.c`) sees an active console that is not the local one,
+sets `serial_consoles_detected`, `create_devices_from_terminals()` then
+succeeds and it **never creates a renderer**. `main.c` sets
+`should_force_details`, `plymouth_should_show_default_splash()` returns false,
+and Plymouth runs `show_detailed_splash()` — its built-in text splash — so the
+`copper` theme and its frames are never loaded. The serial console itself is
+deliberate (see the config facts below: the last `console=` owns
+`/dev/console`, so `tty0` must stay last), so it cannot simply be removed.
+
+**Diagnosed against the exact packaged build** `plymouth 24.004.60-1ubuntu7.2`
+(noble), not assumed: the strings, the flag handling in `main.c`, and the
+`IGNORE_SERIAL_CONSOLES` path in `ply-device-manager.c` all match.
+
+**Fix planned (not written):** tell Plymouth the serial console is not the
+display. `plymouthd` already supports `--graphical-boot` and
+`--ignore-serial-consoles`; `--graphical-boot` also forces the graphical
+splash. Either pass the flag from `splash_spawn()` in
+`iso/src-init/copper-init.c` (both the attach and non-attach paths), or add
+`plymouth.ignore-serial-consoles` to the kernel command line in
+`iso/boot/grub.cfg`, or both — `plymouthd` reads
+`plymouth.ignore-serial-consoles` as a kernel argument directly.
+
+**Still open because:** the fix is not written or booted yet. Verification is a
+QEMU boot of a remastered ISO (or `-kernel`/`-initrd` with the same `-append`),
+confirming the non-blank sample count jumps towards a full frame and changes
+from frame to frame.
+
+Until a new ISO lands, the splash can be forced by hand at the GRUB menu: edit
+the entry and append `plymouth.ignore-serial-consoles` (or
+`plymouth.graphical`) before booting.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -336,6 +386,14 @@ register both, screen last.
 takes `/dev/console` away from `tty0`. Add the serial port *and* put `tty0`
 last.
 
+**An active serial console hides Plymouth's graphical splash.** Plymouth reads
+`/sys/class/tty/console/active`; when `console=ttyS0,115200 console=tty0`
+names two consoles it concludes a serial console is in charge, forces its text
+"details" splash and never creates a DRM/framebuffer renderer — so the theme is
+never loaded and no frame is ever drawn. `--graphical-boot` /
+`--ignore-serial-consoles` (or the `plymouth.ignore-serial-consoles` kernel
+argument) is the way out. See bug 25.
+
 **The live image has no `/dev/pts` unless the initramfs mounts devpts.** Two
 things break silently: `sudo` dies with `unable to allocate pty`, and nothing
 that needs a real PTY works (the XFCE terminal opens and cannot give its
@@ -491,3 +549,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |
+| bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
