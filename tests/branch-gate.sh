@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Eight gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
+# Nine gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
 # persist.sh and shutdown-gate.sh need root, because they exercise sockets,
 # staged rootfs trees, the hotfix database, a mount namespace and a private
 # /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh does
 # not — its install lands in a scratch INGOT_ROOT and its repo is served on
-# localhost — so it runs unprivileged too. CI runs this same file with sudo, so
-# a green build there means every gate ran and none were skipped.
+# localhost — so it runs unprivileged too. xprobe-gate.sh needs a C compiler
+# and python3, which CI and the build VM have, and skips cleanly where neither
+# exists. CI runs this same file with sudo, so a green build there means every
+# gate ran and none were skipped.
 #
 # This file used to carry known-failure classifications: the CI workflow came
 # over from `untested`, and on the old `gui` tree two of its tests failed
@@ -87,6 +89,28 @@ else
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
     oks=$(printf '%s\n' "$out" | grep -cE '^  ok' || true)
     printf '    (%s checks passed; the failures are the lines above)\n' "$oks"
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/xprobe-gate.sh: the real xprobe binary vs a synthetic X server ---"
+# Compiles the actual iso/x11/probe/xprobe.c and drives it through every socket
+# state (no socket, stale file, mute listener, live handshake, usage errors,
+# bounded timeout), asserting the 0/1/2/3 exit-code contract, plus a static
+# check that iso/build.sh stages the result as /usr/bin/xprobe. Needs a C
+# compiler and python3 -- both present in CI and on the build VM. Skips cleanly
+# on a host with neither (the Windows box this tree is maintained on).
+if out=$(bash tests/xprobe-gate.sh 2>&1); then
+    case "$out" in
+        *SKIPPED*)
+            record xprobe-gate.sh skipped "no C compiler on this host" ;;
+        *)
+            n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+            record xprobe-gate.sh ok "$n checks" ;;
+    esac
+else
+    record xprobe-gate.sh bad "a real-xprobe check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
