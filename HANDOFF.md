@@ -252,10 +252,62 @@ manual fiddling. Roughly: `CFG80211` plus the wireless driver in the kernel
 `build.sh`; **wpa_supplicant** from source (static musl); keep busybox
 `udhcpc` for the IP afterwards (it demonstrably works); drop the card's
 firmware blobs (a `linux-firmware` subset) into the rootfs. NetworkManager is
-the heavy end state and not required to get onto a network. The
-interface-selection bug that broke wired DHCP is already handled for wifi:
-`first_nonloop_iface()` asks sysfs for the `ARPHRD_*` type and prefers
-`ARPHRD_ETHER` over `ARPHRD_IEEE80211_RADIOTAP`.
+the heavy end state and not required to get onto a network.
+
+**Built.** The kernel now carries `WLAN`, `CFG80211`, `MAC80211`, `RFKILL`, the
+firmware loader and its zstd decompressor, plus a driver list per vendor family
+(Intel, Atheros, Ralink, Realtek, MediaTek, Marvell, Broadcom, Atmel) and the
+USB host controllers that USB dongles need. Each symbol is asserted =y in
+`require_kernel_config`, and the list was checked against this kernel's
+`olddefconfig` before it was asserted, so a dropped symbol stops the build
+instead of silently shipping a radio with nothing behind it.
+
+`build.sh`'s `wifi` stage builds `libnl` and then `wpa_supplicant`, `wpa_cli`
+and `wpa_passphrase` static against musl, and stages a curated firmware subset
+into `/lib/firmware` from **two** packages: `linux-firmware` for the radio
+blobs, and `wireless-regdb` for `regulatory.db` (which is not in
+`linux-firmware`, and which nothing depends on). Three things that only
+building it would have shown, all recorded where the code is: musl ships no
+kernel UAPI headers, so a shim of symlinks into `linux-libc-dev` is passed with
+`-idirafter`; wpa_supplicant's nl80211 driver needs libnl through
+`PKG_CONFIG_PATH`; and `CONFIG_TLS` defaults to openssl, which has no place in
+a static musl binary, so TLS is internal.
+
+A fourth only showed up reading the package rather than the driver list:
+**Ubuntu ships every `linux-firmware` blob zstd-compressed**, as `<name>.zst`.
+A kernel without `FW_LOADER_COMPRESS_ZSTD` asks for `<name>`, gets `-ENOENT`,
+and every radio comes up dead with its firmware sitting right there in the
+image — a symptom that reads like a broken driver. The flag is asserted, and
+the subset keeps the compressed names it was shipped with rather than
+decompressing on the build host, which would only inflate the ISO. The images
+this stages were checked against Ubuntu's own file list, not guessed: each of
+the loose names is one the enabled drivers request.
+
+At boot `copper-init` now tells wired from wireless by sysfs, not by
+`ARPHRD_*`: a **station interface reports `ARPHRD_ETHER`, exactly like a wired
+NIC**, so the old `first_nonloop_iface()` type test could not tell them apart
+and would have handed an unassociated `wlan0` to `udhcpc`. `is_wireless()`
+looks for the `wireless` directory cfg80211 creates. With no wire present it
+clears a soft rfkill block, starts wpa_supplicant against
+`/etc/wpa_supplicant/wpa_supplicant.conf`, then raises the link and starts
+`udhcpc` with `-b`, so the lease simply arrives once association completes
+instead of being polled for. `copper-wifi` (also `copper wifi`) is the front
+end: `list`, `add SSID [PASS]`, `up`, `status`, `forget SSID`, plus the
+interface-then-action form `wlan0 scan`, `wlan0 get-networks`,
+`wlan0 connect SSID [PASS]`, `wlan0 show`, `wlan0 disconnect` — `iwctl`'s
+grammar without the `station` keyword. `interfaces` lists the radios, forgoing
+the interface uses the first one, and running the command with no arguments on
+a terminal opens the same verbs as a prompt. `add` runs `wpa_passphrase`, so no
+passphrase is written in the clear, and it resolves the psk before opening the
+file, so a passphrase `wpa_passphrase` refuses leaves the config untouched.
+
+**Not yet proven:** association on real hardware. QEMU has no 802.11 radio and
+`mac80211_hwsim` is deliberately not built in (its default two virtual radios
+would appear as `wlan0`/`wlan1` on every boot and be handed to DHCP), so the
+kernel side is asserted, the userspace is built and run (`wpa_supplicant -v`),
+and the config handling is gated by `tests/wifi-gate.sh` — but no card has
+associated. Treat the driver list as "compiles and is enabled" until a laptop
+is actually used, the same caveat the display drivers carry.
 
 ## G5 — Bluetooth
 
