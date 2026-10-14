@@ -1,0 +1,69 @@
+# Copper Linux boot splash -- Plymouth's script plugin.
+#
+# The owner's animation is 150 frames of 1920x1080 PNG. Plymouth runs this file
+# through a small interpreter and calls refresh_callback once per tick; whatever
+# sprites exist are composited right after. So the whole theme is one sprite and
+# a frame counter.
+#
+# Frames are loaded one at a time rather than all up front. A decoded 1080p
+# frame is about 8 MB, so preloading 150 of them is over a gigabyte resident --
+# not something a live image should do for a splash that is on screen for a few
+# seconds. Loading one per tick keeps the working set at a couple of frames:
+# assigning a new image to a variable drops the reference to the previous one,
+# and Plymouth frees a pixel buffer when its last reference goes.
+
+frame_count = 150;
+frame_width = 1920;
+frame_height = 1080;
+
+screen_width = Window.GetWidth ();
+screen_height = Window.GetHeight ();
+
+# Fit the frame inside the screen, preserving its 16:9 aspect ratio, and centre
+# it. A screen that is not 16:9 gets pillar- or letterboxing rather than a
+# stretched animation.
+scale_x = screen_width / frame_width;
+scale_y = screen_height / frame_height;
+if (scale_x < scale_y)
+  scale = scale_x;
+else
+  scale = scale_y;
+
+draw_width = frame_width * scale;
+draw_height = frame_height * scale;
+draw_x = (screen_width - draw_width) / 2;
+draw_y = (screen_height - draw_height) / 2;
+
+# Black behind and around the frame, so the bars do not read as a different
+# shade from the animation's own background.
+Window.SetBackgroundTopColor (0, 0, 0);
+Window.SetBackgroundBottomColor (0, 0, 0);
+
+sprite = Sprite ();
+sprite.SetX (draw_x);
+sprite.SetY (draw_y);
+
+current_frame = 1;
+
+fun refresh_callback ()
+  {
+    # Hold the last frame instead of looping. The animation reads as an intro,
+    # and snapping back to frame 1 would be a visible jolt on a boot slow enough
+    # to outlast it. copper-init quits the splash before the login prompt, so
+    # the held frame is only ever on screen for a moment.
+    if (current_frame > frame_count)
+      return;
+
+    image = Image ("frames/" + current_frame + ".png");
+    if (image)
+      sprite.SetImage (image.Scale (draw_width, draw_height));
+
+    current_frame = current_frame + 1;
+  }
+
+Plymouth.SetRefreshFunction (refresh_callback);
+
+# 24 fps. Each tick decodes a full 1080p PNG, so the ceiling is the decoder, not
+# the display; 24 leaves a little headroom on a slow machine without looking
+# like a slideshow.
+Plymouth.SetRefreshRate (24);

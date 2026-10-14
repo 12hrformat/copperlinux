@@ -405,6 +405,163 @@ static void on_power_signal(int sig) {
     _exit(0);                           /* only if reboot(2) failed */
 }
 
+/* ---- the boot splash ------------------------------------------------------
+
+   Plymouth draws the Copper boot animation and then hands the console back.
+   It is started here, from PID 1, rather than by a service manager, because
+   there is no service manager: copper-init is the init.
+
+   Three things have to line up, and each is checked rather than assumed:
+
+     - the kernel command line asks for it. grub.cfg passes "splash", and
+       "plymouth.ignore-udev" beside it. The second is not optional: this
+       image runs no udev, and without that switch plymouthd enumerates its
+       devices through udev, finds nothing, and never draws a frame. With it,
+       plymouthd takes its own fallback path and drives DRM or the
+       framebuffer directly.
+
+     - the pieces are in the image. Both the daemon and the control client are
+       checked for, because a splash that cannot be quit is worse than none:
+       it would sit on the console the login shell needs.
+
+     - the daemon answers. The splash is only shown once the client can reach
+       it, so a broken plymouth costs a short bounded pause, not a hang. */
+static pid_t g_splash_pid = -1;
+
+/* Exact-token match against /proc/cmdline, so "splash" does not also match
+   "nosplash" and a "word=value" switch has to match whole. */
+static int cmdline_has(const char *want) {
+    FILE *f = fopen("/proc/cmdline", "r");
+    char line[1024];
+    char *p;
+    size_t n, wantlen = strlen(want);
+
+    if (!f)
+        return 0;
+    n = fread(line, 1, sizeof line - 1, f);
+    fclose(f);
+    line[n] = '\0';
+
+    for (p = line; *p; ) {
+        size_t len;
+        while (*p == ' ' || *p == '\t' || *p == '\n')
+            p++;
+        if (!*p)
+            break;
+        len = strcspn(p, " \t\n");
+        if (len == wantlen && strncmp(p, want, len) == 0)
+            return 1;
+        p += len;
+    }
+    return 0;
+}
+
+/* Run the plymouth client once and wait for it. Returns its exit status, or
+   -1 if it could not be run at all. */
+static int plymouth_cmd(const char *cmd) {
+    pid_t pid = fork();
+    int st;
+
+    if (pid < 0)
+        return -1;
+    if (pid == 0) {
+        execl("/usr/bin/plymouth", "plymouth", cmd, (char *)NULL);
+        _exit(127);
+    }
+    if (waitpid(pid, &st, 0) < 0)
+        return -1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+/* Fork the daemon. attach selects the console-redirecting form. */
+static pid_t splash_spawn(int attach) {
+    pid_t pid = fork();
+
+    if (pid != 0)
+        return pid;
+    if (attach)
+        execl("/usr/sbin/plymouthd", "plymouthd",
+              "--mode=boot", "--pid-file=/run/plymouth/pid",
+              "--attach-to-session", "--no-daemon", (char *)NULL);
+    else
+        execl("/usr/sbin/plymouthd", "plymouthd",
+              "--mode=boot", "--pid-file=/run/plymouth/pid",
+              "--no-daemon", (char *)NULL);
+    _exit(127);
+}
+
+/* Is the daemon still running? Reaps it and clears the pid once it has gone: a
+   zombie still answers kill(pid, 0), so this waits rather than probing. */
+static int splash_alive(void) {
+    int st;
+    pid_t r;
+
+    if (g_splash_pid <= 0)
+        return 0;
+    r = waitpid(g_splash_pid, &st, WNOHANG);
+    if (r == g_splash_pid || r < 0) {
+        g_splash_pid = -1;
+        return 0;
+    }
+    return 1;
+}
+
+/* Wait for the daemon to start answering. 0 once it does, -1 if it died or
+   never answered within the bound. */
+static int splash_ready(void) {
+    int i;
+
+    for (i = 0; i < 50; i++) {
+        if (plymouth_cmd("--ping") == 0)
+            return 0;
+        if (!splash_alive())
+            return -1;
+        usleep(20 * 1000);
+    }
+    return -1;
+}
+
+static void splash_start(void) {
+    if (!cmdline_has("splash") || cmdline_has("nosplash") ||
+        cmdline_has("plymouth.enable=0"))
+        return;
+    if (access("/usr/sbin/plymouthd", X_OK) != 0 ||
+        access("/usr/bin/plymouth", X_OK) != 0)
+        return;
+
+    g_splash_pid = splash_spawn(1);
+    if (g_splash_pid < 0)
+        return;
+    if (splash_ready() == 0 && plymouth_cmd("--show-splash") == 0)
+        return;
+
+    /* Either it never answered, or it exited: the console-session attach is
+       the step that can fail. Restart it without that step so the animation
+       still plays, rather than dropping the whole idea for one failure. */
+    if (g_splash_pid > 0) {
+        int i;
+        plymouth_cmd("--quit");
+        for (i = 0; i < 25 && splash_alive(); i++)
+            usleep(20 * 1000);
+    }
+    g_splash_pid = splash_spawn(0);
+    if (g_splash_pid > 0 && splash_ready() == 0)
+        plymouth_cmd("--show-splash");
+}
+
+static void splash_stop(void) {
+    int i;
+
+    if (g_splash_pid <= 0)
+        return;
+    plymouth_cmd("--quit");
+    /* Wait for it to exit, so the console is back in text mode before the
+       login shell is spawned onto it -- and so the daemon is reaped. */
+    for (i = 0; i < 50 && splash_alive(); i++)
+        usleep(20 * 1000);
+    g_splash_pid = -1;
+}
+
 int main(void) {
     console_stdio();
 
@@ -458,6 +615,12 @@ int main(void) {
     mount_if_needed("devtmpfs", "/dev", "devtmpfs");
     mount_if_needed("tmpfs", "/run", "tmpfs");
 
+    /* The splash comes up as soon as there is a /proc to read the kernel
+       command line from and a /run for the daemon's pid file, and before
+       anything prints: with the console redirected, it covers the boot rather
+       than scrolling past underneath it. */
+    splash_start();
+
     apply_hostname();
 
     /* Started before the wizard on purpose: DHCP gets to negotiate while
@@ -473,6 +636,12 @@ int main(void) {
     usleep(1500 * 1000);
     printf("\n");
     fflush(stdout);
+
+    /* Hand the console back before anything interactive. The first-boot wizard
+       prompts on this console and the login shell reads from it; a splash left
+       up would hide what the machine is asking, and the quit is what puts the
+       VT back into text mode. */
+    splash_stop();
 
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {

@@ -25,3 +25,10 @@
 # no extension, and the DHCP lease script is *.script.
 init text eol=lf
 *.script text eol=lf
+
+# The Plymouth frames (iso/plymouth/copper/frames) are PNG. `text=auto` above
+# already detects them as binary and leaves them alone, but saying so explicitly
+# skips that detection for all 150 of them on every commit — and makes the
+# intent local to the one directory where a mis-detected binary would cost the
+# whole boot animation.
+*.png binary

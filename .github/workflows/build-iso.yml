@@ -135,7 +135,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**','iso/sudo/**') }}
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
           restore-keys: |
             copper-work-
 
@@ -161,6 +161,14 @@ jobs:
       # that asked for them.
       - name: Stage Xorg + XFCE into the rootfs
         run: sudo bash iso/build.sh gui
+
+      # The boot splash: Ubuntu's prebuilt Plymouth plus the owner's frames,
+      # unpacked into the rootfs. Its own step for the same reason as gui --
+      # it downloads packages at build time, and a failure should name the
+      # line that asked for them. rootfs and gui above are stamp-checked and
+      # skip, so this resolves to just the splash.
+      - name: Stage the boot splash (Plymouth)
+        run: sudo bash iso/build.sh plymouth
 
       # sudo is a glibc binary against the gui closure's runtime, staged into
       # the rootfs so a normal user can run `ingot install` through it.
@@ -188,4 +196,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','src/**','iso/sudo/**') }}
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}

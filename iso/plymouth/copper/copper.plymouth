@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Copper
+Description=Copper Linux boot animation
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/copper
+ScriptFile=/usr/share/plymouth/themes/copper/copper.script
