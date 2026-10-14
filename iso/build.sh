@@ -1280,7 +1280,7 @@ build_plymouth() {
     echo "plymouth: already staged, skipping"; return
   fi
   echo "==> boot splash (Plymouth)"
-  local DP="$DL/plymouth" STAGE="$WORK/plymouth-root" deb n png="" p
+  local DP="$DL/plymouth" STAGE="$WORK/plymouth-root" deb dest n png="" p
   rm -rf "$DP"; mkdir -p "$DP"
 
   apt-get update -qq
@@ -1318,14 +1318,17 @@ build_plymouth() {
   cp -a "$STAGE/usr/lib/x86_64-linux-gnu/plymouth/." \
         "$TGT/usr/lib/x86_64-linux-gnu/plymouth/"
 
-  # The libply libraries and everything the plugins link against. -n so a
-  # library the gui closure already staged keeps its (possibly newer) copy.
+  # The libply libraries and everything the plugins link against. A library the
+  # gui closure already staged is left alone -- it may be newer -- so the
+  # destination is tested before copying. (cp -n says the same thing, but it
+  # warns about portability on every file.)
   for deb in "$STAGE"/usr/lib/x86_64-linux-gnu/*; do
     case "${deb##*/}" in
       libply*.so*|libdrm.so*|libpng16.so*|libudev.so*|libevdev.so*|libxkbcommon.so*) ;;
       *) continue ;;
     esac
-    cp -a -n "$deb" "$TGT/usr/lib/x86_64-linux-gnu/"
+    dest="$TGT/usr/lib/x86_64-linux-gnu/${deb##*/}"
+    [ -e "$dest" ] || [ -L "$dest" ] || cp -a "$deb" "$TGT/usr/lib/x86_64-linux-gnu/"
   done
 
   # The theme: the owner's frames and the script that steps through them. It is
