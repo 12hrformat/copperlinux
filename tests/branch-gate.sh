@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Ten gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
+# Nine gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
 # persist.sh and shutdown-gate.sh need root, because they exercise sockets,
 # staged rootfs trees, the hotfix database, a mount namespace and a private
 # /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh does
 # not — its install lands in a scratch INGOT_ROOT and its repo is served on
-# localhost — and wifi-gate.sh does not either — it drives copper-wifi against
-# scratch directories and stub binaries — so both run unprivileged too.
-# xprobe-gate.sh needs a C compiler and python3, which CI and the build VM
-# have, and skips cleanly where neither exists. CI runs this same file with
-# sudo, so a green build there means every gate ran and none were skipped.
+# localhost — so it runs unprivileged too. xprobe-gate.sh needs a C compiler
+# and python3, which CI and the build VM have, and skips cleanly where neither
+# exists. CI runs this same file with sudo, so a green build there means every
+# gate ran and none were skipped.
 #
 # This file used to carry known-failure classifications: the CI workflow came
 # over from `untested`, and on the old `gui` tree two of its tests failed
@@ -204,26 +203,6 @@ else
     nfail=$(printf '%s\n' "$out" | grep -c '^  FAIL ' || true)
     record ingot-gate.sh bad "exit $? with $nfail failed assertions"
     printf '%s\n' "$out" | grep -E '^  FAIL |^    summary' | sed 's/^/    /'
-fi
-
-# ---------------------------------------------------------------------------
-echo
-echo "--- tests/wifi-gate.sh: copper-wifi's config add/forget handling ---"
-# No root: the script takes every path from COPPER_WIFI_* variables, so the gate
-# points the real file at a scratch config and stub binaries. What it proves is
-# the part that fails silently on a laptop -- `forget` removing exactly the
-# network asked for, and `add` refusing an ssid that would corrupt the file.
-if out=$(bash tests/wifi-gate.sh 2>&1); then
-    case "$out" in
-        *SKIPPED*)
-            record wifi-gate.sh skipped "no POSIX shell to drive copper-wifi" ;;
-        *)
-            n=$(printf '%s' "$out" | grep -c '^  ok' || true)
-            record wifi-gate.sh ok "$n checks" ;;
-    esac
-else
-    record wifi-gate.sh bad "a copper-wifi check failed"
-    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@
 #   copper charge --backup   take a restore point and stop
 #   copper rollback          show what can be restored
 #   copper rollback --latest put the last restore point back
-#   copper wifi              scan for, join and forget wireless networks
 #   copper version           what this build is
 #   copper help              this list
 #
@@ -29,13 +28,11 @@ export COPPER_CONFIG
 SELF_DIR=$(dirname "$0")
 CHARGE="$SELF_DIR/copper-charge"
 ROLLBACK="$SELF_DIR/copper-rollback"
-WIFI="$SELF_DIR/copper-wifi"
 
 # Fall back to the installed location when the tools are not beside this one,
 # which is the case when copper itself has been copied somewhere else.
 [ -x "$CHARGE" ]   || CHARGE=/usr/bin/copper-charge
 [ -x "$ROLLBACK" ] || ROLLBACK=/usr/bin/copper-rollback
-[ -x "$WIFI" ]     || WIFI=/usr/bin/copper-wifi
 
 die() {
     echo "copper: $*" >&2
@@ -52,16 +49,10 @@ cmd_rollback() {
     exec "$ROLLBACK" "$@"
 }
 
-cmd_wifi() {
-    [ -x "$WIFI" ] || die "copper-wifi is missing from $WIFI"
-    exec "$WIFI" "$@"
-}
-
 cmd_version() {
     echo "Copper Linux v0.1.0-dev"
     echo "  charge   /usr/bin/copper-charge"
     echo "  rollback /usr/bin/copper-rollback"
-    echo "  wifi     /usr/bin/copper-wifi"
     echo "  shell    /usr/bin/copper-sh"
 }
 
@@ -75,11 +66,6 @@ usage: copper <command> [args...]
   rollback              list restore points and the files in them
   rollback --latest     restore the most recent one
   rollback <name>       restore a named one
-  wifi list             scan for nearby wireless networks
-  wifi add SSID [PASS]  remember a network (needs root)
-  wifi up               (re)connect the radio and ask for a lease
-  wifi status           show the supplicant's state
-  wifi forget SSID      remove a remembered network
   version               version and tool paths
   help                  this text
 
@@ -95,7 +81,6 @@ EOF
 case "$1" in
     charge)            shift; cmd_charge "$@" ;;
     rollback|undo)     shift; cmd_rollback "$@" ;;
-    wifi)              shift; cmd_wifi "$@" ;;
     version|--version|-v) cmd_version ;;
     help|--help|-h)    cmd_help ;;
     *)                 die "unknown command '$1' (try: copper help)" ;;

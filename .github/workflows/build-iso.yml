@@ -56,8 +56,7 @@ jobs:
           for s in tests/smoke.sh tests/charge.sh tests/account-gate.sh \
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
-                   tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
-                   tests/wifi-gate.sh; do
+                   tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -149,14 +148,6 @@ jobs:
 
       - name: Build the command line tools
         run: sudo bash iso/build.sh tools
-
-      # Wireless: wpa_supplicant built static against musl (with libnl), plus a
-      # curated subset of linux-firmware. Its own step for the same reason as
-      # gui below -- it downloads at build time (a kernel source and the
-      # firmware package), and a failure should name the line that asked for
-      # them rather than hiding inside "Make the ISO".
-      - name: Build wireless support (wpa_supplicant + firmware)
-        run: sudo bash iso/build.sh wifi
 
       - name: Build Copper's own binaries
         run: sudo bash iso/build.sh copper

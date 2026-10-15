@@ -52,47 +52,6 @@ Boot entries in GRUB:
 
 ---
 
-## Wireless
-
-There is no NetworkManager. On a machine with no wired connection, boot starts
-`wpa_supplicant` against `/etc/wpa_supplicant/wpa_supplicant.conf` and then asks
-`udhcpc` for an address, so a laptop joins the network it was last given before
-anyone logs in. `copper wifi` (or `copper-wifi`) manages that file:
-
-| Command | What it does |
-|---|---|
-| `copper wifi interfaces` | List the wireless interfaces. |
-| `copper wifi list` | Scan and list nearby networks. |
-| `copper wifi wlan0 scan` | Ask the radio for a scan. |
-| `copper wifi wlan0 get-networks` | Show what the last scan found. |
-| `copper wifi wlan0 connect SSID [PASS]` | Remember a network and bring the interface up. |
-| `copper wifi wlan0 show` | Show the supplicant's state on that interface. |
-| `copper wifi wlan0 disconnect` | Drop the radio. |
-| `copper wifi add SSID [PASS]` | Remember a network. Without `PASS` it is joined as an open one. |
-| `copper wifi up` | (Re)start the radio and ask for a lease now. |
-| `copper wifi status` | Show the supplicant's state. |
-| `copper wifi forget SSID` | Remove a remembered network. |
-
-The interface-then-action shape is `iwctl`'s, minus the `station` keyword: name
-the interface first, or leave it out and the first radio is used. Running
-`copper wifi` with no arguments and a terminal opens the same commands as an
-interactive prompt.
-
-`add` runs `wpa_passphrase`, so the passphrase itself is never written to disk —
-only the derived `psk`. A passphrase `wpa_passphrase` refuses is rejected before
-the file is touched, so a bad one cannot leave a half-written block behind.
-Writing needs root.
-
-The kernel carries `CFG80211`/`MAC80211` and a driver per vendor family. The
-firmware those drivers load ships as a curated subset of `linux-firmware` plus
-`wireless-regdb` (the regulatory database is a separate package), kept in the
-zstd-compressed form Ubuntu ships it. None of it has been tried against a real
-radio yet — QEMU has no 802.11 adapter — so treat the driver list as "enabled",
-not "verified". `tests/wifi-gate.sh` covers the config file handling, which is
-the part that breaks quietly.
-
----
-
 Run it locally with:
 
 ```sh

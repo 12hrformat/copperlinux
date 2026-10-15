@@ -215,59 +215,6 @@ require_kernel_config() {
     exit 1
   fi
 
-  # Wireless.
-
-  # The same trap as the display drivers above, and the same answer: kconfig
-  # accepts --enable WLAN without complaint and olddefconfig can drop it, so
-  # every symbol the feature needs is asserted =y rather than trusted.
-  #
-  # The core is WLAN, CFG80211 (the nl80211 interface wpa_supplicant talks to)
-  # and MAC80211 (the soft-MAC layer the drivers below sit on); RFKILL is how a
-  # soft-blocked radio is cleared. The firmware loader is here because nothing
-  # with an 802.11 radio runs without firmware out of /lib/firmware, and the
-  # stage that ships that firmware is build_wifi.
-  #
-  # The drivers are one line per vendor family the image is likely to meet, on
-  # the same reasoning as the display list: a machine with no matching driver
-  # should be a gap in this list rather than a surprise at boot. What is
-  # requested here has been through olddefconfig against this exact kernel, so
-  # a symbol that does not exist or whose dependencies are unmet is not in this
-  # list to start with -- asking for it and asserting it would fail the build
-  # for a symbol that was never going to be there.
-  #
-  # What is *not* here, and why: the mt76x0/mt76x2 USB and PCI dongles, the
-  # libertas and p54 USB stacks, and the staging r8188eu/r8712u drivers all
-  # drop out of olddefconfig on this kernel for unmet dependencies. Newer
-  # MediaTek USB parts are covered by MT7921U, and the older Realtek USB parts
-  # by RTL8XXXU, so the gap is narrow. Adding one back means finding the symbol
-  # whose dependency was missing, not just re-adding the name.
-  for sym in WLAN CFG80211 CFG80211_WEXT CFG80211_CRDA_SUPPORT \
-             MAC80211 MAC80211_MESH RFKILL FW_LOADER FW_LOADER_USER_HELPER \
-             FW_LOADER_COMPRESS FW_LOADER_COMPRESS_ZSTD \
-             USB USB_XHCI_HCD USB_EHCI_HCD USB_OHCI_HCD USB_UHCI_HCD \
-             WLAN_VENDOR_INTEL IWLWIFI IWLMVM IWLDVM \
-             WLAN_VENDOR_ATH ATH9K ATH9K_PCI ATH9K_HTC \
-             ATH10K ATH10K_PCI ATH10K_USB ATH11K ATH11K_PCI ATH12K \
-             CARL9170 AR5523 \
-             WLAN_VENDOR_RALINK RT2X00 RT2800PCI RT2800USB RT2500USB RT73USB \
-             WLAN_VENDOR_REALTEK RTL8187 RTL8XXXU RTLWIFI \
-             RTL8192CE RTL8192CU RTL8192DE RTL8192SE \
-             RTW88 RTW88_8822BE RTW88_8822CE RTW88_8822BU \
-             RTW89 RTW89_8852AE RTW89_8852BE RTW89_8852CE \
-             WLAN_VENDOR_MEDIATEK MT7601U MT7921E MT7921U MT7915E \
-             WLAN_VENDOR_MARVELL MWIFIEX MWIFIEX_PCIE MWIFIEX_USB \
-             WLAN_VENDOR_BROADCOM BRCMFMAC BRCMFMAC_PCIE BRCMFMAC_USB \
-             WLAN_VENDOR_ATMEL AT76C50X_USB ZD1211RW ; do
-    grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
-  done
-  if [ -n "$missing" ]; then
-    echo "kernel: wireless needs these, and they did not survive" >&2
-    echo "        olddefconfig:$missing" >&2
-    echo "        Without them the wifi stage stages a supplicant with no" >&2
-    echo "        radio to talk to. This build would boot with no WiFi." >&2
-    exit 1
-  fi
-
   echo "kernel: config looks fit to boot, to reach the network, and to draw"
 }
 
@@ -328,34 +275,7 @@ build_kernel() {
       --enable DRM_QXL --enable DRM_VBOXVIDEO \
       --enable DRM_I915 \
       --enable FB --enable FB_VESA --enable FB_EFI \
-      --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16 \
-      --enable WLAN --enable CFG80211 --enable CFG80211_WEXT \
-      --enable CFG80211_CRDA_SUPPORT --enable MAC80211 --enable MAC80211_MESH \
-      --enable RFKILL --enable FW_LOADER --enable FW_LOADER_USER_HELPER \
-      --enable FW_LOADER_COMPRESS --enable FW_LOADER_COMPRESS_ZSTD \
-      --enable USB --enable USB_XHCI_HCD --enable USB_EHCI_HCD \
-      --enable USB_OHCI_HCD --enable USB_UHCI_HCD \
-      --enable WLAN_VENDOR_INTEL --enable IWLWIFI --enable IWLMVM --enable IWLDVM \
-      --enable WLAN_VENDOR_ATH --enable ATH9K --enable ATH9K_PCI --enable ATH9K_HTC \
-      --enable ATH10K --enable ATH10K_PCI --enable ATH10K_USB \
-      --enable ATH11K --enable ATH11K_PCI --enable ATH12K \
-      --enable CARL9170 --enable AR5523 \
-      --enable WLAN_VENDOR_RALINK --enable RT2X00 --enable RT2800PCI \
-      --enable RT2800USB --enable RT2500USB --enable RT73USB \
-      --enable WLAN_VENDOR_REALTEK --enable RTL8187 --enable RTL8XXXU \
-      --enable RTLWIFI --enable RTL8192CE --enable RTL8192CU \
-      --enable RTL8192DE --enable RTL8192SE \
-      --enable RTW88 --enable RTW88_8822BE --enable RTW88_8822CE \
-      --enable RTW88_8822BU \
-      --enable RTW89 --enable RTW89_8852AE --enable RTW89_8852BE \
-      --enable RTW89_8852CE \
-      --enable WLAN_VENDOR_MEDIATEK --enable MT7601U --enable MT7921E \
-      --enable MT7921U --enable MT7915E \
-      --enable WLAN_VENDOR_MARVELL --enable MWIFIEX --enable MWIFIEX_PCIE \
-      --enable MWIFIEX_USB \
-      --enable WLAN_VENDOR_BROADCOM --enable BRCMFMAC --enable BRCMFMAC_PCIE \
-      --enable BRCMFMAC_USB \
-      --enable WLAN_VENDOR_ATMEL --enable AT76C50X_USB --enable ZD1211RW
+      --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16
     # vmxnet3 was renamed at some point around 6.12; asking for both names
     # costs nothing, since kconfig drops whichever one doesn't exist.
     #
@@ -527,9 +447,8 @@ require_bb_config() {
       WGET FEATURE_WGET_HTTPS FEATURE_WGET_OPENSSL NSLOOKUP \
       MOUNT UMOUNT SWITCH_ROOT HOSTNAME \
       BLKID FEATURE_BLKID_TYPE GREP \
-      CAT SED AWK PRINTF SLEEP KILL \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP \
-      CHPASSWD FEATURE_SHADOWPASSWDS RFKILL ; do
+      CHPASSWD FEATURE_SHADOWPASSWDS ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -572,11 +491,6 @@ build_busybox() {
     set_bb_config FEATURE_ADDUSER_TO_GROUP
     set_bb_config FEATURE_SHADOWPASSWDS
     set_bb_config FEATURE_INSTALLER
-    # rfkill is how copper-init clears a soft-blocked radio before it starts
-    # wpa_supplicant. Without it a laptop whose WiFi was turned off (soft) in
-    # another OS comes up with the interface present but unable to associate,
-    # and nothing in the log says why.
-    set_bb_config RFKILL
     # the tc applet needs CBQ traffic-class kernel UAPI (TCA_CBQ_* and
     # struct tc_cbq_*) that newer kernel headers removed, so it fails to
     # compile against the runner's headers. Copper ships no traffic
@@ -630,208 +544,6 @@ build_tools() {
 }
 
 # ---------------------------------------------------------------
-# 4b. wireless: wpa_supplicant (static musl) + firmware blobs
-# ---------------------------------------------------------------
-# Copper has no NetworkManager and no systemd, so joining a WPA network is
-# wpa_supplicant's job. The live userland is musl, and the host's
-# wpa_supplicant is a glibc binary, so the image needs its own static build of
-# it -- the same reasoning as the standard command suite above.
-#
-# Three things this stage had to get right, each found by building it rather
-# than assuming:
-#
-#   * musl ships no kernel UAPI headers, so under musl-gcc <linux/nl80211.h>
-#     and <asm/types.h> do not exist at all, and libnl dies on the second of
-#     them. A shim directory of symlinks into the host's linux-libc-dev headers
-#     is passed with -idirafter, so musl's own headers always win and only the
-#     kernel headers come from the shim (asm/ also needs asm-generic/).
-#   * wpa_supplicant's nl80211 driver links libnl, which is not on the machine
-#     in a musl build either. libnl is built static into a stage prefix first
-#     and located through PKG_CONFIG_PATH.
-#   * wpa_supplicant defaults CONFIG_TLS to openssl. Nothing here needs a TLS
-#     stack (WPA2-PSK uses the internal crypto), and pulling openssl in would
-#     drag a glibc library into a static musl binary, so TLS is internal.
-#
-# The firmware is a curated subset of Ubuntu's linux-firmware, not the whole
-# package: the full set is over a gigabyte and most of it is GPUs, Bluetooth,
-# DSPs and set-top boxes. The list below is the radio firmware for the chipsets
-# the kernel section enables; a chip whose driver is built in but whose
-# firmware is missing comes up as an interface that scans nothing, which is a
-# gap in this list rather than a mystery.
-#
-# Two facts about that package cost real time, and are written here so the next
-# person does not pay them again:
-#
-#   * Ubuntu ships every blob in it zstd-compressed, as <name>.zst. A kernel
-#     without FW_LOADER_COMPRESS_ZSTD looks only for <name>, finds nothing and
-#     fails the load with -ENOENT for every radio -- with the driver present
-#     and the file visible in the image, which reads like anything but a kernel
-#     option. The flag is therefore asserted in require_kernel_config(), and
-#     the subset keeps the .zst suffix it was shipped with rather than
-#     decompressing on the build host (that would only inflate the ISO).
-#   * the regulatory database cfg80211 reads at startup is NOT in
-#     linux-firmware. It belongs to wireless-regdb, a package with no
-#     dependency in either direction, so both are downloaded below.
-build_wifi() {
-  if [ -x "$TGT/usr/sbin/wpa_supplicant" ] \
-     && [ -e "$TGT/lib/firmware/regulatory.db" ] \
-     && stamped_skip "$WORK/wifi.stamp" "$SELF"; then
-    echo "wifi: already built, skipping"; return
-  fi
-  echo "==> wireless (wpa_supplicant + firmware)"
-  local UAPI="$WORK/uapi" WP="$WORK/wifi-prefix"
-  local LT LD WT WD
-  rm -rf "$UAPI" "$WP"; mkdir -p "$UAPI" "$WP"
-  ln -sfn /usr/include/linux        "$UAPI/linux"
-  ln -sfn /usr/include/asm-generic  "$UAPI/asm-generic"
-  # asm/ lives under the multiarch directory on Debian/Ubuntu. Ask the compiler
-  # for the triple rather than hard-coding it; fall back to the usual path.
-  ln -sfn "/usr/include/$(gcc -dumpmachine)/asm" "$UAPI/asm" 2>/dev/null
-  [ -e "$UAPI/asm" ] || ln -sfn /usr/include/x86_64-linux-gnu/asm "$UAPI/asm"
-  [ -e "$UAPI/asm" ] || { echo "wifi: no asm/ headers for the musl UAPI shim" >&2; exit 1; }
-
-  # --- libnl -----------------------------------------------------------------
-  LT=$(fetch "https://github.com/thom311/libnl/releases/download/libnl3_11_0/libnl-3.11.0.tar.gz")
-  LD=$(unpack "$LT")
-  pushd "$LD" >/dev/null
-    CC=musl-gcc CFLAGS="-O2 -fPIC -idirafter $UAPI" \
-      ./configure --host=x86_64-linux-musl --prefix="$WP" \
-        --disable-shared --enable-static
-    make -j"$JOBS"
-    make install
-  popd >/dev/null
-  [ -e "$WP/lib/pkgconfig/libnl-3.0.pc" ] \
-    || { echo "wifi: libnl did not install its pkg-config files" >&2; exit 1; }
-
-  # --- wpa_supplicant --------------------------------------------------------
-  WT=$(fetch "https://w1.fi/releases/wpa_supplicant-2.11.tar.gz")
-  WD=$(unpack "$WT")
-  pushd "$WD/wpa_supplicant" >/dev/null
-    cat > .config <<'EOF'
-CONFIG_BACKEND=file
-CONFIG_DRIVER_NL80211=y
-CONFIG_LIBNL32=y
-CONFIG_CTRL_IFACE=y
-CONFIG_IEEE80211N=y
-CONFIG_TLS=internal
-CONFIG_INTERNAL_LIBTOMMATH=y
-EOF
-    PKG_CONFIG_PATH="$WP/lib/pkgconfig" \
-    CC=musl-gcc \
-    CFLAGS="-O2 -idirafter $UAPI -I$WP/include -I$WP/include/libnl3" \
-    LDFLAGS="-static -L$WP/lib" \
-      make -j"$JOBS" wpa_supplicant wpa_cli wpa_passphrase
-    install -m 0755 wpa_supplicant wpa_cli wpa_passphrase "$TGT/usr/sbin/"
-  popd >/dev/null
-  for f in wpa_supplicant wpa_cli wpa_passphrase; do
-    [ -x "$TGT/usr/sbin/$f" ] || { echo "wifi: $f did not build" >&2; exit 1; }
-  done
-
-  # --- firmware --------------------------------------------------------------
-  #
-  # linux-firmware for the radio blobs, wireless-regdb for the regulatory
-  # database: two packages, no dependency between them, and a radio needs both.
-  #
-  # linux-firmware is a *metapackage* on noble: the 1816-byte .deb carries no
-  # files, and apt pulls the blobs in as split subpackages (linux-firmware-intel-
-  # wireless, linux-firmware-realtek, ...). Unpacking only the metapackage leaves
-  # $FST empty and the assertion below stops the build, so every .deb apt
-  # downloaded is unpacked, the same way the gui and drivers stages do it.
-  #
-  # --download-only against an EMPTY dpkg status, exactly as the gui stage does
-  # below and for exactly the same reason: a build host has both packages
-  # installed already, and apt asked about the host's own status answers
-  # "already the newest version" and fetches nothing. The empty status makes apt
-  # resolve and download them regardless of what the host carries, and the
-  # assertions after the unpack prove the trees really arrived.
-  local FD="$DL/firmware" FST="$WORK/firmware-root" status="$WORK/wifi-status"
-  mkdir -p "$FD" "$TGT/lib/firmware"
-  : > "$status"
-  apt-get update -qq
-  apt-get -o Dir::State::status="$status" \
-    -o Dir::Cache::archives="$FD" \
-    -o APT::Sandbox::User=root \
-    --download-only --no-install-recommends -y \
-      install linux-firmware wireless-regdb
-  rm -rf "$FST"; mkdir -p "$FST"
-  for deb in "$FD"/*.deb; do
-    [ -e "$deb" ] || continue
-    dpkg-deb -x "$deb" "$FST"
-  done
-  [ -d "$FST/lib/firmware" ] \
-    || { echo "wifi: linux-firmware did not unpack; no radio firmware would ship" >&2; exit 1; }
-
-  # Directories copied whole: one per vendor whose driver this kernel enables.
-  # (The names are the package's, not always the driver's: ZD1211RW reads from
-  # zd1211/, and mt76 -- MediaTek's PCI/USB driver -- reads from mediatek/.)
-  local d
-  for d in ath9k_htc ath10k ath11k ath12k rtlwifi rtw88 rtw89 \
-           brcm mediatek mrvl zd1211 ; do
-    [ -d "$FST/lib/firmware/$d" ] || continue
-    rm -rf "$TGT/lib/firmware/$d"
-    cp -a "$FST/lib/firmware/$d" "$TGT/lib/firmware/"
-  done
-  # Intel is the one vendor the package nests. The real blobs live in
-  # intel/iwlwifi/ and the root iwlwifi-*.ucode.zst names are symlinks pointing
-  # into it, so copying only those links stages dangling links, which the
-  # assertion below then reports as a missing blob. The real directory comes
-  # along too and the links resolve to it.
-  if [ -d "$FST/lib/firmware/intel/iwlwifi" ]; then
-    mkdir -p "$TGT/lib/firmware/intel"
-    rm -rf "$TGT/lib/firmware/intel/iwlwifi"
-    cp -a "$FST/lib/firmware/intel/iwlwifi" "$TGT/lib/firmware/intel/"
-  fi
-  # The rest is loose at the root of the tree. Spelled out one by one rather
-  # than globbed, because the globs that look natural ('rt*.bin') miss the .zst
-  # suffix and quietly stage nothing. These are the exact names the enabled
-  # drivers request: Intel iwlwifi, the Ralink/rt2x00 parts, the single-file
-  # MediaTek/Atheros/Atmel/Realtek USB ones, and wireless-regdb.
-  local pat
-  for pat in 'iwlwifi-*.ucode.zst' 'iwlwifi-*.pnvm.zst' \
-             'rt2561.bin.zst' 'rt2561s.bin.zst' 'rt2661.bin.zst' \
-             'rt2860.bin.zst' 'rt2870.bin.zst' 'rt3070.bin.zst' \
-             'rt3071.bin.zst' 'rt3090.bin.zst' 'rt3290.bin.zst' 'rt73.bin.zst' \
-             'mt7601u.bin.zst' 'ar5523.bin.zst' 'carl9170-1.fw.zst' \
-             'atmel_at76c50*.bin.zst' \
-             'regulatory.db' 'regulatory.db.p7s'; do
-    for f in "$FST/lib/firmware/"$pat; do
-      [ -e "$f" ] || continue
-      cp -a "$f" "$TGT/lib/firmware/"
-    done
-  done
-  # The licences travel with the blobs they cover. Small and gzipped: a live
-  # image that redistributes firmware should carry the terms for it.
-  if [ -d "$FST/usr/share/doc/linux-firmware" ]; then
-    mkdir -p "$TGT/usr/share/doc"
-    rm -rf "$TGT/usr/share/doc/linux-firmware"
-    cp -a "$FST/usr/share/doc/linux-firmware" "$TGT/usr/share/doc/"
-  fi
-  if [ -d "$FST/usr/share/doc/wireless-regdb" ]; then
-    mkdir -p "$TGT/usr/share/doc"
-    rm -rf "$TGT/usr/share/doc/wireless-regdb"
-    cp -a "$FST/usr/share/doc/wireless-regdb" "$TGT/usr/share/doc/"
-  fi
-  # A radio with no firmware is an interface that scans nothing, and a missing
-  # regulatory database is a radio that transmits on the wrong terms. Both fail
-  # the build here rather than on a laptop. The .zst names are asserted on
-  # purpose: this is exactly where the compression mistake would otherwise pass
-  # green, because every non-.zst check below it is satisfied by files that the
-  # kernel cannot open.
-  [ -e "$TGT/lib/firmware/regulatory.db" ] \
-    || { echo "wifi: regulatory.db is missing (wireless-regdb did not unpack)" >&2; exit 1; }
-  local sf
-  for sf in "$TGT/lib/firmware/iwlwifi-"*.ucode.zst \
-            "$TGT/lib/firmware/rtlwifi/"*.bin.zst \
-            "$TGT/lib/firmware/mediatek/"*.bin.zst \
-            "$TGT/lib/firmware/rt2870.bin.zst" ; do
-    [ -e "$sf" ] || { echo "wifi: $sf is missing; that radio would scan nothing" >&2; exit 1; }
-  done
-  echo "    firmware staged: $(du -sh "$TGT/lib/firmware" | cut -f1), $(find "$TGT/lib/firmware" -name '*.zst' | wc -l) compressed blobs"
-
-  stamp_set "$WORK/wifi.stamp" "$SELF"
-}
-
-# ---------------------------------------------------------------
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
 build_copper() {
@@ -839,12 +551,10 @@ local SRC="$ROOT/../src"
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
      && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
-     && [ -x "$TGT/usr/bin/copper-wifi" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
         "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
-        "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh" \
-        "$ROOT/copper-wifi.sh"
+        "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
   then
     echo "copper: already built, skipping"; return
   fi
@@ -876,11 +586,6 @@ local SRC="$ROOT/../src"
   # command-not-found from copper-sh.
   install -m 0755 "$ROOT/startxfce.sh" "$TGT/usr/bin/startxfce"
 
-  # copper-wifi is the front end for wpa_supplicant. It ships before the wifi
-  # stage does, for the same reason startxfce ships before XFCE: a command that
-  # explains the radio is missing beats one that does not exist.
-  install -m 0755 "$ROOT/copper-wifi.sh" "$TGT/usr/bin/copper-wifi"
-
   # shutdown: busybox has no such applet, so `sudo shutdown now` had nothing
   # to run. The wrapper maps its flags onto the busybox halt/poweroff/reboot
   # applets, which signal PID 1; see on_power_signal() in copper-init.c.
@@ -893,7 +598,6 @@ local SRC="$ROOT/../src"
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
            usr/bin/startxfce usr/bin/xprobe sbin/shutdown \
-           usr/bin/copper-wifi \
            usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -914,8 +618,7 @@ local SRC="$ROOT/../src"
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
     "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
-    "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh" \
-    "$ROOT/copper-wifi.sh"
+    "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 
 # ---------------------------------------------------------------
@@ -1167,7 +870,7 @@ assert_shell_scripts_parse() {
   if [ -n "$posix" ]; then
     local n_posix=0
     for f in iso/copper.sh iso/copper-charge.sh iso/copper-rollback.sh \
-             iso/copper-wifi.sh iso/rootfs-overlay/usr/bin/ingot; do
+             iso/rootfs-overlay/usr/bin/ingot; do
       [ -f "$REPO/$f" ] || {
         echo "build: $f is missing, so the POSIX check cannot run on it" >&2
         bad=1; continue; }
@@ -1183,8 +886,8 @@ assert_shell_scripts_parse() {
     # check at all, because it reads like the busybox tools were verified.
     # This loop was skipping all three over a wrong path, and `[ -f ] ||
     # continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 5 ] || {
-      echo "build: the POSIX check covered $n_posix of 5 busybox tools" >&2; exit 1; }
+    [ "$n_posix" -eq 4 ] || {
+      echo "build: the POSIX check covered $n_posix of 4 busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
@@ -1905,7 +1608,6 @@ full() {
   build_musl
   build_busybox
   build_tools
-  build_wifi
   build_copper
   build_rootfs
   build_gui
@@ -1919,16 +1621,15 @@ case "$STAGE" in
   kernel)     build_kernel ;;
   base)       build_musl; build_busybox ;;
   tools)      build_musl; build_tools ;;
-  wifi)       build_musl; build_wifi ;;
   copper)     build_musl; build_copper ;;
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
   plymouth)   build_rootfs; build_gui; build_plymouth ;;
   sudo)       build_rootfs; build_gui; build_plymouth; build_sudo ;;
   initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_wifi; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs; build_iso ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|wifi|copper|rootfs|gui|plymouth|sudo|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|plymouth|sudo|initramfs|iso|all)"; exit 2 ;;
 esac
 
 echo "==> done"

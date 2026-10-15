@@ -87,12 +87,11 @@ static void say(const char *fmt, ...) {
     }
 }
 
-/* ARPHRD_ETHER, from linux/if_arp.h. Spelled out rather than included: this
-   builds against musl, which does not ship the kernel UAPI headers, and one
-   number is not worth a build dependency. A wireless station interface
-   reports this same value, which is why wireless is told apart by sysfs and
-   not by the type -- see is_wireless(). */
+/* ARPHRD_* link-layer types, from linux/if_arp.h. Spelled out rather than
+   included: this builds against musl, which does not ship the kernel UAPI
+   headers, and two numbers are not worth a build dependency. */
 #define ARPHRD_ETHER             1
+#define ARPHRD_IEEE80211_RADIOTAP 801
 
 /* Link-layer type of an interface, or -1 if it cannot be read.
    /sys/class/net/<if>/type is the ARPHRD_* value in decimal. */
@@ -117,53 +116,39 @@ static int iface_type(const char *ifname) {
     return (int)v;
 }
 
-/* Whether sysfs says this interface is wireless.
-
-   A managed wireless interface reports ARPHRD_ETHER, exactly like a wired
-   NIC, so the link-layer type cannot tell them apart -- and the difference
-   matters: handing a wired interface to udhcpc is the whole job, but a
-   wireless one must be associated first or the DHCP client just broadcasts
-   into nothing. cfg80211 creates a `wireless` directory under the
-   interface's sysfs entry, and that is the one honest test. */
-static int is_wireless(const char *ifname) {
-    char path[96];
-    struct stat st;
-
-    snprintf(path, sizeof path, "/sys/class/net/%s/wireless", ifname);
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-}
-
 /* First interface worth handing to DHCP, or NULL.
-
-   `want_wireless` picks between the two kinds: 0 for a wired interface, 1 for
-   a wireless one. Not simply the first non-loopback name in the directory:
-   with MODULES=n every driver is built in, and several of them invent an
-   interface at boot before the real NIC has finished probing. The sit
-   module's sit0 is one, and handing DHCP a tunnel means broadcasting
-   discover into nowhere. So ask sysfs what the interface actually is, and
-   only take something with a real link layer. */
-static const char *first_iface(int want_wireless) {
+   Not simply the first non-loopback name in the directory: with MODULES=n
+   every driver is built in, and several of them invent an interface at boot
+   before the real NIC has finished probing. The sit module's sit0 is one,
+   and handing DHCP a tunnel means broadcasting discover into nowhere. So ask
+   sysfs what the interface actually is, and only take something with a real
+   link layer. Wired first, wireless second — a box with both should use the
+   wire. */
+static const char *first_nonloop_iface(void) {
+    static const int prefs[] = { ARPHRD_ETHER, ARPHRD_IEEE80211_RADIOTAP };
     static char name[IFNAMSIZ];
     struct dirent *ent;
-    DIR *dir = opendir("/sys/class/net");
+    DIR *dir;
+    size_t pass;
 
-    if (!dir)
-        return NULL;
-    while ((ent = readdir(dir)) != NULL) {
-        size_t len = strlen(ent->d_name);
-        /* d_name is far wider than an interface name, so anything that
-           long is not one. */
-        if (len == 0 || len >= sizeof name || ent->d_name[0] == '.')
-            continue;
-        if (iface_type(ent->d_name) != ARPHRD_ETHER)
-            continue;
-        if (is_wireless(ent->d_name) != want_wireless)
-            continue;
-        memcpy(name, ent->d_name, len + 1);
+    for (pass = 0; pass < sizeof prefs / sizeof prefs[0]; pass++) {
+        dir = opendir("/sys/class/net");
+        if (!dir)
+            return NULL;
+        while ((ent = readdir(dir)) != NULL) {
+            size_t len = strlen(ent->d_name);
+            /* d_name is far wider than an interface name, so anything that
+               long is not one. */
+            if (len == 0 || len >= sizeof name || ent->d_name[0] == '.')
+                continue;
+            if (iface_type(ent->d_name) != prefs[pass])
+                continue;
+            memcpy(name, ent->d_name, len + 1);
+            closedir(dir);
+            return name;
+        }
         closedir(dir);
-        return name;
     }
-    closedir(dir);
     return NULL;
 }
 
@@ -204,87 +189,32 @@ static void start_dhcp(const char *ifname) {
     _exit(127);
 }
 
-/* Clear a soft radio block, best effort.
-
-   A laptop whose WiFi was switched off in the OS it came from boots with the
-   radio soft-blocked, and a supplicant pointed at a blocked radio associates
-   with nothing while reporting nothing. busybox's rfkill applet is the short
-   way to the /dev/rfkill ioctl; if it is missing the fork just exits 127 and
-   association is left to whatever state the firmware is already in. */
-static void rfkill_unblock(void) {
-    pid_t pid = fork();
-
-    if (pid != 0)
-        return;
-    setenv("PATH", "/sbin:/usr/sbin:/bin:/usr/bin", 1);
-    execl("/sbin/rfkill", "rfkill", "unblock", "all", (char *)NULL);
-    _exit(127);
-}
-
-/* Start wpa_supplicant on a wireless interface. It stays in the foreground of
-   its fork rather than daemonizing with -B: a -B child exits immediately and
-   PID 1, which reaps nothing, would be left a zombie. The -P pidfile is the
-   same one copper-wifi looks for, so the two agree on what is running. */
-static void start_wpa(const char *ifname) {
-    char pidfile[80];
-    pid_t pid = fork();
-
-    if (pid != 0)
-        return;
-    setenv("PATH", "/sbin:/usr/sbin:/bin:/usr/bin", 1);
-    snprintf(pidfile, sizeof pidfile, "/run/wpa_supplicant.%s.pid", ifname);
-    execl("/usr/sbin/wpa_supplicant", "wpa_supplicant",
-          "-i", ifname,
-          "-c", "/etc/wpa_supplicant/wpa_supplicant.conf",
-          "-D", "nl80211",
-          "-P", pidfile,
-          (char *)NULL);
-    _exit(127);
-}
-
 /* Nobody has logged in yet, but the box should already be online: raise the
    interface and let DHCP sort out the address, the default route and the
    resolver. Runs in the background, so a slow or absent DHCP server never
-   holds up the first-boot wizard.
-
-   A wired interface is the easy case. A wireless one needs the radio cleared,
-   wpa_supplicant started against /etc/wpa_supplicant/wpa_supplicant.conf, and
-   then DHCP -- udhcpc runs with -b and retries, so a lease is simply not
-   obtained until association finishes, with no wait of our own. */
+   holds up the first-boot wizard. */
 static void bring_up_network(void) {
     char ifname[IFNAMSIZ] = "";
-    const char *found;
-    int tries, wireless = 0;
+    int tries;
 
     /* The kernel is done probing before it runs us, but a freshly attached
-       VMware NIC can land a moment later. Give the wire a couple of seconds
-       before deciding this machine has no wired network. */
+       VMware NIC can land a moment later. Give the bus a couple of seconds
+       before deciding this machine has no network. */
     for (tries = 0; tries < 20 && !ifname[0]; tries++) {
-        found = first_iface(0);
+        const char *found = first_nonloop_iface();
         if (found)
             snprintf(ifname, sizeof ifname, "%s", found);
         else
             usleep(100 * 1000);
     }
-    /* No wire. Fall back to the radio, if there is one. */
-    if (!ifname[0] && (found = first_iface(1)) != NULL) {
-        snprintf(ifname, sizeof ifname, "%s", found);
-        wireless = 1;
-    }
     if (!ifname[0]) {
         say("no network interface, skipping DHCP");
         return;
-    }
-    if (wireless) {
-        rfkill_unblock();
-        say("%s is wireless, starting wpa_supplicant", ifname);
     }
     if (link_up(ifname) != 0) {
         say("could not bring up %s, skipping DHCP", ifname);
         return;
     }
-    if (wireless)
-        start_wpa(ifname);
     say("%s is up, asking DHCP for an address", ifname);
     start_dhcp(ifname);
 }
