@@ -1506,7 +1506,14 @@ build_iso() {
   # run root-owned -- that is what -r enforced -- so pin it. Only entries that
   # are not already root:root are touched, because chown clears setuid on
   # regular files and sudo (4755, root:root) has to keep its bit.
-  find "$TGT" \( ! -uid 0 -o ! -gid 0 \) -exec chown 0:0 {} +
+  #
+  # -h because the closure is full of symlinks -- icon themes, the doc and man
+  # alternates, firmware -- and this chown runs on the host, not in the chroot.
+  # A dangling link fails with "cannot dereference", and an absolute one would
+  # chown the matching path on the RUNNER instead of the tree; -h changes the
+  # link itself and never leaves $TGT. A failing -exec also makes find exit
+  # non-zero, which is how this took the iso stage down on a warm cache.
+  find "$TGT" \( ! -uid 0 -o ! -gid 0 \) -exec chown -h 0:0 {} +
   # chown clears setuid/setgid on regular files even when the owner does not
   # change (measured). The find above only touches non-root entries, so sudo is
   # not among them -- but re-assert it anyway: build_sudo set this bit earlier
