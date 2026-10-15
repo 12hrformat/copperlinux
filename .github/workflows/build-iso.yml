@@ -31,7 +31,7 @@ jobs:
   #
   # Kept as its own job so a failure here is obviously not a compile error.
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -102,7 +102,7 @@ jobs:
   # the kernel is still building, without withholding the artifact from a run
   # that only failed the fast checks.
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -118,10 +118,11 @@ jobs:
       # fails in ACPI code thousands of lines from anything that changed. The pin
       # lives in build.sh so local builds get it too -- this line only makes sure
       # the pinned compiler is actually installed, rather than assuming the
-      # runner's default happens to be the right version. ubuntu-latest is gcc-13
-      # today, which is exactly why this was never hit: it works until the
-      # image moves, and then it fails for a reason that has nothing to do with
-      # the change under test.
+      # runner's default happens to be the right version. The job is pinned to
+      # ubuntu-24.04, whose default gcc is 13; ubuntu-latest moves to Ubuntu 26
+      # on 2026-10-19, and a from-source kernel build that fails only because
+      # the base image moved is a failure with nothing to do with the change
+      # under test.
 
       # The fallback prefix is deliberate: a warm iso/work/ saves a ~7 min
       # kernel build when something unrelated changed. What makes that safe
@@ -197,6 +198,21 @@ jobs:
           name: copper-iso
           path: iso/out/copper.iso
           retention-days: 14
+
+      # The stages run under sudo, so iso/work is root-owned, and the cache
+      # action tars it as the unprivileged runner: tar exits 2 on the first
+      # file it cannot read (etc/shadow, the apt lock dirs, ssl/private), which
+      # left the tree uncached and made every run cold. Hand the tree to the
+      # runner first. This changes ownership only, never modes, and the ISO
+      # stage already re-chowns every non-root entry back to 0:0 before it
+      # packages the tree (see build_iso) -- the same uid-1000 state a cache
+      # restore produces anyway.
+      - name: Make the build tree readable by the cache
+        if: always()
+        run: |
+          if [ -e iso/work ]; then
+            sudo chown -R "$(id -u):$(id -g)" iso/work
+          fi
 
       # Save the work tree even on failure so the next run resumes the
       # stages that already finished (kernel build is ~7 min).
