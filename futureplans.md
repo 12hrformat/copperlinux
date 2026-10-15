@@ -45,10 +45,6 @@ checkboxes above, with the reasoning kept so it doesn't have to be re-derived.
 6. **Custom artwork** — wallpapers, icons. Cheap, high-visible identity.
 7. **Docs site + custom domain** — the two unchecked lines at the top.
 
-**WiFi (G4) is in progress as of 2026-10-14** — kernel `CFG80211`/`MAC80211`
-symbols, a static-musl `wpa_supplicant`, and firmware blobs. Design is in
-`HANDOFF.md` under G4.
-
 ---
 
 ## ingot — the todo, in the order we do it
