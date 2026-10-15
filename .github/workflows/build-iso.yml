@@ -194,10 +194,11 @@ jobs:
       # action tars it as the unprivileged runner: tar exits 2 on the first
       # file it cannot read (etc/shadow, the apt lock dirs, ssl/private), which
       # left the tree uncached and made every run cold. Hand the tree to the
-      # runner first. This changes ownership only, never modes, and the ISO
-      # stage already re-chowns every non-root entry back to 0:0 before it
-      # packages the tree (see build_iso) -- the same uid-1000 state a cache
-      # restore produces anyway.
+      # runner first. A chown also clears the setuid/setgid bits, so this saves
+      # the tree as uid 1000 with /usr/bin/sudo stripped of its bit. The stages
+      # that ship those permissions re-assert them rather than trust the
+      # restore: build_sudo pins sudo's owner and bit, and build_iso pins the
+      # whole tree before it is packaged.
       - name: Make the build tree readable by the cache
         if: always()
         run: |

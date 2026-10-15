@@ -1418,6 +1418,14 @@ build_sudo() {
   fi
   # make install drops an example sudoers; ours is authoritative and the
   # gates below compare byte-for-byte, so ours goes in last and wins.
+  #
+  # The binary may have arrived through actions/cache, which restores the tree
+  # owned by the unprivileged runner: sudo would be uid 1000, the setuid bit
+  # would then elevate to that user instead of root, and the chroot gate below
+  # fails on "effective uid is not 0, is sudo installed setuid root?". build_iso
+  # pins the tree back to root:root before packaging, but that runs later -- this
+  # gate is the one that decides, so the owner is pinned here too.
+  chown 0:0 "$TGT/usr/bin/sudo"
   chmod 4755 "$TGT/usr/bin/sudo"
   mkdir -p "$TGT/run/sudo" "$TGT/etc/sudoers.d"
   install -m 0440 "$ROOT/sudo/sudoers" "$TGT/etc/sudoers"
