@@ -1580,7 +1580,7 @@ build_hypr() {
   local seatd_bin=""
   for f in usr/bin/Hyprland usr/bin/hyprctl usr/bin/hyprpaper usr/bin/hypridle \
            usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/swaync \
-           usr/bin/kitty usr/bin/hyprpolkitagent \
+           usr/bin/kitty usr/libexec/hyprpolkitagent \
            etc/copper/hypr-apps \
            usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua; do
     if [ ! -e "$TGT/$f" ]; then
