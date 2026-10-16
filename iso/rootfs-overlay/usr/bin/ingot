@@ -420,9 +420,14 @@ cmd_info() { # cmd_info <name> — show the package's JSON then clean /tmp
 
 cmd_search() { # cmd_search <term> — names+groups matching, straight from index.json
   term=$1
-  tmp="/tmp/$term.search.$$"
+  # A package name is not a pattern: match it literally (-F) and pass it with
+  # -e, so a term that starts with '-' is a search string and not a grep option.
+  # A regex grep also dies on a term like '[' that is not a valid expression,
+  # printing a grep error where a result belongs. The temp name is fixed, so a
+  # term containing '/' cannot steer the path.
+  tmp="/tmp/.ingot-search.$$"
   dl "$tmp" "$repo_url/iso/copper/pkg/index.json" || return 1
-  grep -i "$term" < "$tmp" | sed 's/[{}",:]//g' || true
+  grep -iF -e "$term" < "$tmp" | sed 's/[{}",:]//g' || true
   rm -f "$tmp"
 }
 
@@ -455,12 +460,17 @@ cmd_update() { # cmd_update [name] — update one installed package, or all
     return 0
   fi
   found=0
+  failed=0
   for mf in "$MAN"/*.installed; do
     [ -e "$mf" ] || continue
     found=1
-    update_one "$(basename "$mf" .installed)" || return 1
+    # Keep going after a failure: one package whose page was pulled from the
+    # repo, or one dropped transfer, must not strand every later update.
+    update_one "$(basename "$mf" .installed)" || failed=1
   done
   [ "$found" -eq 1 ] || { echo "ingot: nothing installed"; return 0; }
+  [ "$failed" -eq 0 ] || { echo "ingot: one or more packages failed to update" >&2; return 1; }
+  return 0
 }
 
 cmd_reinstall() { # cmd_reinstall <name> — remove then install again, fresh

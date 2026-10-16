@@ -19,7 +19,10 @@
 #   - inspect shows the installed record (version + files)
 #   - reinstall removes then installs again
 #   - update reinstalls a package whose page sha256 moved, and reports
-#     "up to date" when nothing changed
+#     "up to date" when nothing changed, and update (all) keeps going when one
+#     package's page cannot be fetched
+#   - search is literal and option-safe: a regex metacharacter cannot abort it
+#     and a leading dash is a term, not a flag
 #   - install/remove/update/reinstall on the real / refuse for a non-root
 #     user with a sudo hint (INGOT_ROOT is the rootless test path)
 #
@@ -236,6 +239,31 @@ else
   note_bad "search failed: $out"
 fi
 
+# ---- search is literal and option-safe -------------------------------------
+# A package name is neither a regex nor a flag: 'c.g' must not match cog, a bare
+# '[' must not make grep abort, and a leading '-' must be a term, not an option.
+if out=$( sh "$INGOT" search 'c.g' 2>&1 ); then
+  printf '%s' "$out" | grep -qw cog \
+    && note_bad "search matched a regex: $out" \
+    || note_ok "search treats the term literally"
+else
+  note_bad "search 'c.g' failed: $out"
+fi
+if out=$( sh "$INGOT" search '[' 2>&1 ); then
+  printf '%s' "$out" | grep -qiE "grep:|invalid|unmatched|bad regex" \
+    && note_bad "search let grep complain about the term: $out" \
+    || note_ok "search survives a metacharacter term"
+else
+  note_bad "search '[' failed: $out"
+fi
+if out=$( sh "$INGOT" search '-x' 2>&1 ); then
+  printf '%s' "$out" | grep -qi "usage:\|grep:" \
+    && note_bad "search took a leading dash as an option: $out" \
+    || note_ok "search treats a leading dash as a term"
+else
+  note_bad "search '-x' failed: $out"
+fi
+
 # ---- list: the still-installed dependency shows up --------------------------
 if out=$( sh "$INGOT" list 2>&1 ); then
   printf '%s' "$out" | grep -q "cog" && note_ok "list shows installed cog" || note_bad "list missed cog: $out"
@@ -300,6 +328,28 @@ if out=$( sh "$INGOT" update 2>&1 ); then
 else
   note_bad "update (all) failed: $out"
 fi
+
+# ---- update (all) survives one broken package --------------------------------
+# Put pinwheel back (cog is already installed), then drop it from index.json so
+# its page can no longer be fetched -- the shape of a package pulled from the
+# repo. update (all) must still reach the healthy packages and exit nonzero;
+# before, the first failure ended the whole run.
+sh "$INGOT" install pinwheel >/dev/null 2>&1
+cat > "$REPO_ROOT/iso/copper/pkg/index.json" <<EOF
+{
+  "bigwheel": "fun",
+  "cog": "fun",
+  "forged": "fun"
+}
+EOF
+if out=$( sh "$INGOT" update 2>&1 ); then
+  note_bad "update (all) exited 0 despite a package that could not be fetched: $out"
+else
+  note_ok "update (all) reports failure when one package fails"
+fi
+printf '%s' "$out" | grep -q "up to date" \
+  && note_ok "update (all) still processed the healthy packages" \
+  || note_bad "update (all) skipped the healthy packages: $out"
 
 # ---- the pretty bar: on a real tty, big downloads animate ----------------
 # Non-tty runs must stay plain (asserted above); this one forces a pty and a
