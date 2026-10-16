@@ -719,6 +719,16 @@ assert_no_empty_files
 #
 # A few files are legitimately empty, so they are named rather than allowing a
 # blanket exemption.
+#
+# updated by dragon, bug 26: the Hyprland config skel is the one exception, and
+# it is exempted as a whole subtree rather than file by file. It is a vendored,
+# sha256-pinned DATA tree (the hypr stage checks the tarball hash before it
+# unpacks it), not a set of commands -- which is the only thing this gate is
+# for. ML4W ships zero-byte Lua include stubs that `require()` loads (empty is
+# valid Lua, and deleting them would break the config) and marker files whose
+# *presence* is the setting (`waybar-disabled`, `software.sh`). Naming the eight
+# files would only break again on the next re-pin, when upstream's next release
+# moves them; the subtree is the stable unit. Nothing else is exempted.
 assert_no_empty_files() {
   local empties
   empties=$( cd "$TGT" && find . -type f -size 0 \
@@ -726,6 +736,9 @@ assert_no_empty_files() {
     ! -path './etc/timezone' \
     ! -path './var/log/*' \
     ! -name '*.uuid' \
+    # Hyprland config skel: vendored data, empty files are intentional. See the
+    # note above.
+    ! -path './usr/share/copper/hyprland-skel/*' \
     # Vestigial cosmopolitan artifact. It is shipped empty and grub.cfg never
     # boots it -- the menu entries load /boot/vmlinuz and /boot/initrd.img --
     # so an empty mach_kernel costs nothing. Worth knowing it is a no-op file.
@@ -1402,6 +1415,16 @@ build_hypr() {
   #                         closure may not have brought the DRI drivers
   #   xwayland              X11 apps under the compositor
   #   inotify-tools imagemagick   used by ML4W's own scripts
+  #   bash                  every ML4W helper is #!/usr/bin/env bash. Copper's
+  #                          own scripts are POSIX on purpose and run under
+  #                          busybox ash, but this is a vendored config we
+  #                          promised to keep unmodified: without this one
+  #                          package the keybinds that shell out (killactive,
+  #                          screenshot, reload, moveTo, the theme toggles) all
+  #                          die as "bash: not found". It is ~1.4MB. The
+  #                          decision is logged in HANDOFF.md, Hyprland.
+  #   jq                    ML4W reads its own settings with it; without it
+  #                          the statusbar and theme scripts fail halfway.
   set -- hyprland hypridle hyprlock hyprpaper hyprpicker hyprsunset \
          hyprpolkitagent hyprland-guiutils xdg-desktop-portal-hyprland \
          waybar fuzzel \
@@ -1411,7 +1434,8 @@ build_hypr() {
          gnome-themes-extra gvfs-backends udisks2 xdg-desktop-portal-gtk \
          power-profiles-daemon xdg-user-dirs polkitd pkexec \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 xwayland \
-         inotify-tools imagemagick
+         inotify-tools imagemagick \
+         bash jq
   apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
     >"$WORK/hypr-apt.log" 2>&1 \
     || { echo "hypr: apt could not resolve the session closure:" >&2
@@ -1471,6 +1495,16 @@ build_hypr() {
     chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
       >"$WORK/hypr-mime.log" 2>&1 \
       || echo "  (update-mime-database failed; new mime types will not resolve)"
+    # updated by dragon, bug 26: the same legacy zero-byte icons map the gui
+    # stage prunes is re-created here, because this stage re-runs
+    # update-mime-database after gui already pruned it. Left alone it fails the
+    # whole-tree empty-file gate two stages later -- on a cache restore it fails
+    # *earlier*, in the rootfs step that runs before this one. Mirror the gui
+    # prune so the hypr stage cannot reintroduce it.
+    if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
+      rm -f "$TGT/usr/share/mime/icons"
+      echo "  pruned empty mime icons map (no icon mappings in the database)"
+    fi
   fi
   if [ -x "$TGT/usr/bin/gtk-update-icon-cache" ]; then
     for tdir in "$TGT"/usr/share/icons/*/index.theme; do
