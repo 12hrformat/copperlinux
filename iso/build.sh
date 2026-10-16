@@ -1450,6 +1450,7 @@ build_hypr() {
          gnome-themes-extra gvfs-backends udisks2 xdg-desktop-portal-gtk \
          power-profiles-daemon xdg-user-dirs polkitd pkexec \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 xwayland \
+         libxkbcommon0 libxkbcommon-x11-0 libinput10 \
          inotify-tools imagemagick \
          bash jq
   apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
@@ -1651,6 +1652,17 @@ build_hypr() {
   # The chroot is the honest test: the loader resolves and every library
   # Hyprland links is present at the path it names. --version prints and exits
   # without a compositor, so this needs no display and no seat of its own.
+  #
+  # Because Hyprland --version does not touch every symbol, also check that
+  # the staged libxkbcommon actually carries the V_1.11.0 soname-version that
+  # Hyprland (from this PPA) was built against. The pre-1.11 versions the
+  # compositor would silently take and fail on at boot are rejected here.
+  if [ -e "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" ]; then
+    echo "  libxkbcommon versions: $(strings "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null | sed -n '/^V_/p' | tr '\n' ' ')"
+    if ! strings "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null | grep -qx 'V_1.11.0'; then
+      echo "hypr: staged libxkbcommon does not provide V_1.11.0; Hyprland would refuse to start (see its log at /tmp/hyprland.log on the booted image)" >&2
+    fi
+  fi
   if ! chroot "$TGT" /usr/bin/Hyprland --version \
        >"$WORK/hypr-version.log" 2>&1; then
     echo "hypr: Hyprland --version failed inside the staged rootfs:" >&2

@@ -191,7 +191,9 @@ if [ "$user_config" != 1 ]; then
                     read -r answer || answer=
                     case "$answer" in
                         [Nn]*) printf '...\n'
-                               printf 'its now l-like i wanted you to u-use my config anyways b-baka! humph~! (,,>﹏<,,)\n' ;;
+                               sleep 2
+                               printf 'its now l-like i wanted you to u-use my config anyways b-baka! humph~! (,,>﹏<,,)\n'
+                               printf '\n\n\n' ;;
                         *) do_cfg=1 ;;
                     esac
                 else
