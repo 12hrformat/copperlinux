@@ -9,7 +9,7 @@ their graves are in the tracker at the bottom of the file.
 
 ---
 
-# 15. firefox install dies of ENOSPC — impact 8/10
+# 15. firefox install dies of ENOSPC — impact 10/10 (see #20)
 
 **How it affects things:** you can't install bigger apps, and the disk you
 gave the VM does literally nothing while you watch it happen.
