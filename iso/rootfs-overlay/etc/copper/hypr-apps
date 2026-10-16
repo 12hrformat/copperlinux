@@ -32,5 +32,5 @@ hyprlock            /usr/bin/hyprlock            image
 hypridle            /usr/bin/hypridle            image
 hyprsunset          /usr/bin/hyprsunset          image
 hyprpicker          /usr/bin/hyprpicker          image
-hyprpolkitagent     /usr/bin/hyprpolkitagent     image
+hyprpolkitagent     /usr/libexec/hyprpolkitagent  image
 hyprland-guiutils   /usr/bin/hyprland-guiutils   image

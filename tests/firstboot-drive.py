@@ -43,6 +43,7 @@ STEPS = [
     ("Set your own password",         "userpw1"),
     ("Type it once more to be sure",  "userpw1"),
     ("Timezone, e.g. Europe/London",  "UTC"),
+    ("Which desktop, xfce or hyprland?", ""),
 ]
 
 # Extra prompts to answer after the form, each "prompt|answer". account.sh

@@ -181,6 +181,32 @@ fi
 # anyone asked for, and 21 names that.
 if [ "$user_config" != 1 ]; then
     if [ "$skel_config" = 1 ]; then
+        do_cfg=
+        case "$choice" in
+            yes) do_cfg=1 ;;
+            no)  say "not installing the config files (--no)" ;;
+            *)
+                if [ -t 0 ]; then
+                    printf 'starthyprland: would you like your hyprland config files? (Y/n) '
+                    read -r answer || answer=
+                    case "$answer" in
+                        [Nn]*) printf '...\n'
+                               printf 'its now l-like i wanted you to u-use my config anyways b-baka! humph~! (,,>﹏<,,)\n' ;;
+                        *) do_cfg=1 ;;
+                    esac
+                else
+                    say "no terminal to ask about the config files; using the shipped config"
+                fi
+                ;;
+        esac
+        if [ -n "$do_cfg" ]; then
+            say "installing the hyprland config files (hypr-configs)"
+            if $SUDO $INGOT install hypr-configs; then
+                say "hyprland config files installed"
+            else
+                say "could not install hypr-configs; using the shipped config"
+            fi
+        fi
         say "seeding the session config from $SKEL into $HOME"
         # The whole shipped home, not just .config/hypr: the tree carries the
         # ml4w/, waybar/, quickshell/ and gtk configuration the session reads
