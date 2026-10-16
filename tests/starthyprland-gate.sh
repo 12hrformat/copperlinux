@@ -84,6 +84,10 @@ run_sut() {
     SUT_DRM=${SUT_DRM:-$TMP/dri}
     SUT_SEATD=${SUT_SEATD:-$TMP/no-seatd.sock}
     SUT_RUNTIME=${SUT_RUNTIME:-$TMP/run}
+    # stdin is /dev/null, so the launcher's interactive questions are never put
+    # to a terminal here: every case below is deterministic whether or not the
+    # person running the gate has one, and the pty case at the end drives the
+    # one question that is meant to be interactive.
     HOME="$TMP/home" XDG_RUNTIME_DIR="$SUT_RUNTIME" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/dummy-bus" \
     COPPER_HYPRLAND="$hypr" COPPER_HYPR_SKEL="$SKEL" \
@@ -91,7 +95,48 @@ run_sut() {
     COPPER_HYPR_APPS="${APPS_MANIFEST:-$TMP/no-apps}" \
     COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
     COPPER_DRM_DIR="$SUT_DRM" COPPER_SEATD_SOCK="$SUT_SEATD" \
-    WAIT_TRIES="$tries" sh "$SUT" "$@" 2>&1
+    WAIT_TRIES="$tries" sh "$SUT" "$@" < /dev/null 2>&1
+}
+
+# The one case that must see a real terminal. run_sut sends stdin from /dev/null,
+# which is right for every deterministic case but hides the interactive config
+# question; this runs the launcher inside `script` (a pty) with the same
+# isolation and feeds it one line.
+run_sut_pty() { # run_sut_pty <answer-line>
+    printf '%s\n' "$1" | env \
+        HOME="$TMP/home" XDG_RUNTIME_DIR="$TMP/run" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/dummy-bus" \
+        COPPER_HYPRLAND="$TMP/Hyprland" COPPER_HYPR_SKEL="$TMP/skel" \
+        COPPER_SESSIONLOG="$TMP/hyprland.log" COPPER_HYPR_APPS="$TMP/no-apps" \
+        COPPER_INGOT="$TMP/ingot" COPPER_SUDO="" COPPER_DRM_DIR="$TMP/dri" \
+        COPPER_SEATD_SOCK="$TMP/no-seatd.sock" WAIT_TRIES=80 \
+        script -qec "sh '$SUT'" /dev/null 2>&1
+}
+
+# The config-question cases share one shape: a bare home, a shipped config to
+# seed from, a compositor stub that comes up, and an ingot stub that records
+# what it was asked to do. The helper leaves SKEL and INGOT_STUB set for
+# run_sut; each case clears them after it.
+setup_cfg_case() {
+    reset
+    mkdir -p "$TMP/skel/.config/hypr"
+    printf -- '-- cfg\n' > "$TMP/skel/.config/hypr/hyprland.lua"
+    cat > "$TMP/Hyprland" <<EOF
+#!/bin/sh
+mkdir -p "\$XDG_RUNTIME_DIR/hypr/gate"
+: > "\$XDG_RUNTIME_DIR/hypr/gate/.socket.sock"
+sleep 1
+exit 0
+EOF
+    chmod +x "$TMP/Hyprland"
+    cat > "$TMP/ingot" <<'EOF'
+#!/bin/sh
+echo "ingot-stub: $*" >&2
+exit 0
+EOF
+    chmod +x "$TMP/ingot"
+    SKEL="$TMP/skel"
+    INGOT_STUB="$TMP/ingot"
 }
 
 echo "=== it has to parse as POSIX sh, not just as bash ==="
@@ -386,6 +431,65 @@ SKEL=; SUT_SEATD=
 eq "  exit code is 0" 0 "$rc"
 has "  reports the seatd socket" "seat: $TMP/seatd.sock" "$out"
 hasnt "  does not warn about a missing seat" "no seatd socket" "$out"
+
+echo
+echo "=== case 16: unattended, no flag -- uses the shipped config, installs nothing ==="
+# The first Hyprland login, answered by nothing at all: the launcher must fall
+# back to the config the image baked instead of blocking on a prompt no one can
+# see. This is also the shape a first boot takes when it is not a terminal.
+setup_cfg_case
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says there is no terminal to ask on" "no terminal to ask about the config files" "$out"
+hasnt "  never invokes the installer" "ingot-stub: install" "$out"
+has "  still seeds the shipped config" "session config seeded" "$out"
+
+echo
+echo "=== case 17: --yes installs hypr-configs, then seeds ==="
+setup_cfg_case
+out=$(run_sut "$TMP/Hyprland" 80 --yes); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  announces the config install" "installing the hyprland config files (hypr-configs)" "$out"
+has "  the installer really was invoked" "ingot-stub: install hypr-configs" "$out"
+has "  says the config was seeded" "session config seeded" "$out"
+hasnt "  does not print the unattended message" "no terminal to ask about the config files" "$out"
+
+echo
+echo "=== case 18: --no keeps the shipped config, installs nothing ==="
+setup_cfg_case
+out=$(run_sut "$TMP/Hyprland" 80 --no); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says it is not installing the config" "not installing the config files (--no)" "$out"
+hasnt "  never invokes the installer" "ingot-stub: install" "$out"
+has "  still seeds the shipped config" "session config seeded" "$out"
+
+echo
+echo "=== case 19: the interactive question (needs a pty) ==="
+# The only case that must be answered by a person: run_sut sends stdin from
+# /dev/null, so the question only exists under a terminal. `script` supplies
+# one; where it is absent (the Windows box this tree is kept on) the case is
+# skipped rather than failed, the same shape as the python3-gated seat case.
+if ! command -v script >/dev/null 2>&1; then
+    echo "  skip  no 'script' for a pty on this host (CI has one)"
+else
+    setup_cfg_case
+    out=$(run_sut_pty 'n'); rc=$?
+    eq "  'n' run still starts the session" 0 "$rc"
+    has "  the question is put to the terminal" "would you like your hyprland config files?" "$out"
+    has "  'n' prints the ellipsis" "..." "$out"
+    has "  'n' prints the tsundere line" "b-baka! humph" "$out"
+    hasnt "  'n' did not invoke the installer" "ingot-stub: install" "$out"
+    has "  'n' still seeds the shipped config" "session config seeded" "$out"
+
+    setup_cfg_case
+    out=$(run_sut_pty ''); rc=$?
+    eq "  an empty answer still starts the session" 0 "$rc"
+    has "  Enter defaults to installing" "installing the hyprland config files (hypr-configs)" "$out"
+    has "  the installer really was invoked" "ingot-stub: install hypr-configs" "$out"
+fi
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
