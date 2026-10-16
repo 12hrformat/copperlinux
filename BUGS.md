@@ -219,6 +219,70 @@ the entry and append `plymouth.ignore-serial-consoles` (or
 
 ---
 
+# 27. `ingot update` can delete a package it then fails to reinstall — impact 6/10
+
+**How it affects things:** updating a package whose new payload then fails to
+download leaves the package *gone* — files removed, manifest removed, and
+`ingot list` no longer knows it was ever there. A dropped transfer on the CDN
+(the thing `dl` retries five times for) turns an update into a silent
+uninstall.
+
+**What happens:** `update_one` removes the installed package and only *then*
+calls `cmd_install`. `cmd_remove` unlinks every recorded file and deletes
+`/var/lib/ingot/<name>.installed`; the page fetch, payload download and sha256
+check all happen after that. Any failure in that second half — the page pulled
+from the repo, a download that exhausts its retries, an unpack error — returns
+nonzero with the old install already destroyed.
+
+**Root cause:** the two halves are ordered for convenience, not safety. The one
+step that can run before the old install is touched is the fetch-and-verify, and
+it is placed last.
+
+**Status:** not fixed. The minimal safe fix is to fetch and verify the new
+payload into `/tmp` first and only then remove and install, or to give
+`cmd_install` a force path that installs over the old tree and prunes whatever
+the old manifest covered and the new one does not — either way `update` must not
+be able to delete a working package on a bad transfer. `cmd_reinstall` has the
+same window. A regression test needs an installed package whose new payload
+404s.
+
+---
+
+# 28. `ingot` packages installed a binary you could not invoke by name — impact 8/10
+
+**How it affects things:** eight already-published packages reported a clean
+install and then gave `command not found` when you typed the name that is
+bolded right there in the repository's own README table. `bat` gave you
+`batcat`, `fd-find` gave you `fdfind`, `vim-tiny` gave you `vim.tiny`,
+`netcat-openbsd` gave you `nc.openbsd` only, `figlet` gave you `figlet-figlet`,
+`traceroute` gave you `traceroute.db`. `sl` and `john` also landed in
+`usr/games` and `usr/sbin`, which the live image's `PATH` may not contain.
+
+**Root cause:** `mkpkg.sh` builds a payload with `dpkg-deb -x`, which unpacks
+the `.deb` data tree and runs nothing else. A handful of debian packages do
+not put their command name in the data tree at all: it is created by the
+`postinst` script through `update-alternatives`, and the `.deb` data tree
+never carries it. Nothing in the build ever runs a `postinst`, so by the time
+the payload is on the box the name it answers to is not the name the table
+promises. (`bat` and `fd-find` are a different mechanism — a deliberate
+Debian rename — but the same end result: the name in the table is not the file
+on disk.)
+
+Eight payloads were affected in total: `bat`, `fd-find`, `vim-tiny`,
+`netcat-openbsd`, `figlet`, `traceroute`, `sl` and `john`.
+
+**Status:** fixed 2026-10-16. Each payload was relinked — a relative symlink
+for the command name the deb's `postinst` would have created (and, for
+`bat`/`fd-find`, an alias for the renamed binary; for `sl`/`john`, a
+`usr/bin` entry onto the real `usr/games`/`usr/sbin` binary) — and
+re-uploaded, with the page `sha256`/`size` recomputed, so `ingot update`
+notices the new bytes on its own. `README.md` in `copper-ingot-repo` now has
+a table of the affected names under "The payload", and "Adding a package"
+tells the next builder to grep the tarball for `bin/` and add the missing
+symlink before uploading.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -570,7 +634,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-26 bugs total: 21 fixed, 5 open.
+28 bugs total: 22 fixed, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -600,3 +664,5 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |
 | bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
+| bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
+| bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
