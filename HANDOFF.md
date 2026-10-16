@@ -242,6 +242,21 @@ exactly the way `build_gui` resolves XFCE's; the config is unpacked to
 `/usr/share/copper/hyprland-skel`; and the stage gates itself with
 `Hyprland --version` and `waybar --version` inside a chroot before it stamps.
 
+Two things the closure carries only because the config is vendored and promised
+unmodified: **`bash`** (every ML4W helper is `#!/usr/bin/env bash`; without it
+the keybinds that shell out — `killactive`, `screenshot`, reload, `moveTo`, the
+theme toggles — die as `bash: not found`) and **`jq`** (ML4W reads its own
+settings with it). Copper's own scripts stay POSIX under busybox `ash`; this is
+the one bash, ~1.4 MB, and it exists for the vendored tree alone.
+
+The skel also carries intentional zero-byte files — ML4W's Lua `require()` stubs
+(`hyprland-gui.lua`, the `conf/*/default.lua` includes) and markers whose
+*presence* is the setting (`waybar-disabled`, `software.sh`) — so the `rootfs`
+stage's whole-tree empty-file gate exempts that subtree by path (bug 26), and the
+`hypr` stage prunes the same legacy zero-byte `usr/share/mime/icons` map the
+`gui` stage prunes, because it re-runs `update-mime-database` and would otherwise
+re-create it.
+
 `starthyprland` (`iso/starthyprland.sh`, POSIX sh) is the launcher, the twin of
 `startxfce`: it seeds the shipped config tree into the user's home, makes
 `XDG_RUNTIME_DIR`, brings up a session bus, checks the `seatd` socket, forces
@@ -251,6 +266,16 @@ no config, **22** no runtime, **23** died on the way up, **24** usage, **25** a
 missing component and no terminal to ask on — and `tests/starthyprland-gate.sh`
 asserts every one against a stubbed compositor, alongside the prep ordering and
 the environment the compositor is handed.
+
+When the user has no session config yet, the launcher asks — on a terminal —
+whether to install it from ingot: `would you like your hyprland config files?
+(Y/n)`, Enter meaning yes. Yes runs `ingot install hypr-configs`, which refreshes
+the skel from `12hrformat/copper-ingot-repo`; no keeps the config the image
+baked. Off a terminal, or given `--yes`/`--no`, it picks without asking. All four
+paths are in `tests/starthyprland-gate.sh`. The package it drives is real now —
+page `iso/copper/pkg/desktop/hypr-configs`, payload
+`hypr-configs-9c2e40f.tar.gz` on the `payloads-v1` release — verified against its
+sha256 but not boot-tested.
 
 Two deliberate limits, both recorded rather than left to be found on a machine:
 

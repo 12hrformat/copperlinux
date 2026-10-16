@@ -570,7 +570,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-24 bugs total: 20 fixed, 1 stopgapped, 3 open.
+26 bugs total: 21 fixed, 5 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -599,3 +599,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |
 | bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
+| bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
