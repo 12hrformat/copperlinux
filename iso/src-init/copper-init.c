@@ -352,6 +352,61 @@ static void prepare_session_dirs(const struct session *s) {
     }
 }
 
+/* Which desktop the first-boot wizard recorded.
+
+   `path` holds one word on its first line. Anything unreadable or unrecognised
+   means XFCE, which is the desktop that has always been here, so a missing or
+   half-written marker is never a machine with no desktop -- it is the default
+   one. Takes a path rather than hardcoding one so tests/init-session.c can
+   exercise it without touching /etc. */
+static int chose_hyprland(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[32] = "";
+    if (fgets(line, sizeof line, f))
+        line[strcspn(line, "\r\n")] = '\0';
+    fclose(f);
+    return strcmp(line, "hyprland") == 0;
+}
+
+/* The seat.
+
+   Hyprland is a Wayland compositor: through libseat it opens /dev/dri and
+   /dev/input. With no logind and no systemd, the seat comes from seatd, a small
+   daemon that hands out device access over a unix socket. Start it once, as
+   root, with the _seatd group the hypr stage created; the socket lands at
+   /run/seatd.sock and the session user reaches it because the first-boot wizard
+   put them in _seatd.
+
+   XFCE does not need it -- Xorg is given its devices by copper-init directly --
+   so a machine without seatd is still a working XFCE machine. Report it and
+   carry on rather than refusing to boot for the other desktop's sake. */
+static void start_seatd(void) {
+    static const char *paths[] = { "/usr/bin/seatd", "/usr/sbin/seatd", NULL };
+    const char *exe = NULL;
+    for (int i = 0; paths[i]; i++) {
+        if (access(paths[i], X_OK) == 0) { exe = paths[i]; break; }
+    }
+    if (!exe) return;                 /* no Hyprland in this image */
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        say("could not fork seatd: %s", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        setsid();
+        execl(exe, "seatd", "-g", "_seatd", (char *)NULL);
+        _exit(127);
+    }
+    /* Best effort: a moment for the socket to bind so the first starthyprland
+       finds a seat. Not a wait on the socket itself -- the user types slowly,
+       and a busy wait here would only delay the shell. seatd is PID 1's child
+       and is reaped only if it exits, which it should not. */
+    usleep(200 * 1000);
+}
+
+
 /* Returns the child's pid (the caller reaps it), or -1 if the fork failed. */
 static pid_t spawn_tty(int tty) {
     pid_t pid = fork();
@@ -712,7 +767,14 @@ int main(void) {
        show it on. Xorg takes the display through KMS and leaves a working console
        behind, so there is nothing to switch away from. */
 
-    say("copper: type startxfce for XFCE");
+    say("type %s",
+        chose_hyprland("/etc/copper-desktop")
+            ? "starthyprland for Hyprland (or startxfce for XFCE)"
+            : "startxfce for XFCE (or starthyprland for Hyprland)");
+
+    /* The seat, before the shell: Hyprland needs it the moment starthyprland
+       runs, and starting it here means the user never waits on it. */
+    start_seatd();
 
     /* Exactly one session at a time. Keep the pid so the reaper below can wait
        on this specific child instead of on any child: udhcpc is our child too,

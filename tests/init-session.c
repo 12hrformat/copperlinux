@@ -143,6 +143,45 @@ int main(void) {
         }
     }
 
+    /* ------------------------------------------------- the desktop marker */
+    /* chose_hyprland() decides which launcher the boot hint names. It must be
+       conservative: only the exact word "hyprland" selects Hyprland, and
+       anything else -- missing file, empty file, a stray word, a half-written
+       line -- means XFCE, the desktop that is always present. */
+    {
+        static const struct { const char *text; int want; } cases[] = {
+            { "hyprland\n",   1 },
+            { "hyprland",     1 },
+            { "hyprland\r\n", 1 },
+            { "xfce\n",       0 },
+            { "\n",           0 },
+            { "",             0 },
+            { "hyprland2",    0 },
+            { " Hyprland\n",  0 },   /* no trimming: exact word only */
+            { "Hyprland\n",   0 },   /* case matters */
+        };
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            put(marker, cases[i].text);
+            int got = chose_hyprland(marker);
+            if (got == cases[i].want) {
+                printf("ok   chose_hyprland(%s) -> %s\n",
+                       cases[i].text[0] ? cases[i].text : "(empty)",
+                       got ? "hyprland" : "xfce");
+            } else {
+                printf("FAIL chose_hyprland(%s) gave %d, wanted %d\n",
+                       cases[i].text, got, cases[i].want);
+                fails++;
+            }
+        }
+        unlink(marker);
+        if (chose_hyprland(marker) == 0) {
+            printf("ok   a missing marker means XFCE\n");
+        } else {
+            printf("FAIL a missing marker means XFCE\n");
+            fails++;
+        }
+    }
+
     /* ------------------------------------------------------ power signals */
     /* The mapping the busybox halt/poweroff/reboot applets rely on. If these
        ever swap, `sudo reboot` powers the machine off instead of restarting

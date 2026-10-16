@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Nine gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
+# Ten gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
 # persist.sh and shutdown-gate.sh need root, because they exercise sockets,
 # staged rootfs trees, the hotfix database, a mount namespace and a private
-# /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh does
-# not — its install lands in a scratch INGOT_ROOT and its repo is served on
-# localhost — so it runs unprivileged too. xprobe-gate.sh needs a C compiler
-# and python3, which CI and the build VM have, and skips cleanly where neither
-# exists. CI runs this same file with sudo, so a green build there means every
+# /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh and
+# starthyprland-gate.sh do not -- ingot's install lands in a scratch INGOT_ROOT
+# and its repo is served on localhost, and starthyprland's compositor is a stub
+# under a private home -- so both run unprivileged too. xprobe-gate.sh needs a C
+# compiler and python3, which CI and the build VM have, and skips cleanly where
+# neither exists; starthyprland-gate.sh needs python3 for one case and skips the
+# same way. CI runs this same file with sudo, so a green build there means every
 # gate ran and none were skipped.
 #
 # This file used to carry known-failure classifications: the CI workflow came
@@ -110,6 +112,25 @@ if out=$(bash tests/xprobe-gate.sh 2>&1); then
     esac
 else
     record xprobe-gate.sh bad "a real-xprobe check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/starthyprland-gate.sh: the Hyprland launcher ---"
+# Unprivileged, like xprobe-gate.sh: it stubs the compositor and points the
+# launcher at a private home, runtime directory, DRM path and seatd socket, so
+# it never touches this machine's session. It needs python3 for the one case
+# that binds a real unix socket to prove the seatd line, so it skips cleanly
+# where python3 is absent -- the same shape as xprobe-gate.sh without a
+# compiler.
+if ! command -v python3 >/dev/null 2>&1; then
+    record starthyprland-gate.sh skipped "no python3 on this host"
+elif out=$(sh tests/starthyprland-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record starthyprland-gate.sh ok "$n checks"
+else
+    record starthyprland-gate.sh bad "a Hyprland launcher check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
 fi
 

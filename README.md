@@ -35,6 +35,12 @@ machine.
 |---|---|
 | `startxfce` | Starts the X server if one isn't already running, then XFCE on it. |
 | `startxfce --check` | Reports what's installed and exits, starting nothing. |
+| `starthyprland` | Starts Hyprland — the optional second desktop — on the tty. |
+| `starthyprland --check` | Reports what's installed and exits, starting nothing. |
+
+First boot also asks which desktop you want, `xfce` or `hyprland`; XFCE is the
+default and Hyprland is opt-in. Either launcher works from the prompt whatever
+you picked.
 
 `startxfce` exits **20** if there's no X server in the image, **21** if XFCE is
 missing, **22** if the server started but never opened a display, **23** if the
