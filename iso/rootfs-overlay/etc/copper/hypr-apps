@@ -21,7 +21,7 @@ firefox             /usr/bin/firefox             ingot
 mousepad            /usr/bin/mousepad            ingot
 ristretto           /usr/bin/ristretto           ingot
 xarchiver           /usr/bin/xarchiver           ingot
-xfce4-taskmanager   /usr/bin/xfce4-taskmanager   ingot
+htop                /usr/bin/htop                ingot
 
 kitty               /usr/bin/kitty               image
 waybar              /usr/bin/waybar              image

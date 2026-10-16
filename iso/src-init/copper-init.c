@@ -389,6 +389,22 @@ static void start_seatd(void) {
     }
     if (!exe) return;                 /* no Hyprland in this image */
 
+    /* On images where the _seatd group did not arrive from the build stage
+       (a reset /etc/group on a live init), recreating it here is cheaper than
+       refusing to boot Hyprland. seatd looks the group up by name before doing
+       any useful work, so without this line on such systems it exits early
+       with "Could not find group by name '_seatd'." and there is no seat. */
+    if (!getgrnam("_seatd")) {
+        int _seatd_gid = 999;
+        while (_seatd_gid > 100 && getgrgid(_seatd_gid)) _seatd_gid--;
+        FILE *gl = fopen("/etc/group", "a");
+        if (gl) {
+            fprintf(gl, "_seatd:x:%d:\n", _seatd_gid);
+            fclose(gl);
+            say("created the missing _seatd group at gid %d (build stage did not ship it)", _seatd_gid);
+        }
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         say("could not fork seatd: %s", strerror(errno));
