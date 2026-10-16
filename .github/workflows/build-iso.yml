@@ -56,7 +56,8 @@ jobs:
           for s in tests/smoke.sh tests/charge.sh tests/account-gate.sh \
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
-                   tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh; do
+                   tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
+                   tests/starthyprland-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -162,6 +163,15 @@ jobs:
       # that asked for them.
       - name: Stage Xorg + XFCE into the rootfs
         run: sudo bash iso/build.sh gui
+
+      # The optional second desktop: Hyprland from the cppiber PPA plus the
+      # ML4W config tree, fetched at a pinned commit and checked against its
+      # sha256 (build_hypr). Its own step for the same reason as gui and
+      # plymouth -- it downloads at build time and a failure should name the
+      # line that asked for it. rootfs and gui above are stamp-checked and
+      # skip, so this resolves to just the Hyprland session.
+      - name: Stage the Hyprland session
+        run: sudo bash iso/build.sh hypr
 
       # The boot splash: Ubuntu's prebuilt Plymouth plus the owner's frames,
       # unpacked into the rootfs. Its own step for the same reason as gui --

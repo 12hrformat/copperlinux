@@ -14,7 +14,7 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | plymouth | sudo | initramfs | iso
+# Stages: kernel | base | tools | copper | rootfs | gui | hypr | plymouth | sudo | initramfs | iso
 #
 # Stages share iso/work/, so CI can run them one step at a time and each
 # step skips straight past whatever is already built.
@@ -54,6 +54,18 @@ export FORCE_UNSAFE_CONFIGURE=1
 KREL=${KREL:-6.12.10}
 KPATH="v${KREL%%.*}.x"
 
+# The Hyprland session's configuration tree is NOT vendored into this repo: it
+# lives in 12hrformat/copper-hyprland-configs and is fetched at build time,
+# pinned to a commit and checked against a hash (build_hypr does the fetch and
+# the check).
+HYPR_CFG_SHA=9c2e40f5189859c79187629157c848944e249ecc
+HYPR_CFG_URL="https://codeload.github.com/12hrformat/copper-hyprland-configs/tar.gz/$HYPR_CFG_SHA"
+HYPR_CFG_SHA256=06e73842f24f23dfeb0d9c9a3df1ea28b52088a4266e805166ec07b2d1e9ce15
+
+# The cppiber/hyprland PPA for noble, with a verified fingerprint.
+HYPR_PPA_URL="https://ppa.launchpadcontent.net/cppiber/hyprland/ubuntu"
+HYPR_PPA_FPR="A54D23B62FF3FCC76EFF71E8FDBAAA1CF0CCF48E"
+
 STAGE=${1:-all}
 
 [ "$(id -u)" = 0 ] || { echo "build.sh: run with sudo/root"; exit 1; }
@@ -68,10 +80,10 @@ mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
 lint_scripts() {
   local s
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
-           "$ROOT/rootfs-overlay/usr/bin/ingot" "$ROOT/startxfce.sh"; do
+           "$ROOT/rootfs-overlay/usr/bin/ingot" "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script, ingot and startxfce parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot, startxfce and starthyprland parse clean"
 }
 
 lint_scripts
@@ -586,6 +598,10 @@ local SRC="$ROOT/../src"
   # command-not-found from copper-sh.
   install -m 0755 "$ROOT/startxfce.sh" "$TGT/usr/bin/startxfce"
 
+  # The Hyprland launcher: the same contract style, same seeding/exit-code
+  # discipline as startxfce.
+  install -m 0755 "$ROOT/starthyprland.sh" "$TGT/usr/bin/starthyprland"
+
   # shutdown: busybox has no such applet, so `sudo shutdown now` had nothing
   # to run. The wrapper maps its flags onto the busybox halt/poweroff/reboot
   # applets, which signal PID 1; see on_power_signal() in copper-init.c.
@@ -597,7 +613,7 @@ local SRC="$ROOT/../src"
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/startxfce usr/bin/xprobe sbin/shutdown \
+           usr/bin/startxfce usr/bin/starthyprland usr/bin/xprobe sbin/shutdown \
            usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -617,7 +633,7 @@ local SRC="$ROOT/../src"
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-    "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
+    "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
     "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
 }
 
@@ -768,7 +784,7 @@ assert_commands_reachable() {
       adduser addgroup chpasswd \
       ip ifconfig route ping wget nslookup \
       mount umount switch_root \
-      copper copper-charge copper-rollback startxfce \
+      copper copper-charge copper-rollback startxfce starthyprland \
       vi ; do
 
     found=""
@@ -1243,7 +1259,368 @@ build_gui() {
 }
 
 # ---------------------------------------------------------------
-# 6f. the boot splash: Plymouth, staged the way the desktop is
+# 6f. the Hyprland session: the compositor from the cppiber PPA,
+#     the configuration from copper-hyprland-configs
+# ---------------------------------------------------------------
+# Hyprland is the optional second desktop. The first-boot wizard records
+# whether it was chosen (/etc/copper-desktop), starthyprland starts it from the
+# tty, and this stage is what puts it in the image.
+#
+# Two things arrive here, from two places, for two reasons.
+#
+# The compositor and its ecosystem come from ppa:cppiber/hyprland for noble.
+# noble packages no Hyprland at all, and this PPA is the source ML4W's own
+# Ubuntu setup uses and is built for noble's glibc 2.39, so nothing else in the
+# desktop stage has to move. The closure is computed exactly the way build_gui
+# computes XFCE's: apt against an EMPTY dpkg status file with --download-only
+# --no-install-recommends, so every library counts as missing and nothing
+# arrives half-installed, then dpkg-deb -x into a staging tree and cp -a -n
+# into the rootfs, where the busybox applets, the musl tools and the overlay's
+# /etc already are and win.
+#
+# The configuration is ML4W OS 2.17, scoped to the Hyprland session (the
+# contents of 12hrformat/copper-hyprland-configs, hyprland.md 6). It is NOT
+# vendored into this repo; it is fetched from that repo at a pinned commit,
+# checked against a hash, and unpacked to /usr/share/copper/hyprland-skel.
+# starthyprland seeds it into the user's home the first time it runs, as the
+# user, so the files are owned by them (a root copy would leave a config the
+# user cannot edit).
+#
+# The PPA is added in isolation: apt is pointed at a private sourceparts
+# directory holding a copy of the host's own sources plus the PPA, so the host's
+# /etc/apt is never written to and no later stage can see the PPA and change
+# what IT resolves. The archive key is fetched by fingerprint and its
+# fingerprint is checked before it is trusted.
+#
+# Quickshell, which ML4W uses for the bar, is deliberately NOT built here. Its
+# pinned commit requires Qt 6.6 (cmake: QT_MIN_VERSION "6.6.0",
+# qt_standard_project_setup(REQUIRES 6.6)); noble ships Qt 6.4.2. It cannot be
+# built against noble's Qt without dragging a second Qt into the image, which is
+# a change of its own. Waybar ships from the PPA and is the bar instead; see
+# HANDOFF.md. Nothing here pretends Quickshell is present.
+build_hypr() {
+  if [ -e "$TGT/usr/bin/Hyprland" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
+     && stamped_skip "$WORK/hypr.stamp" "$SELF"; then
+    echo "hypr: already staged, skipping"; return
+  fi
+  echo "==> Hyprland session"
+  local DH="$DL/hypr" STAGE="$WORK/hypr-root" deb n
+  local HA="$WORK/hypr-apt" status="$WORK/hypr-status"
+  local KEYRING="$HA/etc/apt/keyrings/cppiber-hyprland.gpg"
+  mkdir -p "$DH/partial"
+  : > "$status"
+
+  # ---- the archive key, by fingerprint ----------------------------------
+  # Fetched, not trusted blind: the key the keyserver returns must carry the
+  # fingerprint launchpad publishes for the archive, or the build stops. gpg is
+  # expected on the build host -- it is the same host that runs apt -- and if it
+  # is not there, say so rather than fall back to something unsigned.
+  command -v gpg >/dev/null 2>&1 \
+    || { echo "hypr: gpg is needed to verify the PPA archive key" >&2; exit 1; }
+  rm -rf "$HA"
+  mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
+  local asc="$WORK/cppiber-hyprland.asc" fpr
+  if ! curl -fsSL --retry 3 --retry-all-errors \
+       "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPR_PPA_FPR" \
+       -o "$asc"; then
+    echo "hypr: could not fetch the PPA archive key from keyserver.ubuntu.com" >&2
+    exit 1
+  fi
+  fpr=$(gpg --show-keys --with-colons "$asc" 2>/dev/null \
+        | awk -F: '/^fpr:/{print $10; exit}')
+  if [ "$fpr" != "$HYPR_PPA_FPR" ]; then
+    echo "hypr: the PPA key's fingerprint is '$fpr', expected '$HYPR_PPA_FPR'" >&2
+    exit 1
+  fi
+  gpg --dearmor < "$asc" > "$KEYRING"
+  [ -s "$KEYRING" ] || { echo "hypr: the PPA keyring came out empty" >&2; exit 1; }
+  echo "  archive key verified ($HYPR_PPA_FPR)"
+
+  # ---- sources, isolated ------------------------------------------------
+  # A private sourceparts directory: a copy of whatever the host already uses,
+  # plus the PPA. apt then reads the host's sources.list (untouched) and this
+  # directory instead of /etc/apt/sources.list.d, so the PPA is visible to this
+  # stage and to nothing else. The copy is what keeps noble's own mirrors in
+  # the mix: seatd, swaync, lua5.4 and the rest are ordinary noble packages.
+  if [ -d /etc/apt/sources.list.d ]; then
+    cp -a /etc/apt/sources.list.d/. "$HA/etc/apt/sources.list.d/" 2>/dev/null || :
+  fi
+  # If the host had nothing to copy (an unusual image), fall back to noble's
+  # own archive so the non-PPA half of the list still resolves.
+  if [ -z "$(ls -A "$HA/etc/apt/sources.list.d" 2>/dev/null)" ]; then
+    echo "deb http://archive.ubuntu.com/ubuntu noble main universe" \
+      > "$HA/etc/apt/sources.list.d/noble.list"
+  fi
+  echo "deb [signed-by=$KEYRING] $HYPR_PPA_URL noble main" \
+    > "$HA/etc/apt/sources.list.d/cppiber-hyprland.list"
+
+  # ---- the closure ------------------------------------------------------
+  # Dir::State::status empty: every dependency counts as missing, the same
+  # guarantee build_gui relies on. The default lists directory is kept, so a
+  # warm runner re-reads its cached indexes instead of refetching them; the PPA
+  # is simply one more source for apt-get update to fetch once.
+  local -a AOPT=(
+    -o Dir::Etc::sourceparts="$HA/etc/apt/sources.list.d"
+    -o Dir::State::status="$status"
+    -o Dir::Cache::archives="$DH"
+    -o APT::Sandbox::User=root
+  )
+  apt-get "${AOPT[@]}" update -qq
+
+  # The list is what has to be in the image for the session to come up with no
+  # network at all: the compositor and its ecosystem from the PPA (hyprland.md
+  # 3.1), and the ordinary noble pieces the session leans on (3.3, plus what
+  # ML4W's own config assumes the distro already has). Everything heavier is an
+  # ingot package and is named in the manifest, not here.
+  #
+  #   hyprland              the compositor
+  #   hypridle/lock/paper/picker/sunset   the ecosystem tools ML4W drives
+  #   hyprpolkitagent       the authentication agent (no logind, so no
+  #                         polkit-gnome autolaunch via systemd)
+  #   hyprland-guiutils     the toolkit dialogs ML4W opens
+  #   xdg-desktop-portal-hyprland   screencopy and global shortcuts
+  #   waybar                the bar (Quickshell is deferred; see above)
+  #   fuzzel                the launcher
+  #   seatd                 the seat, since there is no logind
+  #   sway-notification-center   notifications (the swaync binary)
+  #   kitty                 the terminal
+  #   lua5.4                ML4W's config is Lua
+  #   wl-clipboard cliphist      clipboard and its history
+  #   grim slurp            screenshots
+  #   brightnessctl         brightness keys
+  #   qt6ct                 Qt theming, which ML4W drives
+  #   fonts-font-awesome libnotify-bin libsecret-1-0 gnome-keyring
+  #   gnome-themes-extra gvfs-backends udisks2   theming and mounting
+  #   xdg-desktop-portal-gtk    the GTK portal (FileChooser and friends)
+  #   power-profiles-daemon the profile switcher the bar talks to
+  #   xdg-user-dirs         the XDG_* directories the config expects
+  #   polkitd pkexec        the polkit daemon and the tool hyprpolkitagent
+  #                         prompts through
+  #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
+  #                         the GL/GBM stack the renderer needs; the gui
+  #                         closure may not have brought the DRI drivers
+  #   xwayland              X11 apps under the compositor
+  #   inotify-tools imagemagick   used by ML4W's own scripts
+  set -- hyprland hypridle hyprlock hyprpaper hyprpicker hyprsunset \
+         hyprpolkitagent hyprland-guiutils xdg-desktop-portal-hyprland \
+         waybar fuzzel \
+         seatd sway-notification-center kitty lua5.4 wl-clipboard cliphist \
+         grim slurp brightnessctl qt6ct \
+         fonts-font-awesome libnotify-bin libsecret-1-0 gnome-keyring \
+         gnome-themes-extra gvfs-backends udisks2 xdg-desktop-portal-gtk \
+         power-profiles-daemon xdg-user-dirs polkitd pkexec \
+         libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 xwayland \
+         inotify-tools imagemagick
+  apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
+    >"$WORK/hypr-apt.log" 2>&1 \
+    || { echo "hypr: apt could not resolve the session closure:" >&2
+         tail -n 30 "$WORK/hypr-apt.log" >&2 2>/dev/null || :
+         exit 1; }
+
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  for deb in "$DH"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  n=$(ls "$DH"/*.deb | wc -l)
+  echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
+
+  cp -a -n "$STAGE"/. "$TGT"/
+
+  # Shared libraries are the one thing copied from a PACKAGE that must be
+  # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
+  # version win, which is right for /etc, for the busybox applet links and for
+  # the static musl tools -- but wrong here: the PPA carries a NEWER
+  # libxkbcommon (and libinput) than noble's, Hyprland links the newer soname,
+  # and the version gui already put in /usr/lib would leave the compositor
+  # unable to start. Identical version -> the copy is the same bytes and this is
+  # a no-op; newer -> the newer library is the one its consumer was built
+  # against, and an older one is never what a newer consumer wants.
+  while IFS= read -r so; do
+    rel=${so#"$STAGE"/}
+    mkdir -p "$TGT/$(dirname "$rel")"
+    cp -a "$so" "$TGT/$rel"
+  done < <(find "$STAGE" \( -name '*.so' -o -name '*.so.*' \) | LC_ALL=C sort)
+  echo "  shared libraries from the stage take precedence over earlier packages"
+
+  # The loader, defensively: the gui stage creates it, and every glibc ELF
+  # needs it at exactly /lib64/ld-linux-x86-64.so.2 before a single instruction
+  # runs. build_hypr always runs after build_gui, so this only fires on a tree
+  # someone assembled by hand -- and then it makes the chroot gate below fail
+  # for the right reason instead of a bare ENOENT.
+  if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
+    mkdir -p "$TGT/lib64"
+    cp -L "$TGT/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+         "$TGT/lib64/ld-linux-x86-64.so.2"
+  fi
+
+  # Packages ship some files that are empty by nature, and the rootfs stage
+  # asserts on every later build over this tree that no file is zero bytes.
+  # Prune exactly the empties the packages brought, matched against the staging
+  # tree so an empty file the base image has a name for is left alone.
+  find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/hypr-empties"
+  while IFS= read -r rel; do
+    rm -f "$TGT/$rel"
+  done < "$WORK/hypr-empties"
+  echo "  $(wc -l < "$WORK/hypr-empties") empty package files pruned"
+
+  # The generated caches the package postinsts would have made and this image
+  # never runs. Best-effort: a stale cache costs a scan, not a session, so a
+  # missing tool is reported and stepped over rather than failing the build.
+  if [ -x "$TGT/usr/bin/update-mime-database" ]; then
+    chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
+      >"$WORK/hypr-mime.log" 2>&1 \
+      || echo "  (update-mime-database failed; new mime types will not resolve)"
+  fi
+  if [ -x "$TGT/usr/bin/gtk-update-icon-cache" ]; then
+    for tdir in "$TGT"/usr/share/icons/*/index.theme; do
+      [ -f "$tdir" ] || continue
+      themedir=$(dirname "$tdir")
+      chroot "$TGT" /usr/bin/gtk-update-icon-cache -f -t "${themedir#"$TGT"}" \
+        >"$WORK/hypr-icontheme.log" 2>&1 \
+        || echo "  (icon cache failed for ${themedir#"$TGT"})"
+    done
+  fi
+  if [ -x "$TGT/usr/bin/update-desktop-database" ]; then
+    chroot "$TGT" /usr/bin/update-desktop-database /usr/share/applications \
+      >"$WORK/hypr-desktop.log" 2>&1 \
+      || echo "  (update-desktop-database failed; menu cache will be stale)"
+  else
+    echo "  (no update-desktop-database in the image; menu cache left unbuilt)"
+  fi
+
+  # ---- the configuration, pinned and hashed -----------------------------
+  # The tree lives in its own repo so it can be re-pinned without a kernel
+  # build. The fetch is verified against HYPR_CFG_SHA256; a mismatch is a hard
+  # stop, because a config tree that is not the one that was reviewed is exactly
+  # the thing this pin exists to prevent. Retried once, because a truncated
+  # download is a transport failure and not a changed artifact.
+  local cfg="$DL/hypr-cfg-$HYPR_CFG_SHA.tar.gz" got try
+  for try in 1 2; do
+    if [ -s "$cfg" ] \
+       && [ "$(sha256sum "$cfg" | cut -d' ' -f1)" = "$HYPR_CFG_SHA256" ]; then
+      break
+    fi
+    rm -f "$cfg"
+    echo "  < $HYPR_CFG_URL" >&2
+    curl -fsSL --retry 3 --retry-all-errors -o "$cfg.part" "$HYPR_CFG_URL" || {
+      rm -f "$cfg.part"; continue; }
+    got=$(sha256sum "$cfg.part" | cut -d' ' -f1)
+    if [ "$got" != "$HYPR_CFG_SHA256" ]; then
+      echo "hypr: configuration tarball sha256 is $got, expected $HYPR_CFG_SHA256" >&2
+      rm -f "$cfg.part"
+      continue
+    fi
+    mv "$cfg.part" "$cfg"
+    break
+  done
+  if [ ! -s "$cfg" ] \
+     || [ "$(sha256sum "$cfg" | cut -d' ' -f1)" != "$HYPR_CFG_SHA256" ]; then
+    echo "hypr: could not fetch the configuration tree at the pinned commit" >&2
+    echo "      $HYPR_CFG_URL" >&2
+    exit 1
+  fi
+  echo "  configuration tree verified ($HYPR_CFG_SHA)"
+
+  local cfgd="$WORK/hypr-cfg" top
+  rm -rf "$cfgd"; mkdir -p "$cfgd"
+  tar -xzf "$cfg" -C "$cfgd"
+  top="$cfgd/copper-hyprland-configs-$HYPR_CFG_SHA"
+  if [ ! -d "$top/dotfiles" ]; then
+    echo "hypr: the configuration tarball has no dotfiles/ tree" >&2
+    exit 1
+  fi
+  rm -rf "$TGT/usr/share/copper/hyprland-skel"
+  mkdir -p "$TGT/usr/share/copper/hyprland-skel"
+  cp -a "$top/dotfiles/." "$TGT/usr/share/copper/hyprland-skel/"
+  if [ ! -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ]; then
+    echo "hypr: the seeded config has no hypr/hyprland.lua" >&2
+    exit 1
+  fi
+
+  # git does not carry the exec bit across platforms, so the tree arrived with
+  # every script mode 0644 (verified: all 438 blobs are 100644). ML4W's config
+  # runs several of them by path -- ~/.config/ml4w/scripts/ml4w-autostart,
+  # waybar/launch.sh, listeners.sh -- and a bare path is execve: without +x they
+  # fail with "permission denied" and the desktop comes up with no bar. Anything
+  # that starts with a shebang is meant to run, so restore exactly that set.
+  n=0
+  while IFS= read -r -d '' f; do
+    if [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ]; then
+      chmod 0755 "$f"; n=$((n + 1))
+    fi
+  done < <(find "$TGT/usr/share/copper/hyprland-skel" -type f -print0)
+  echo "  $n scripts in the config tree marked executable"
+
+  # A CR in any of those scripts fails on the target and the target has no
+  # editor to fix it with; the config repo states the LF policy, and this proves
+  # it held for the artifact that actually arrived.
+  if grep -rIl $'\r' "$TGT/usr/share/copper/hyprland-skel" 2>/dev/null \
+       | head -n 1 | grep -q .; then
+    echo "hypr: the configuration tree contains CR bytes; the session would fail" >&2
+    grep -rIl $'\r' "$TGT/usr/share/copper/hyprland-skel" 2>/dev/null | head -n 5 >&2
+    exit 1
+  fi
+
+  # ---- the seat group ---------------------------------------------------
+  # seatd's package postinst would create _seatd, and no postinst runs here.
+  # copper-init starts seatd -g _seatd and the first-boot wizard puts the user
+  # in it; without the group, seatd cannot start and there is no seat, which is
+  # no compositor.
+  if ! grep -q '^_seatd:' "$TGT/etc/group"; then
+    local gid=999
+    while grep -q ":$gid:" "$TGT/etc/group"; do gid=$((gid - 1)); done
+    printf '_seatd:x:%s:\n' "$gid" >> "$TGT/etc/group"
+    echo "  created the _seatd group (gid $gid) for seatd"
+  fi
+
+  # ---- gates ------------------------------------------------------------
+  # Every one of these missing means the session cannot start, and each is far
+  # clearer here than as a failed exec on a live tty.
+  local seatd_bin=""
+  for f in usr/bin/Hyprland usr/bin/hyprctl usr/bin/hyprpaper usr/bin/hypridle \
+           usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/swaync \
+           usr/bin/kitty usr/bin/hyprpolkitagent \
+           etc/copper/hypr-apps \
+           usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua; do
+    if [ ! -e "$TGT/$f" ]; then
+      echo "hypr: $f did not arrive from the packages" >&2
+      exit 1
+    fi
+  done
+  # seatd has lived in both /usr/bin and /usr/sbin across releases, so find it
+  # rather than name a directory. -print -quit: grep -q closes the pipe on its
+  # first match and a second write would arrive as SIGPIPE, which under pipefail
+  # reads as "not found" no matter what was found.
+  seatd_bin=$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)
+  if [ -z "$seatd_bin" ]; then
+    echo "hypr: seatd did not arrive from the packages; the session would have no seat" >&2
+    exit 1
+  fi
+
+  # The chroot is the honest test: the loader resolves and every library
+  # Hyprland links is present at the path it names. --version prints and exits
+  # without a compositor, so this needs no display and no seat of its own.
+  if ! chroot "$TGT" /usr/bin/Hyprland --version \
+       >"$WORK/hypr-version.log" 2>&1; then
+    echo "hypr: Hyprland --version failed inside the staged rootfs:" >&2
+    cat "$WORK/hypr-version.log" >&2 2>/dev/null || :
+    exit 1
+  fi
+  echo "  $(head -n 1 "$WORK/hypr-version.log" 2>/dev/null)"
+  if ! chroot "$TGT" /usr/bin/waybar --version \
+       >"$WORK/hypr-waybar.log" 2>&1; then
+    echo "hypr: waybar --version failed inside the staged rootfs:" >&2
+    cat "$WORK/hypr-waybar.log" >&2 2>/dev/null || :
+    exit 1
+  fi
+
+  echo "  Hyprland session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
+  stamp_set "$WORK/hypr.stamp" "$SELF"
+}
+
+# ---------------------------------------------------------------
+# 6g. the boot splash: Plymouth, staged the way the desktop is
 # ---------------------------------------------------------------
 # Plymouth is the boot splash engine: it takes the console over early, draws a
 # theme, and hands the console back when it is told to quit. It is the same
@@ -1626,6 +2003,7 @@ full() {
   build_copper
   build_rootfs
   build_gui
+  build_hypr
   build_plymouth
   build_sudo
   build_initramfs
@@ -1639,12 +2017,13 @@ case "$STAGE" in
   copper)     build_musl; build_copper ;;
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
-  plymouth)   build_rootfs; build_gui; build_plymouth ;;
-  sudo)       build_rootfs; build_gui; build_plymouth; build_sudo ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_plymouth; build_sudo; build_initramfs; build_iso ;;
+  hypr)       build_rootfs; build_gui; build_hypr ;;
+  plymouth)   build_rootfs; build_gui; build_hypr; build_plymouth ;;
+  sudo)       build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|plymouth|sudo|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|hypr|plymouth|sudo|initramfs|iso|all)"; exit 2 ;;
 esac
 
 echo "==> done"

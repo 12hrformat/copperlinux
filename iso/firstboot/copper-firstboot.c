@@ -104,7 +104,7 @@ static void at(int r, int c) { printf("\033[%d;%dH", r, c); }
 /* ------------------------------------------------------------------ */
 /* ------------------------------------------------------------------ */
 
-enum { F_NAME, F_USER, F_HOST, F_ROOTPW, F_USERPW, F_TZ, F_COUNT };
+enum { F_NAME, F_USER, F_HOST, F_ROOTPW, F_USERPW, F_TZ, F_SESSION, F_COUNT };
 
 /* Capacity of every answer buffer, on screen and off. Generous on purpose:
    the field editor caps what can be typed to what fits inside the box, so
@@ -150,6 +150,24 @@ static int ok_host(const char *s) { return !s[0] || valid_host(s); }
 static int ok_tz(const char *s)   { return !s[0] || valid_tz(s); }
 static int ok_pw(const char *s)   { return s[0] != '\0'; }
 
+/* The desktop question: `xfce` or `hyprland`, either case, or Enter for XFCE.
+
+   `ok_session` gates both editors; `is_hyprland` is the one place that turns an
+   answer into the marker's value, so the table check and the value written can
+   never disagree about which spelling means which desktop. The marker is read
+   back by copper-init (chose_hyprland in iso/src-init/copper-init.c), which
+   matches the exact word "hyprland" on the first line -- so whatever is typed
+   here has to be reduced to that word, or to "xfce", before it is written. */
+static int word_is(const char *s, const char *w) {
+    for (; *s && *w; s++, w++)
+        if (tolower((unsigned char)*s) != tolower((unsigned char)*w)) return 0;
+    return *s == *w;
+}
+static int is_hyprland(const char *s) { return word_is(s, "hyprland"); }
+static int ok_session(const char *s) {
+    return !s[0] || is_hyprland(s) || word_is(s, "xfce");
+}
+
 /* All members, always. A partial initialiser silently zeroes the rest, and
    there is no way to see at a glance that a missing `secret` is 0 rather than
    a mistake -- which for a password field is the difference between masked and
@@ -174,6 +192,9 @@ static struct field fields[F_COUNT] = {
     FIELD("Timezone",      "Enter alone to use \"UTC\", or Europe/London",
           "Timezone, e.g. Europe/London",
           "That does not look like a timezone", 0, ok_tz),
+    FIELD("Desktop",       "xfce or hyprland (Enter = xfce)",
+          "Which desktop, xfce or hyprland?",
+          "Type xfce or hyprland", 0, ok_session),
 };
 
 /* |   label(18)   value */
@@ -785,6 +806,15 @@ static void collect(int idx) {
         if (read_line(buf, sizeof buf) && buf[0] && !valid_tz(buf))
             buf[0] = '\0';
         break;
+    case F_SESSION:
+        for (;;) {
+            printf("Desktop [xfce]: ");
+            fflush(stdout);
+            if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
+            if (ok_session(buf)) break;
+            printf("Type xfce or hyprland, or Enter for xfce.\n");
+        }
+        break;
     }
     snprintf(f->value, sizeof f->value, "%s", buf);
     f->has_value = 1;
@@ -1183,7 +1213,14 @@ int main(void) {
             return 1;
         }
     }
-    const char *supp[] = {"wheel", "users", "audio", "video", "dialout", "cdrom", NULL};
+    /* _seatd is for the Hyprland session: seatd runs as root and the session
+       user reaches its socket by group membership, not by being root
+       (copper-init starts it as `seatd -g _seatd`; the group is created by the
+       hypr build stage). On an image without that stage the group is absent and
+       this is a quiet no-op, exactly like any other missing supplementary group
+       below. */
+    const char *supp[] = {"wheel", "users", "audio", "video", "dialout", "cdrom",
+                          "_seatd", NULL};
     for (const char **g = supp; *g; g++) {
         /* A missing supplementary group is not worth aborting the boot for --
            the account itself already exists and works. And the output is
@@ -1232,6 +1269,23 @@ int main(void) {
         if (m) {
             fprintf(m, "%s\n%s\n", user, name);
             fclose(m);
+        }
+    }
+
+    /* Which desktop was chosen. copper-init reads the first line at the next
+       boot to decide which launcher its console hint names first; seatd is
+       started either way when it is present, so both launchers work from the
+       prompt. The launchers themselves do not read it, and anything unreadable
+       or unrecognised means XFCE, the desktop that has always been here. The
+       value is always the exact word copper-init matches -- "hyprland" or
+       "xfce" -- never the raw answer, so "Hyprland" or a stray word can never
+       become a machine that tries to start a desktop it was not told to. */
+    {
+        FILE *d = fopen("/etc/copper-desktop", "w");
+        if (d) {
+            fprintf(d, "%s\n",
+                    is_hyprland(fields[F_SESSION].value) ? "hyprland" : "xfce");
+            fclose(d);
         }
     }
 

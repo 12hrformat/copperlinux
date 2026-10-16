@@ -40,8 +40,10 @@ checkboxes above, with the reasoning kept so it doesn't have to be re-derived.
 3. **Grow the ingot repo** — `add more packages`. Five packages is a demo; the
    repo is the product.
 4. **More terminal commands / improve the tty** — the `improve the tty` line.
-5. **More desktops** — Awesome, then Hyprland. The Wayland/compositor stack is
-   the real work, not one more package.
+5. **More desktops** — **Hyprland is in the tree**: the compositor, the ML4W
+   config, `starthyprland`, and the wizard's Desktop question. Built and gated,
+   not yet booted — see HANDOFF. **Awesome** is next. The Wayland/compositor
+   stack was the real work, not one more package.
 6. **Custom artwork** — wallpapers, icons. Cheap, high-visible identity.
 7. **Docs site + custom domain** — the two unchecked lines at the top.
 
@@ -82,9 +84,10 @@ we'd hand someone, once these land. right now v1.2 is a target, not a date:
 - [ ] **more terminal commands** — keep filling in the base so a fresh shell
       answers what people actually type. busybox + coreutils already cover a
       lot; this is about the gaps.
-- [ ] **more than XFCE** — XFCE ships today. v1.2 adds other desktops and
-      window managers people can pick, starting with **Awesome** and
-      **Hyprland**, and more after those. (hyprland is wayland and drags in a
-      compositor stack — that is the real work here, not one more package.)
+- [ ] **more than XFCE** — XFCE ships today, and **Hyprland** is built into the
+      image behind the wizard's Desktop question (compositor + ML4W config +
+      `starthyprland`; built and gated, the boot is still owed). v1.2 adds more
+      desktops and window managers people can pick, **Awesome** next.
+      (Hyprland was the wayland one — a compositor stack, not one more package.)
 - [ ] **then tag it** — when those are in and booted on a real VM:
       **Copper Linux v1.2**.

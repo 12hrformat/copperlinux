@@ -1,0 +1,36 @@
+# Copper Linux -- the components starthyprland offers before it starts Hyprland.
+#
+# Three whitespace-separated columns:
+#
+#   <name>   <probe>                       <how>
+#
+# <probe> is a path that exists when the component is present. starthyprland
+# installs the missing ones whose <how> is "ingot", by asking ingot for them.
+# <how> of "image" means this stage already ships it in the ISO: it is kept
+# in this list so the report is honest about what a desktop is supposed to
+# have, but ingot has no such package and starthyprland will not try to install
+# one -- a missing "image" component is a broken image, said out loud.
+#
+# The ingot payloads here are the same ones copper-ingot-repo carries (firefox,
+# mousepad, ristretto, xarchiver, xfce4-taskmanager). They are not Hyprland-
+# specific, but they work under Wayland/XWayland and are the ones that exist in
+# the repo. Heavier Hyprland-only apps (if any) are not forced: the desktop
+# should start with what is baked.
+
+firefox             /usr/bin/firefox             ingot
+mousepad            /usr/bin/mousepad            ingot
+ristretto           /usr/bin/ristretto           ingot
+xarchiver           /usr/bin/xarchiver           ingot
+xfce4-taskmanager   /usr/bin/xfce4-taskmanager   ingot
+
+kitty               /usr/bin/kitty               image
+waybar              /usr/bin/waybar              image
+swaync              /usr/bin/swaync              image
+fuzzel              /usr/bin/fuzzel              image
+hyprpaper           /usr/bin/hyprpaper           image
+hyprlock            /usr/bin/hyprlock            image
+hypridle            /usr/bin/hypridle            image
+hyprsunset          /usr/bin/hyprsunset          image
+hyprpicker          /usr/bin/hyprpicker          image
+hyprpolkitagent     /usr/bin/hyprpolkitagent     image
+hyprland-guiutils   /usr/bin/hyprland-guiutils   image

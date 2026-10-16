@@ -34,6 +34,8 @@ The desktop is done: XFCE is packaged into the ISO and paints a desktop under
 QEMU and on real VMware (2026-10-11), with ingot as the package manager. The
 session user is done and boot-verified. Remaining work is confirming
 persistence (bug 20) and the two-boot `/tmp` case (bug 24) on a real boot.
+A second, optional desktop — **Hyprland** — is now built into the image and
+gated, but not yet booted; see *starthyprland* under "The desktop".
 
 Upstream projects are reference material. Nothing gets packaged as-is, and
 nothing gets stamped as Copper without being checked.
@@ -131,6 +133,10 @@ from artifacts that were taken apart and read before being trusted.
   `nslookup example.com` and a plain `wget` haven't all been run. The ingot
   payload downloads went over the real network and came through fine, but that
   specific three-command checklist is still unpaid.
+- **The Hyprland session, on any machine.** The compositor and its config are
+  built into the image and the launcher is gated (see *starthyprland* below),
+  but no boot has started it: CI has no GPU and the Windows build box cannot run
+  a glibc Wayland compositor. Built, not booted.
 - **VirtualBox's `vboxvideo`**, which cannot be probed at all: QEMU has no such
   display device. Every other display in the matrix has now been seen, on QEMU
   or on real VMware.
@@ -211,6 +217,57 @@ offered list lives in `iso/rootfs-overlay/etc/copper/xfce-apps`. Default is to
 ask first and install what's missing; on no, or if an install fails, the
 desktop starts anyway — a component that won't install is a warning, not a
 failure to launch.
+
+## starhyprland — the second, optional session
+
+Copper ships XFCE; **Hyprland** is the optional second desktop. The first-boot
+wizard now asks which one — a **Desktop** row in the table, `xfce` or
+`hyprland`, Enter for `xfce` — and records the answer as `/etc/copper-desktop`.
+`copper-init` reads the first line of that file at the next boot: it names the
+right launcher in its console hint, and starts `seatd` (when it is present, either
+way, so both launchers work from the prompt). Anything unreadable or
+unrecognised means XFCE, the desktop that is always present, so a half-written
+marker is never a machine with no desktop. The wizard also puts the session user
+in the `_seatd` group the seat daemon needs.
+
+The compositor and its ecosystem come from **`ppa:cppiber/hyprland` for noble**
+(Hyprland 0.56.2 — the version ML4W 2.17's Lua config requires, and a PPA built
+against noble's glibc 2.39, so nothing else in the desktop stage moves), and the
+ML4W config tree is fetched at a pinned commit from
+`12hrformat/copper-hyprland-configs` and checked against a sha256. Both are the
+**`hypr` build stage** (after `gui`): the PPA archive key is fetched by
+fingerprint and its fingerprint is checked before it is trusted; the closure is
+resolved with `apt-get --download-only` against an empty dpkg status file
+exactly the way `build_gui` resolves XFCE's; the config is unpacked to
+`/usr/share/copper/hyprland-skel`; and the stage gates itself with
+`Hyprland --version` and `waybar --version` inside a chroot before it stamps.
+
+`starthyprland` (`iso/starthyprland.sh`, POSIX sh) is the launcher, the twin of
+`startxfce`: it seeds the shipped config tree into the user's home, makes
+`XDG_RUNTIME_DIR`, brings up a session bus, checks the `seatd` socket, forces
+the software renderer on a machine with a DRM node but no render node, then
+execs the compositor. Its exit codes are a contract — **20** no Hyprland, **21**
+no config, **22** no runtime, **23** died on the way up, **24** usage, **25** a
+missing component and no terminal to ask on — and `tests/starthyprland-gate.sh`
+asserts every one against a stubbed compositor, alongside the prep ordering and
+the environment the compositor is handed.
+
+Two deliberate limits, both recorded rather than left to be found on a machine:
+
+- **Quickshell is not built.** ML4W 2.12+ uses it for the bar, but its pinned
+  commit requires Qt 6.6 (`QT_MIN_VERSION "6.6.0"`) and noble ships Qt 6.4.2, so
+  building it means dragging a second Qt into the image — a change of its own.
+  **Waybar is the bar here.**
+- **No systemd, no logind.** The seat comes from `seatd`, the bus from
+  `dbus-launch` by hand, and ML4W's startup path is its own
+  `hyprland.lua`/`conf/autostart.lua`, not systemd units — exactly as it is on a
+  systemd distro, where ML4W's installer masks its own units anyway. The `uwsm`
+  session manager is therefore not used.
+
+**Built, not booted.** Nothing here has run on a real machine: CI has no GPU,
+and the compositor is a glibc Wayland binary the Windows build box cannot run.
+What is proven is the build (the chroot gate) and the launcher (the gate); the
+session itself is the boot nobody has done yet.
 
 ---
 
@@ -545,18 +602,28 @@ Carried over from the pacman work, still true:
 
 - `iso/startxfce.sh` — the launcher: device detection (207-215), generated
   xorg.conf (204-251), server start (269-273), session exec (355).
+- `iso/starthyprland.sh` — the Hyprland launcher, the twin of `startxfce`:
+  seed config, runtime dir, bus, seatd check, renderer choice, exec.
 - `iso/build.sh` **gui stage only** (~895-995) — apt package list at 916,
   unpack, loader copy, gates.
+- `iso/build.sh` **hypr stage only** (~1261-1620) — the cppiber PPA key pin, the
+  empty-status closure, the config fetch-and-hash, the `_seatd` group, chroot
+  gates.
+- `iso/rootfs-overlay/etc/copper/hypr-apps` — what `starthyprland` offers.
 - `tests/startxfce-gate.sh` — CI runs it every push; keep it green.
+- `tests/starthyprland-gate.sh` — the Hyprland launcher's prep and exit codes,
+  against a stubbed compositor; runs via `tests/branch-gate.sh`.
 - `tests/xprobe-gate.sh` — drives the real `xprobe` binary against a synthetic
   X server; runs via `tests/branch-gate.sh` and the ISO workflow. Keep it green.
 
 **Not yours — do not restructure:**
 
-- `iso/build.sh` outside the gui stage: stamp helpers (~89-111),
+- `iso/build.sh` outside the gui and hypr stages: stamp helpers (~89-111),
   kernel/base/tools/copper/rootfs/initramfs/iso, the stage list at the bottom.
 - `src/`, `iso/live/init/`, `iso/src-init/`, `iso/firstboot/` — the verified
-  boot path. A regression there costs a boot.
+  boot path (the wizard gained one additive question, the Desktop row, and the
+  `_seatd` group; the rest of it is not to be restructured). A regression there
+  costs a boot.
 - `.github/workflows/build-iso.yml` — shared; touch only to add your own test
   name, in the same commit as the test.
 - `iso/out/` — build output, stays untracked.
@@ -566,7 +633,7 @@ Carried over from the pacman work, still true:
 # Repo map
 
 ```
-iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|gui|sudo|initramfs|iso|all
+iso/build.sh              stage pipeline: kernel|base|tools|copper|rootfs|gui|hypr|plymouth|sudo|initramfs|iso|all
 iso/sudo/sudoers          root ALL and %wheel ALL — the elevation contract for ingot
 iso/rootfs-overlay/usr/bin/ingot   the package manager (shipped; gated by ingot-gate)
 iso/rootfs-overlay/etc/ingot.conf  default Pages repo url, INGOT_REPO overrides
@@ -575,6 +642,8 @@ iso/live/init             initramfs: find the ISO, lay a writable overlay, switc
 iso/boot/grub.cfg         GRUB menu: normal, verbose, debug, initramfs-shell
 iso/src-init/copper-init.c    our PID 1
 iso/startxfce.sh           the XFCE launcher: probe the display, exec startxfce4
+iso/starthyprland.sh       the Hyprland launcher: seat, bus, renderer, exec
+iso/rootfs-overlay/etc/copper/hypr-apps   components starthyprland offers
 iso/x11/probe/xprobe.c     X server liveness probe, static, raw wire protocol
 iso/shutdown.sh            /sbin/shutdown: maps flags onto busybox halt/poweroff/reboot
 iso/firstboot/copper-firstboot.c   the OOBE wizard  (full run now verified)
@@ -585,6 +654,7 @@ tests/smoke.sh            19-assertion shell smoke test
 tests/account-gate.sh     asserts the shipped account/answer path
 tests/shutdown-gate.sh    proves /sbin/shutdown maps flags to the right applet
 tests/startxfce-gate.sh   21 cases: the launcher's display states and exit codes
+tests/starthyprland-gate.sh the Hyprland launcher's prep and exit codes, vs a stub
 tests/xprobe-gate.sh      the real xprobe binary vs a synthetic X server
 .github/workflows/build-iso.yml   per-stage CI steps + workspace cache
 ```
