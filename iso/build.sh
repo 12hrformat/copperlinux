@@ -692,6 +692,17 @@ build_rootfs() {
     done < <(comm -23 "$old" "$new")
   fi
   mv -f "$new" "$old"
+
+  # usr/share/mime/icons is a zero-byte legacy mapping that update-mime-database
+  # emits, and the gui and hypr stages each prune it after they run. A cache
+  # restore can still hold one from a build before those prunes existed, and the
+  # gate below would then fail here, in rootfs, before either stage can run.
+  # Drop the same empty mapping the stages drop, so the gate sees the tree the
+  # stages are trying to produce rather than one a previous build left behind.
+  if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
+    rm -f "$TGT/usr/share/mime/icons"
+  fi
+
 assert_no_empty_files
   assert_commands_reachable
   assert_shell_scripts_parse
@@ -728,7 +739,17 @@ assert_no_empty_files
 # valid Lua, and deleting them would break the config) and marker files whose
 # *presence* is the setting (`waybar-disabled`, `software.sh`). Naming the eight
 # files would only break again on the next re-pin, when upstream's next release
-# moves them; the subtree is the stable unit. Nothing else is exempted.
+# moves them; the subtree is the stable unit.
+#
+# mach_kernel is the vestigial cosmopolitan artifact: shipped empty, and
+# grub.cfg never boots it (the menu loads /boot/vmlinuz and /boot/initrd.img),
+# so an empty one costs nothing. Worth knowing it is a no-op file.
+#
+# Every exemption is a `! ...` term inside the one find below. Keep it that way:
+# a `#` comment inside a backslash-continued command ends the command at the
+# comment, so every term after it silently stops applying -- which is exactly
+# how bug 26's first fix went red, with the skel term skipped and the gate still
+# naming the files it was meant to exempt.
 assert_no_empty_files() {
   local empties
   empties=$( cd "$TGT" && find . -type f -size 0 \
@@ -736,12 +757,7 @@ assert_no_empty_files() {
     ! -path './etc/timezone' \
     ! -path './var/log/*' \
     ! -name '*.uuid' \
-    # Hyprland config skel: vendored data, empty files are intentional. See the
-    # note above.
     ! -path './usr/share/copper/hyprland-skel/*' \
-    # Vestigial cosmopolitan artifact. It is shipped empty and grub.cfg never
-    # boots it -- the menu entries load /boot/vmlinuz and /boot/initrd.img --
-    # so an empty mach_kernel costs nothing. Worth knowing it is a no-op file.
     ! -name 'mach_kernel' \
     -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort )
 
