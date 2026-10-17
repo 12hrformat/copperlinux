@@ -1484,7 +1484,7 @@ build_hypr() {
     # PPA's newer library always wins over an older base-stage copy even when
     # the base shipped a regular file under the same name (cp -a alone would
     # keep the older one).
-    cp -L -f "$so" "$TGT/$rel"
+    cp -a -f "$so" "$TGT/$rel"
   done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
   echo "  shared libraries from the stage take precedence over earlier packages"
 
