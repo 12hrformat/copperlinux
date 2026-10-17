@@ -283,6 +283,35 @@ symlink before uploading.
 
 ---
 
+# 29. `sudo reboot` / `sudo shutdown` do nothing under busybox init — impact 7/10
+
+**How it affects things:** on the booted image, typing `sudo reboot` or
+`sudo shutdown now` prints "System has not been booted with systemd as init
+system (PID 1). Can't operate." and the machine stays up. The user has to
+know to type `busybox reboot` (or find the power button) — and most will not.
+This is a real launch blocker for a live ISO: a user who cannot reboot cleanly
+will yank the power, which is worse for the overlay and any mounted disks.
+
+**What happens:** `/sbin/reboot` and `/sbin/shutdown` on the image are the
+systemd-flavoured ones (pulled in by a dependency that ships them), so they
+try to talk to PID 1 over the systemd D-Bus socket. PID 1 is busybox init, so
+there is no such socket and the call fails. BusyBox itself has working
+`reboot`/`poweroff`/`halt` applets, but they are not what `reboot` resolves to.
+
+**Root cause:** the image mixes glibc binaries from packages that assume
+systemd with an init that is not systemd. The package set never re-points the
+`reboot`/`shutdown`/`poweroff`/`halt` commands at the busybox applets.
+
+**Status:** not fixed. The minimal fix is a post-install step in `build.sh`
+that symlinks `/sbin/reboot`, `/sbin/shutdown`, `/sbin/poweroff` and
+`/sbin/halt` to `/bin/busybox` (or installs a tiny wrapper that calls
+`busybox reboot`), so the commands the user types work on busybox init.
+A regression test should boot the ISO and assert `reboot` exits 0 / the
+machine actually reboots. `sudo reboot` must keep working for the `wheel`
+user (sudoers already grants it).
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -634,7 +663,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-28 bugs total: 22 fixed, 6 open.
+29 bugs total: 22 fixed, 7 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -666,3 +695,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
 | bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
+| bug 29 | still open | `sudo reboot` / `sudo shutdown` do nothing under busybox init |  |
