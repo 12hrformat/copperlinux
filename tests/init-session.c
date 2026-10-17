@@ -182,6 +182,80 @@ int main(void) {
         }
     }
 
+    /* ------------------------------------------------- the libudev records */
+    /* Hyprland gets its keyboard and pointer from libinput, and libinput drops
+       every device libudev calls uninitialized. With no udev daemon in the
+       image nothing ever writes the record that clears that flag, so
+       seed_udev_input_db writes it by hand. Point it at a fake
+       /sys/class/input and check the one thing that matters: the file name and
+       the I: line libudev reads. */
+    {
+        char base[] = "/tmp/copper-init-input-XXXXXX";
+        char *dir = mkdtemp(base);
+        if (!dir) {
+            printf("FAIL mkdtemp: %s\n", strerror(errno));
+            fails++;
+        } else {
+            char sysdir[256], dbdir[256], p[320];
+            snprintf(sysdir, sizeof sysdir, "%s/input", dir);
+            snprintf(dbdir, sizeof dbdir, "%s/data", dir);
+            mkdir(sysdir, 0755);
+            mkdir(dbdir, 0755);
+
+            /* Two event nodes, and one that is not: the joystick node must be
+               skipped, because libinput only ever looks at event*. */
+            snprintf(p, sizeof p, "%s/event3", sysdir); mkdir(p, 0755);
+            snprintf(p, sizeof p, "%s/event3/dev", sysdir); put(p, "13:67\n");
+            snprintf(p, sizeof p, "%s/event4", sysdir); mkdir(p, 0755);
+            snprintf(p, sizeof p, "%s/event4/dev", sysdir); put(p, "13:68\n");
+            snprintf(p, sizeof p, "%s/js0", sysdir); mkdir(p, 0755);
+            snprintf(p, sizeof p, "%s/js0/dev", sysdir); put(p, "13:0\n");
+
+            int n = seed_udev_input_db(sysdir, dbdir);
+            if (n == 2) {
+                printf("ok   one record per event node, and only event nodes\n");
+            } else {
+                printf("FAIL wrote %d records, wanted 2\n", n);
+                fails++;
+            }
+
+            char buf[256] = "";
+            snprintf(p, sizeof p, "%s/c13:67", dbdir);
+            FILE *f = fopen(p, "r");
+            if (f) {
+                size_t r = fread(buf, 1, sizeof buf - 1, f);
+                buf[r] = '\0';
+                fclose(f);
+            }
+            if (strstr(buf, "I:") == buf) {
+                printf("ok   the record is named c<major>:<minor> and opens with I:\n");
+            } else {
+                printf("FAIL the record name or I: line is wrong (got '%s')\n", buf);
+                fails++;
+            }
+            unlink(p);
+
+            snprintf(p, sizeof p, "%s/c13:0", dbdir);
+            if (access(p, F_OK) != 0) {
+                printf("ok   a non-event node gets no record\n");
+            } else {
+                printf("FAIL a non-event node got a record\n");
+                fails++;
+            }
+
+            snprintf(p, sizeof p, "%s/c13:68", dbdir); unlink(p);
+            snprintf(p, sizeof p, "%s/event3/dev", sysdir); unlink(p);
+            snprintf(p, sizeof p, "%s/event3", sysdir); rmdir(p);
+            snprintf(p, sizeof p, "%s/event4/dev", sysdir); unlink(p);
+            snprintf(p, sizeof p, "%s/event4", sysdir); rmdir(p);
+            snprintf(p, sizeof p, "%s/js0/dev", sysdir); unlink(p);
+            snprintf(p, sizeof p, "%s/js0", sysdir); rmdir(p);
+            rmdir(dbdir);
+            rmdir(sysdir);
+            rmdir(dir);
+        }
+    }
+
     /* ------------------------------------------------------ power signals */
     /* The mapping the busybox halt/poweroff/reboot applets rely on. If these
        ever swap, `sudo reboot` powers the machine off instead of restarting
@@ -203,6 +277,15 @@ int main(void) {
         printf("ok   SIGUSR1 maps to halt\n");
     } else {
         printf("FAIL SIGUSR1 maps to halt\n");
+        fails++;
+    }
+    /* Ctrl-Alt-Del arrives as SIGINT. Every other init reboots on it, and this
+       one used to ignore it outright, which is how a wedged compositor left the
+       keyboard with no escape at all. */
+    if (power_how(SIGINT) == RB_AUTOBOOT) {
+        printf("ok   SIGINT (ctrl-alt-del) maps to reboot\n");
+    } else {
+        printf("FAIL SIGINT (ctrl-alt-del) maps to reboot\n");
         fails++;
     }
 

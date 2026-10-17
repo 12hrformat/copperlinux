@@ -311,6 +311,66 @@ init. `sudo` already grants `wheel` full rights, so elevation is unchanged.
 
 ---
 
+# 30. Hyprland comes up with no keyboard and no pointer — impact 10/10 [ASSIGNED TO 12HRFORMAT]
+
+**How it affects things:** on a real boot `starthyprland` starts the compositor:
+the wallpaper paints, the bar appears, and then nothing. The pointer will not
+move, no key types anywhere, no window can be opened. The session looks alive
+and cannot be used at all, and without the Ctrl-Alt-Del fix (bug 31) there was
+no way out of it either.
+
+**What happens:** Hyprland reads its keyboard and pointer through libinput.
+libinput enumerates `/sys/class/input/event*` through libudev and then discards
+every device `udev_device_get_is_initialized()` calls false. That flag does not
+mean the device is broken — it means a record for the device exists under
+`/run/udev/data`, which `systemd-udevd` is what writes. **This image runs no
+udev daemon** (no systemd, no udev — "no udev" in HANDOFF.md), so no record is
+ever written, libinput finds zero devices, and the compositor starts with no
+input.
+
+**Root cause:** a deliberately udev-less image meets a library whose device
+enumeration is gated on a udev daemon having run. XFCE never showed the bug
+because `startxfce.sh` writes an `/etc/X11/xorg.conf` with `AutoAddDevices
+false` and an explicit evdev section per device: Xorg opens those paths
+directly and never asks libudev whether they are "initialized".
+
+**Status:** fixed 2026-10-17. `seed_udev_input_db()` in `copper-init.c` writes
+the record the daemon would have: for each `/sys/class/input/eventN` it writes
+`/run/udev/data/c<major>:<minor>` holding `I:<usec>` and `E:ID_INPUT=1`. It
+runs as root before the login shell, so the records are in place before
+`starthyprland` can be typed. `starthyprland` now warns if the records are
+missing rather than leaving a dead pointer unexplained, and
+`tests/init-session.c` asserts the file name and the `I:` line libudev reads.
+
+**Not covered yet:** hotplug. A keyboard plugged in after boot gets no record
+until the shell is restarted (PID 1 reruns the seeder each pass). Fine for a VM
+whose devices are present from boot; a real udev replacement is the eventual
+answer.
+
+---
+
+# 31. Ctrl-Alt-Del does nothing — no way out of a stuck session — impact 7/10 [ASSIGNED TO 12HRFORMAT]
+
+**How it affects things:** when the session wedges — dead input (bug 30), a
+compositor that stopped responding, anything — the one escape that every Linux
+gives you is Ctrl-Alt-Del, and here it did nothing. There was no way back to a
+login except reaching for the VM's power control or the host's reset.
+
+**What happens:** the kernel does not reboot on Ctrl-Alt-Del itself. It sends
+SIGINT to PID 1 and lets init decide, and Copper's PID 1 installed `SIG_IGN` on
+SIGINT — so the signal was received and thrown away, on purpose, every time.
+
+**Root cause:** the signal table treated Ctrl-Alt-Del as "not a thing this init
+should act on", which is a defensible-sounding choice that turns out to be a
+trap the moment a session stops responding. sysvinit, busybox init and systemd
+all reboot on Ctrl-Alt-Del.
+
+**Status:** fixed 2026-10-17. `copper-init.c` now installs its power handler on
+SIGINT, and `power_how(SIGINT)` returns `RB_AUTOBOOT`, so Ctrl-Alt-Del reboots
+the way it does everywhere else. `tests/init-session.c` asserts the mapping.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -662,7 +722,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-29 bugs total: 23 fixed, 6 open.
+31 bugs total: 25 fixed, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -695,3 +755,5 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
 | bug 29 | 12hrformat | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17) |
+| bug 30 | 12hrformat | Hyprland had no keyboard or pointer — libinput wants udev records nothing wrote | (2026-10-17) |
+| bug 31 | 12hrformat | Ctrl-Alt-Del did nothing — PID 1 ignored SIGINT | (2026-10-17) |
