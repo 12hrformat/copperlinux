@@ -91,6 +91,21 @@ if ! id -nG 2>/dev/null | grep -qw _seatd; then
     say "  fix: sudo addgroup $(id -un) _seatd   (then log out and back in)"
 fi
 
+# The other half of "input works". The group above lets the compositor reach
+# seatd and open the devices; libinput then has to accept each one, and it
+# discards every device libudev calls uninitialized. Only a record under
+# /run/udev/data clears that flag, there is no udev daemon in this image, and
+# PID 1 writes those records at boot (seed_udev_input_db in copper-init.c). If
+# they are missing the compositor still starts -- seat, config and DRM master
+# all fine -- with a pointer that does not move and a keyboard that types
+# nowhere, so say it rather than leave the user to guess.
+if [ -d /sys/class/input ] && ! ls /run/udev/data/c* >/dev/null 2>&1; then
+    say "warning: no libudev records under /run/udev/data, so libinput will"
+    say "  take no input device and the session will have a dead pointer and no"
+    say "  keyboard. PID 1 writes these at boot; seeing them missing means it"
+    say "  found no /sys/class/input/event* to write them for."
+fi
+
 usage() {
     cat <<'EOF'
 starthyprland -- start the Hyprland compositor on the tty

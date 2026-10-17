@@ -26,6 +26,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef TIOCSCTTY
@@ -331,6 +332,64 @@ static void grant_devices(const struct session *s) {
     closedir(d);
 }
 
+/* Make the input devices visible to libinput.
+
+   Hyprland gets its keyboard and pointer from libinput, and libinput throws
+   away every device that libudev calls "not initialized". That flag does not
+   mean the device is broken: it means udevd has written a record for it under
+   /run/udev/data. This image runs no udev daemon -- the note under "the
+   desktop as a real user" in HANDOFF.md explains why -- so nothing ever writes
+   those records, libinput enumerates /sys/class/input/event*, discards every
+   one, and the compositor comes up with a pointer that does not move and a
+   keyboard that types nowhere. XFCE never noticed because startxfce writes an
+   xorg.conf naming the evdev nodes directly, and Xorg does not consult libudev
+   for them.
+
+   The record is small: one file per device, named for its device number
+   ("c13:64"), whose I: line carries the initialise stamp. Write them by hand,
+   as root and before the shell starts. This is not a udev replacement -- it
+   does not follow hotplug -- but it is exactly what libudev reads, and the
+   devices in a VM are present from boot anyway.
+
+   Takes the sysfs directory and the database directory as arguments rather
+   than naming the real ones, so tests/init-session.c can point it at a fake
+   tree. Returns how many records it wrote. */
+static int seed_udev_input_db(const char *sysdir, const char *dbdir) {
+    DIR *d = opendir(sysdir);
+    if (!d) return 0;
+
+    unsigned long long usec = 0;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+        usec = (unsigned long long)ts.tv_sec * 1000000ULL
+             + (unsigned long long)ts.tv_nsec / 1000ULL;
+
+    char src[320], dst[320], num[64];
+    int written = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, "event", 5) != 0) continue;
+        snprintf(src, sizeof src, "%s/%s/dev", sysdir, e->d_name);
+        FILE *in = fopen(src, "r");
+        if (!in) continue;
+        if (!fgets(num, sizeof num, in)) {
+            fclose(in);
+            continue;
+        }
+        fclose(in);
+        num[strcspn(num, "\r\n")] = '\0';
+        if (strchr(num, ':') == NULL) continue;
+        snprintf(dst, sizeof dst, "%s/c%s", dbdir, num);
+        FILE *out = fopen(dst, "w");
+        if (!out) continue;
+        fprintf(out, "I:%llu\nE:ID_INPUT=1\n", usec);
+        fclose(out);
+        written++;
+    }
+    closedir(d);
+    return written;
+}
+
 /* Directories the session expects that nothing else has made.
 
    /dev/shm is where glibc's shm_open() keeps its files; devtmpfs does not
@@ -478,7 +537,7 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
-/* Which reboot(2) action an incoming power signal means.
+/* Which reboot(2) action an incoming signal means.
 
    These are busybox init's signal names, chosen so the busybox halt /
    poweroff / reboot applets and our /sbin/shutdown all agree on one
@@ -486,10 +545,15 @@ static pid_t spawn_tty(int tty) {
 
        SIGTERM -> reboot      SIGUSR2 -> poweroff      SIGUSR1 -> halt
 
+   SIGINT is not one of those: the kernel turns Ctrl-Alt-Del into SIGINT for
+   PID 1, and every other Linux init reboots on it. It is listed here rather
+   than left to the halt fallback because a keyboard trap that halts the
+   machine instead of restarting it would be worse than the trap.
+
    Kept as its own function so the mapping is unit-testable without actually
    rebooting the machine that runs the test -- see tests/init-session.c. */
 static int power_how(int sig) {
-    if (sig == SIGTERM) return RB_AUTOBOOT;
+    if (sig == SIGTERM || sig == SIGINT) return RB_AUTOBOOT;
     if (sig == SIGUSR2) return RB_POWER_OFF;
     return RB_HALT_SYSTEM;              /* SIGUSR1, SIGPWR */
 }
@@ -695,10 +759,20 @@ int main(void) {
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            1);
 
-    /* Power signals get real handlers (see on_power_signal). SIGINT and
-       SIGHUP stay ignored: Ctrl-Alt-Del and a terminal hangup are not things
-       this init should act on. SIGCHLD is left at its default, because the
-       reaper below relies on waitpid. */
+    /* Power signals get real handlers (see on_power_signal), and Ctrl-Alt-Del
+       is one of them.
+
+       The kernel turns Ctrl-Alt-Del into SIGINT for PID 1, and this init used
+       to throw it away: SIGINT was SIG_IGN. That is invisible until a session
+       stops responding -- dead input, a wedged compositor -- and then the one
+       escape the kernel still offers, the one that works without a working
+       session at all, is the one being ignored. A stuck screen had no way out
+       but a power cycle. Every other Linux init reboots on Ctrl-Alt-Del, and
+       so does this one now.
+
+       SIGHUP stays ignored: a terminal hangup is not a reason to take the
+       machine down. SIGCHLD is left at its default, because the reaper below
+       relies on waitpid. */
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_power_signal;
@@ -710,7 +784,7 @@ int main(void) {
 #ifdef SIGPWR
     sigaction(SIGPWR, &sa, NULL);       /* halt (ACPI power button) */
 #endif
-    signal(SIGINT, SIG_IGN);
+    sigaction(SIGINT, &sa, NULL);       /* ctrl-alt-del -> reboot */
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
 
@@ -833,6 +907,16 @@ int main(void) {
        same tty, so two shells fought over stdin -- typing came out garbled and
        the banner printed twice. */
     for (;;) {
+        /* The libudev records, before the shell for the same reason the seat
+           is: the compositor needs them the moment starthyprland runs. Every
+           pass, not just the first, so a session that logs out and back in --
+           or a keyboard that only showed up later -- still gets its records.
+           /run/udev is ours to make; there is no daemon to have made it. */
+        mkdir("/run/udev", 0755);
+        int seeded = seed_udev_input_db("/sys/class/input", "/run/udev/data");
+        if (seeded > 0)
+            say("input: wrote %d libudev record(s) so libinput takes the devices",
+                seeded);
         grant_devices(&g_session);
         prepare_session_dirs(&g_session);
         pid_t session = spawn_tty(1);
