@@ -1480,7 +1480,11 @@ build_hypr() {
   while IFS= read -r so; do
     rel=${so#"$STAGE"/}
     mkdir -p "$TGT/$(dirname "$rel")"
-    cp -a "$so" "$TGT/$rel"
+    # -L dereferences symlinks to real files; -f forces the overwrite, so the
+    # PPA's newer library always wins over an older base-stage copy even when
+    # the base shipped a regular file under the same name (cp -a alone would
+    # keep the older one).
+    cp -L -f "$so" "$TGT/$rel"
   done < <(find "$STAGE" \( -name '*.so' -o -name '*.so.*' \) | LC_ALL=C sort)
   echo "  shared libraries from the stage take precedence over earlier packages"
 
@@ -1661,6 +1665,7 @@ build_hypr() {
     echo "  libxkbcommon versions: $(strings "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null | sed -n '/^V_/p' | tr '\n' ' ')"
     if ! strings "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null | grep -qx 'V_1.11.0'; then
       echo "hypr: staged libxkbcommon does not provide V_1.11.0; Hyprland would refuse to start (see its log at /tmp/hyprland.log on the booted image)" >&2
+      exit 1
     fi
   fi
   if ! chroot "$TGT" /usr/bin/Hyprland --version \
