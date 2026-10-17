@@ -1485,7 +1485,7 @@ build_hypr() {
     # the base shipped a regular file under the same name (cp -a alone would
     # keep the older one).
     cp -L -f "$so" "$TGT/$rel"
-  done < <(find "$STAGE" \( -name '*.so' -o -name '*.so.*' \) | LC_ALL=C sort)
+  done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
   echo "  shared libraries from the stage take precedence over earlier packages"
 
   # The loader, defensively: the gui stage creates it, and every glibc ELF
