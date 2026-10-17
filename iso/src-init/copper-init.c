@@ -405,9 +405,12 @@ static void start_seatd(void) {
         }
     }
 
-    /* Firstboot may have run before the _seatd group existed, so the user
-       never got added. On every boot after firstboot, add them now so
-       libseat can open input devices (cursor/keyboard in Hyprland). */
+    /* Firstboot may have run before the _seatd group existed, so the account
+       never got added to it. Put it there now, before the login shell starts,
+       so libseat can open the input devices (cursor/keyboard in Hyprland).
+       Only when the group actually exists and the user is really not in it --
+       addgroup's "already a member" complaint on every boot would be noise on
+       the console. */
     {
         FILE *dm = fopen("/etc/copper-firstboot.done", "r");
         if (dm) {
@@ -415,11 +418,20 @@ static void start_seatd(void) {
             if (fgets(uname, sizeof uname, dm)) {
                 char *nl = strchr(uname, '\n');
                 if (nl) *nl = '\0';
-                if (uname[0]) {
-                    char cmd[128];
-                    snprintf(cmd, sizeof cmd, "/bin/busybox addgroup %s _seatd", uname);
-                    int rc = system(cmd);
-                    (void)rc;
+                struct group *sg = uname[0] ? getgrnam("_seatd") : NULL;
+                struct passwd *pw = uname[0] ? getpwnam(uname) : NULL;
+                if (sg && pw) {
+                    int ng = 32, i, have = 0;
+                    gid_t groups[32];
+                    if (getgrouplist(uname, pw->pw_gid, groups, &ng) >= 0)
+                        for (i = 0; i < ng; i++)
+                            if (groups[i] == sg->gr_gid) have = 1;
+                    if (!have) {
+                        char cmd[160];
+                        snprintf(cmd, sizeof cmd, "/bin/busybox addgroup %s _seatd", uname);
+                        int rc = system(cmd);
+                        (void)rc;
+                    }
                 }
             }
             fclose(dm);

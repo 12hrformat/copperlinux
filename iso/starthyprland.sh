@@ -77,27 +77,19 @@ SUDO=${COPPER_SUDO-sudo}
 # empty COPPER_SUDO really does disable sudo instead of reviving the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
-# Make sure the user is in _seatd so libseat can open input devices. The group
-# may have been created at boot (copper-init) but the account never added to it
-# (firstboot already ran). Add them now and re-exec so this session picks it up.
-if ! id -nG 2>/dev/null | grep -qw _seatd; then
-    if [ -n "$SUDO" ]; then
-        $SUDO addgroup "$(id -un)" _seatd 2>/dev/null || true
-    else
-        addgroup "$(id -un)" _seatd 2>/dev/null || true
-    fi
-    # Re-exec with the group so Hyprland inherits it without a re-login.
-    if command -v sg >/dev/null 2>&1; then
-        exec sg _seatd "$0" "$@"
-    elif command -v newgrp >/dev/null 2>&1; then
-        exec newgrp _seatd "$0" "$@"
-    fi
-    # No sg/newgrp available: warn and continue; input may not work until re-login.
-    say "warning: could not switch to the _seatd group; input devices may not work"
-    say "  (log out and back in, or run: sudo addgroup $(id -un) _seatd)"
-fi
-
 say() { printf 'starthyprland: %s\n' "$1"; }
+
+# libseat opens the input devices through seatd, and seatd only serves a client
+# whose account is in _seatd. The group is created by the hypr build stage,
+# copper-init recreates it at boot, and both the first-boot wizard and
+# copper-init put the user in it. None of that can help a session that is
+# already logged in, so if this one is somehow missing the group the compositor
+# comes up with a dead cursor and no keyboard -- say so instead of leaving the
+# user to guess. A re-login (or reboot) picks up the membership.
+if ! id -nG 2>/dev/null | grep -qw _seatd; then
+    say "warning: this account is not in the _seatd group, so input may not work"
+    say "  fix: sudo addgroup $(id -un) _seatd   (then log out and back in)"
+fi
 
 usage() {
     cat <<'EOF'
