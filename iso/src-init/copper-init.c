@@ -405,6 +405,27 @@ static void start_seatd(void) {
         }
     }
 
+    /* Firstboot may have run before the _seatd group existed, so the user
+       never got added. On every boot after firstboot, add them now so
+       libseat can open input devices (cursor/keyboard in Hyprland). */
+    {
+        FILE *dm = fopen("/etc/copper-firstboot.done", "r");
+        if (dm) {
+            char uname[64];
+            if (fgets(uname, sizeof uname, dm)) {
+                char *nl = strchr(uname, '\n');
+                if (nl) *nl = '\0';
+                if (uname[0]) {
+                    char cmd[128];
+                    snprintf(cmd, sizeof cmd, "/bin/busybox addgroup %s _seatd", uname);
+                    int rc = system(cmd);
+                    (void)rc;
+                }
+            }
+            fclose(dm);
+        }
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         say("could not fork seatd: %s", strerror(errno));

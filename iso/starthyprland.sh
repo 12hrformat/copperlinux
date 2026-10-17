@@ -77,6 +77,26 @@ SUDO=${COPPER_SUDO-sudo}
 # empty COPPER_SUDO really does disable sudo instead of reviving the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
+# Make sure the user is in _seatd so libseat can open input devices. The group
+# may have been created at boot (copper-init) but the account never added to it
+# (firstboot already ran). Add them now and re-exec so this session picks it up.
+if ! id -nG 2>/dev/null | grep -qw _seatd; then
+    if [ -n "$SUDO" ]; then
+        $SUDO addgroup "$(id -un)" _seatd 2>/dev/null || true
+    else
+        addgroup "$(id -un)" _seatd 2>/dev/null || true
+    fi
+    # Re-exec with the group so Hyprland inherits it without a re-login.
+    if command -v sg >/dev/null 2>&1; then
+        exec sg _seatd "$0" "$@"
+    elif command -v newgrp >/dev/null 2>&1; then
+        exec newgrp _seatd "$0" "$@"
+    fi
+    # No sg/newgrp available: warn and continue; input may not work until re-login.
+    say "warning: could not switch to the _seatd group; input devices may not work"
+    say "  (log out and back in, or run: sudo addgroup $(id -un) _seatd)"
+fi
+
 say() { printf 'starthyprland: %s\n' "$1"; }
 
 usage() {

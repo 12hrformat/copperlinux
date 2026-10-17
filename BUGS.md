@@ -302,13 +302,12 @@ there is no such socket and the call fails. BusyBox itself has working
 systemd with an init that is not systemd. The package set never re-points the
 `reboot`/`shutdown`/`poweroff`/`halt` commands at the busybox applets.
 
-**Status:** not fixed. The minimal fix is a post-install step in `build.sh`
-that symlinks `/sbin/reboot`, `/sbin/shutdown`, `/sbin/poweroff` and
-`/sbin/halt` to `/bin/busybox` (or installs a tiny wrapper that calls
-`busybox reboot`), so the commands the user types work on busybox init.
-A regression test should boot the ISO and assert `reboot` exits 0 / the
-machine actually reboots. `sudo reboot` must keep working for the `wheel`
-user (sudoers already grants it).
+**Status:** fixed 2026-10-17. `build.sh` now symlinks `/sbin/reboot`,
+`/sbin/poweroff` and `/sbin/halt` to `/bin/busybox` in both the rootfs and gui
+stages (so the gui stage's systemd/sysvinit-utils versions cannot clobber
+them), and `sbin/shutdown` already maps its flags onto those applets.
+`sudo reboot` / `sudo shutdown now` / `sudo poweroff` now work on busybox
+init. `sudo` already grants `wheel` full rights, so elevation is unchanged.
 
 ---
 
@@ -663,7 +662,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-29 bugs total: 22 fixed, 7 open.
+29 bugs total: 23 fixed, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -695,4 +694,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
 | bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
-| bug 29 | still open | `sudo reboot` / `sudo shutdown` do nothing under busybox init |  |
+| bug 29 | 12hrformat | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17) |

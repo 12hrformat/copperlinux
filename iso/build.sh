@@ -607,6 +607,14 @@ local SRC="$ROOT/../src"
   # applets, which signal PID 1; see on_power_signal() in copper-init.c.
   install -m 0755 "$ROOT/shutdown.sh" "$TGT/sbin/shutdown"
 
+  # reboot/poweroff/halt: the glibc packages ship systemd-flavoured versions
+  # that try to talk to PID 1 over D-Bus. PID 1 here is busybox init, so they
+  # fail with "System has not been booted with systemd". Point them at the
+  # busybox applets instead, which signal PID 1 the way copper-init expects.
+  for cmd in reboot poweroff halt; do
+    ln -sf /bin/busybox "$TGT/sbin/$cmd"
+  done
+
   # switch_root is going to need all of these, and a staged tree missing one
   # of them is a black screen on a machine with no shell to debug it from.
   # Say it here, where it costs a second. (The udhcpc lease script is checked
@@ -1292,6 +1300,12 @@ build_gui() {
     echo "     could not format a disk for persistence" >&2
     exit 1
   fi
+
+  # Re-point reboot/poweroff/halt at busybox: the gui stage just copied
+  # systemd/sysvinit-utils versions that cannot talk to busybox init (bug 29).
+  for cmd in reboot poweroff halt; do
+    ln -sf /bin/busybox "$TGT/sbin/$cmd"
+  done
 
   echo "  display stack staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
   stamp_set "$WORK/gui.stamp" "$SELF"
