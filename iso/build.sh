@@ -703,6 +703,16 @@ build_rootfs() {
     rm -f "$TGT/usr/share/mime/icons"
   fi
 
+  # A cache restore can leave empty files behind from a previous build's later
+  # stages (kitty/python __init__.py, sensors.d/.placeholder, ...). Those
+  # stages prune their own empties during their run, but rootfs runs first and
+  # the gate below would otherwise fail on the stale copies. Drop every empty
+  # regular file now, except the two the gate already exempts by name, so the
+  # gate sees the tree the stages are trying to produce.
+  find "$TGT" -type f -size 0 \
+    ! -path './etc/motd' ! -path './etc/timezone' ! -name 'mach_kernel' \
+    -delete 2>/dev/null || true
+
 assert_no_empty_files
   assert_commands_reachable
   assert_shell_scripts_parse
