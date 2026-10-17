@@ -37,7 +37,7 @@ only 5 of the 9 packages. Their pages are published now; gone.
 
 ---
 
-# 18. `sudo shutdown now` / `sudo reboot` do nothing — impact 4/10
+# 18. `sudo shutdown now` / `sudo reboot` do nothing — impact 4/10 [ASSIGNED TO FARCROWX]
 
 **How it affects things:** there is no clean reboot or shutdown from the
 desktop or a shell. The only way off is a forced power-off, which scribbles
@@ -72,7 +72,7 @@ checks the signal mapping — but nothing in CI boots the image.
 
 ---
 
-# 20. persistence isn't built — the writable layer is RAM — impact 10/10
+# 20. persistence isn't built — the writable layer is RAM — impact 10/10b [ASSIGNED TO FARCROWX]
 
 **How it affects things:** every reboot throws your files away, and the disk
 you attach to the VM is never written to. This is the root cause behind bug 15.
@@ -283,7 +283,7 @@ symlink before uploading.
 
 ---
 
-# 29. `sudo reboot` / `sudo shutdown` do nothing under busybox init — impact 7/10
+# 29. `sudo reboot` / `sudo shutdown` do nothing under busybox init — impact 8/10 [ASSIGNED TO FARCROWX]
 
 **How it affects things:** on the booted image, typing `sudo reboot` or
 `sudo shutdown now` prints "System has not been booted with systemd as init
