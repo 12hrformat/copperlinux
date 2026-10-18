@@ -529,6 +529,48 @@ static const struct {
     { TAG_SWITCH,        "ID_INPUT_SWITCH" }
 };
 
+/* The decided tags as short names, for the boot log: "KEY KEYBOARD", or
+   "none" when a device got only ID_INPUT -- the one outcome that makes
+   libinput drop it. Written into buf; always NUL-terminated. */
+static void tag_names(unsigned tags, char *buf, size_t bufsz)
+{
+    size_t used = 0;
+
+    if (bufsz == 0)
+        return;
+    buf[0] = '\0';
+    for (size_t i = 0; i < sizeof input_tags / sizeof input_tags[0]; i++) {
+        const char *name;
+
+        if (!(tags & input_tags[i].flag))
+            continue;
+        /* "ID_INPUT_" is a fixed 9-byte prefix on every property. */
+        name = input_tags[i].property + 9;
+        if (used && used + 1 < bufsz)
+            buf[used++] = ' ';
+        for (size_t j = 0; name[j] && used + 1 < bufsz; j++)
+            buf[used++] = name[j];
+        buf[used] = '\0';
+    }
+    if (buf[0] == '\0' && bufsz > 4)
+        memcpy(buf, "none", 5);
+}
+
+/* A sysfs attribute holding a newline-trimmed string. Returns 0 when it is
+   not there or empty. */
+static int read_attr(const char *dir, const char *attr, char *out, size_t outsz) {
+    char path[384];
+    snprintf(path, sizeof path, "%s/%s", dir, attr);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(out, 1, outsz - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    n = strcspn(out, "\r\n");
+    out[n] = '\0';
+    return n > 0;
+}
+
 /* A sysfs attribute holding one hex number, or 0 when it is not there. */
 static unsigned hex_attr(const char *dir, const char *attr) {
     char path[384], buf[32];
@@ -767,6 +809,18 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir, int *typed)
            record is written: the record is the only place the answer can go,
            and libinput ignores a device whose record names no type. */
         unsigned tags = input_device_tags(devdir);
+
+        /* Name every device and its verdict, every pass. The compositor's
+           silence when it drops a device is total -- libinput logs at a
+           debug level Aquamarine turns into nothing -- so this line is the
+           only place a bad classification can ever be seen. The sysfs
+           name is what makes it actionable: it says which physical
+           device the verdict belongs to. */
+        char names[128], devname[64];
+        tag_names(tags, names, sizeof names);
+        if (!read_attr(devdir, "name", devname, sizeof devname))
+            snprintf(devname, sizeof devname, "(unnamed)");
+        say("input: %s \"%s\" -> %s", e->d_name, devname, names);
 
         DIR *v = opendir(devdir);
         if (!v) continue;

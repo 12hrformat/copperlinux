@@ -476,15 +476,32 @@ the rest. This image has no udev, so nobody ever wrote them, and the two fixes
 before this one repaired parts of the record that were never the part libinput
 was reading.
 
-**Status:** fix in the tree, **not yet verified on a boot**.
-`seed_udev_input_db()` now classifies each device the way udev's `input_id`
-does — the same sysfs attributes, the same rules, including its joystick
-heuristics — and writes the type tags next to `ID_INPUT=1`. `tests/init-session.c`
-drives it with a keyboard's bitmaps, a mouse's and a device that earns no type,
-and PID 1 reports how many records named a type, so this bug reads at boot as
-`input: none names a type, so libinput will ignore every device` instead of
-looking like absent hardware. Closing it needs a real boot with a moving
-pointer.
+**Status:** fix in the tree, **half-verified on a boot**. The classifier, the
+sysfs walk and the record format are all proven: on the real boot after the
+fix the **pointer moves**. The keyboard still types nowhere, and the gate above
+leaves only two ways that can be: its record is missing, or its record carries
+no type. Everything else was ruled out against libinput's source — a bare
+`ID_INPUT_KEY` is enough (both it and `ID_INPUT_KEYBOARD` map to the same
+`EVDEV_UDEV_TAG_KEYBOARD`), the word order matches systemd's parser, and the
+key bitmap is well inside the seeder's buffer.
+
+Neither the seeder nor the session said anything per device, so a boot could
+not tell those two apart. Both do now:
+
+- PID 1 logs one line per input device, every pass — the sysfs name and the
+  tags it decided (`input: input0 "AT Translated Set 2 keyboard" -> KEY
+  KEYBOARD`). A device whose `capabilities/ev` reads empty but whose key bitmap
+  has real keys in it is still given its `KEY` tag: the one deliberate
+  departure from udev here, on the grounds that an extra tag costs a setting
+  and a missing one costs the device.
+- `starthyprland` names every device and what its record says, and prints that
+  list only when at least one device would be dropped. The old check asked
+  "does any record carry a type", which the working mouse always answered yes
+  to — it stayed silent through exactly this failure.
+- `tests/starthyprland-gate.sh` drives the preflight against a fake input tree
+  (cases 20-22): keyboard dropped, all typed, no records at all.
+
+Closing this needs one more boot, whose log now names the fate of every device.
 
 ---
 
@@ -876,4 +893,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 31 | 12hrformat | Ctrl-Alt-Del did nothing — PID 1 ignored SIGINT | (2026-10-17) |
 | bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
 | bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
-| bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` | (fix in tree 2026-10-18) |
+| bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` (pointer boot-verified 2026-10-18; keyboard still silent, PID 1 now names each device) | (fix in tree 2026-10-18) |
