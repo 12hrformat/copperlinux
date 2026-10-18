@@ -796,7 +796,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-32 bugs total: 26 fixed, 6 open.
+33 bugs total: 27 fixed, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
