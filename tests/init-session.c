@@ -52,6 +52,90 @@ static void put(const char *path, const char *text) {
     fclose(f);
 }
 
+/* Create a directory and every parent above it. */
+static void mkpath(const char *path) {
+    char tmp[320];
+    snprintf(tmp, sizeof tmp, "%s", path);
+    for (char *p = tmp + 1; *p != '\0'; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        (void)mkdir(tmp, 0755);
+        *p = '/';
+    }
+    (void)mkdir(tmp, 0755);
+}
+
+/* Write `text` to `dir`/`rel`, making `dir` and any parent it needs first. */
+static void put_in(const char *dir, const char *rel, const char *text) {
+    char path[320];
+    snprintf(path, sizeof path, "%s/%s", dir, rel);
+    char *slash = strrchr(path, '/');
+    if (slash) {
+        *slash = '\0';
+        mkpath(path);
+        *slash = '/';
+    }
+    put(path, text);
+}
+
+/* Delete a file, or a tree under it, ignoring what is not there. The fixture
+   is three directories deep and the test's job is the assertions, not a tidy
+   /tmp. */
+static void rmtree(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) {
+        (void)unlink(path);
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char child[320];
+        snprintf(child, sizeof child, "%s/%s", path, e->d_name);
+        rmtree(child);
+    }
+    closedir(d);
+    (void)rmdir(path);
+}
+
+/* One fake input device, laid out the way sysfs lays one out: a directory
+   named inputN under `sysdir` carrying its capability attributes, and its
+   event node underneath, with the device number the record is named for. `event`
+   of NULL is a device that has no event node, which is also a case worth
+   having. `caps` is an attribute/contents table ending in two NULLs. */
+static void fake_device(const char *sysdir, const char *name, const char *event,
+                        const char *dev, const char *(*caps)[2]) {
+    char rel[192];
+    for (int i = 0; caps[i][0] != NULL; i++) {
+        snprintf(rel, sizeof rel, "%s/capabilities/%s", name, caps[i][0]);
+        put_in(sysdir, rel, caps[i][1]);
+    }
+    if (event == NULL) return;
+    snprintf(rel, sizeof rel, "%s/%s/dev", name, event);
+    put_in(sysdir, rel, dev);
+}
+
+/* The contents of one record, or "" when there is no such record. */
+static void record_text(const char *dbdir, const char *dev, char *buf, size_t bufsz) {
+    char path[320];
+    snprintf(path, sizeof path, "%s/c%s", dbdir, dev);
+    buf[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    size_t r = fread(buf, 1, bufsz - 1, f);
+    buf[r] = '\0';
+    fclose(f);
+}
+
+/* Does that record name a device type? A type is the underscore in
+   E:ID_INPUT_KEYBOARD=1 and its fellows; E:ID_INPUT=1 alone is the record
+   libinput reads and then throws the device away from. */
+static int record_names_type(const char *dbdir, const char *dev) {
+    char buf[512];
+    record_text(dbdir, dev, buf, sizeof buf);
+    return strstr(buf, "E:ID_INPUT_") != NULL;
+}
+
 int main(void) {
     /* An account that certainly exists, so the test never touches the account
        database. The wizard's own user cannot be used: it only exists after a
@@ -204,7 +288,14 @@ int main(void) {
        /sys/class/input and a database directory that does not exist yet --
        making that directory is the function's job, because the version that
        left it to the caller wrote nothing at all -- and check the file name
-       and the I: line libudev reads. */
+       and the I: line libudev reads.
+
+       The record has to name a device type as well. libinput reads udev's
+       ID_INPUT_* tags and discards any device whose only tag is ID_INPUT, so a
+       record that says no more than before leaves the session exactly as dead
+       as no record at all. The fixtures below are the bitmaps the kernel
+       prints for a keyboard and a mouse, most significant word first, and the
+       assertions are that each record names what its device is. */
     {
         char base[] = "/tmp/copper-init-input-XXXXXX";
         char *dir = mkdtemp(base);
@@ -212,47 +303,108 @@ int main(void) {
             printf("FAIL mkdtemp: %s\n", strerror(errno));
             fails++;
         } else {
-            char sysdir[256], dbdir[256], p[320];
+            char sysdir[256], dbdir[256], p[320], buf[512];
             snprintf(sysdir, sizeof sysdir, "%s/input", dir);
             snprintf(dbdir, sizeof dbdir, "%s/data", dir);
-            mkdir(sysdir, 0755);
-            /* Deliberately not created: making dbdir is the seeder's job, and
-               the first version of it left that to the caller, so every write
-               failed with ENOENT while the boot log read like a machine with
-               no input devices at all. */
+            mkpath(sysdir);
+            /* dbdir is deliberately not created: making it is the seeder's
+               job, and the first version left that to the caller, so every
+               write failed with ENOENT while the boot log read like a machine
+               with no input devices at all. */
 
-            /* Two event nodes, and one that is not: the joystick node must be
-               skipped, because libinput only ever looks at event*. */
-            snprintf(p, sizeof p, "%s/event3", sysdir); mkdir(p, 0755);
-            snprintf(p, sizeof p, "%s/event3/dev", sysdir); put(p, "13:67\n");
-            snprintf(p, sizeof p, "%s/event4", sysdir); mkdir(p, 0755);
-            snprintf(p, sizeof p, "%s/event4/dev", sysdir); put(p, "13:68\n");
-            snprintf(p, sizeof p, "%s/js0", sysdir); mkdir(p, 0755);
-            snprintf(p, sizeof p, "%s/js0/dev", sysdir); put(p, "13:0\n");
+            /* A full keyboard: EV_SYN, EV_KEY, EV_MSC, EV_LED and EV_REP, and
+               the first 32 keys, so udev's keyboard test finds ESC, the
+               numbers and Q to D. */
+            static const char *keyboard[][2] = {
+                { "ev",  "120013" },
+                { "key", "fffffffffffffffe" },
+                { NULL, NULL },
+            };
+            /* A mouse: SYN, KEY and REL; REL_X and REL_Y; and BTN_LEFT to
+               BTN_MIDDLE, which are bits 16-18 of the fifth word -- the word
+               at the front, because the kernel prints these most significant
+               first. */
+            static const char *mouse[][2] = {
+                { "ev",  "7" },
+                { "rel", "3" },
+                { "key", "70000 0 0 0 0" },
+                { NULL, NULL },
+            };
+            /* An input device that earns no type: EV_SYN and nothing else. It
+               still gets a record -- libudev wants one per event node -- but no
+               type in it, which is the shape that left the session with a
+               pointer that did not move and a keyboard that typed nowhere. */
+            static const char *no_type[][2] = {
+                { "ev", "1" },
+                { NULL, NULL },
+            };
 
-            int n = seed_udev_input_db(sysdir, dbdir);
-            if (n == 2) {
+            fake_device(sysdir, "input3", "event3", "13:67\n", keyboard);
+            fake_device(sysdir, "input4", "event4", "13:68\n", mouse);
+            fake_device(sysdir, "input5", "event5", "13:69\n", no_type);
+            /* Capabilities but no event node: the record would have nothing to
+               be named for, so no record is written. */
+            fake_device(sysdir, "input6", NULL, NULL, keyboard);
+            /* A class entry that is not an input device at all. */
+            put_in(sysdir, "js0/dev", "13:0\n");
+
+            int typed = -1;
+            int n = seed_udev_input_db(sysdir, dbdir, &typed);
+            if (n == 3) {
                 printf("ok   one record per event node, and only event nodes\n");
             } else {
-                printf("FAIL wrote %d records, wanted 2\n", n);
+                printf("FAIL wrote %d records, wanted 3\n", n);
+                fails++;
+            }
+            if (typed == 2) {
+                printf("ok   it counts the records that name a device type\n");
+            } else {
+                printf("FAIL counted %d typed records, wanted 2\n", typed);
                 fails++;
             }
 
-            char buf[256] = "";
-            snprintf(p, sizeof p, "%s/c13:67", dbdir);
-            FILE *f = fopen(p, "r");
-            if (f) {
-                size_t r = fread(buf, 1, sizeof buf - 1, f);
-                buf[r] = '\0';
-                fclose(f);
-            }
+            record_text(dbdir, "13:67", buf, sizeof buf);
             if (strstr(buf, "I:") == buf) {
                 printf("ok   the record is named c<major>:<minor> and opens with I:\n");
             } else {
                 printf("FAIL the record name or I: line is wrong (got '%s')\n", buf);
                 fails++;
             }
-            unlink(p);
+            if (strstr(buf, "E:ID_INPUT=1\n") && strstr(buf, "E:ID_INPUT_KEY=1\n")) {
+                printf("ok   the keyboard's record calls it a key device\n");
+            } else {
+                printf("FAIL the keyboard's record has no ID_INPUT_KEY (got '%s')\n", buf);
+                fails++;
+            }
+            if (strstr(buf, "E:ID_INPUT_KEYBOARD=1\n")) {
+                printf("ok   the keyboard's record calls it a keyboard\n");
+            } else {
+                printf("FAIL the keyboard's record has no ID_INPUT_KEYBOARD "
+                       "(got '%s')\n", buf);
+                fails++;
+            }
+
+            if (record_names_type(dbdir, "13:68")) {
+                printf("ok   the mouse's record names a type\n");
+            } else {
+                printf("FAIL the mouse's record names no type\n");
+                fails++;
+            }
+            record_text(dbdir, "13:68", buf, sizeof buf);
+            if (strstr(buf, "E:ID_INPUT_MOUSE=1\n")) {
+                printf("ok   and the type is ID_INPUT_MOUSE\n");
+            } else {
+                printf("FAIL the mouse is not a mouse (got '%s')\n", buf);
+                fails++;
+            }
+
+            record_text(dbdir, "13:69", buf, sizeof buf);
+            if (buf[0] != '\0' && strstr(buf, "E:ID_INPUT=1\n") && !strstr(buf, "E:ID_INPUT_")) {
+                printf("ok   a device with no type still gets its record\n");
+            } else {
+                printf("FAIL a typeless device's record is wrong (got '%s')\n", buf);
+                fails++;
+            }
 
             snprintf(p, sizeof p, "%s/c13:0", dbdir);
             if (access(p, F_OK) != 0) {
@@ -262,16 +414,9 @@ int main(void) {
                 fails++;
             }
 
-            snprintf(p, sizeof p, "%s/c13:68", dbdir); unlink(p);
-            snprintf(p, sizeof p, "%s/event3/dev", sysdir); unlink(p);
-            snprintf(p, sizeof p, "%s/event3", sysdir); rmdir(p);
-            snprintf(p, sizeof p, "%s/event4/dev", sysdir); unlink(p);
-            snprintf(p, sizeof p, "%s/event4", sysdir); rmdir(p);
-            snprintf(p, sizeof p, "%s/js0/dev", sysdir); unlink(p);
-            snprintf(p, sizeof p, "%s/js0", sysdir); rmdir(p);
-            rmdir(dbdir);
-            rmdir(sysdir);
-            rmdir(dir);
+            rmtree(sysdir);
+            rmtree(dbdir);
+            rmtree(dir);
         }
     }
 

@@ -289,6 +289,23 @@ Two deliberate limits, both recorded rather than left to be found on a machine:
   systemd distro, where ML4W's installer masks its own units anyway. The `uwsm`
   session manager is therefore not used.
 
+**Input needs two things, and only one of them is obvious.** The seat (group +
+seatd + the drm node) lets the compositor open the devices; libinput then has to
+*accept* each one, and it accepts only devices whose udev record exists —
+bug #30 — **and names a device type** — bug #34. That second half is the one
+that looks like a working boot when it is missing: the compositor starts, seat
+and DRM are fine, and the pointer simply does not move. So
+`seed_udev_input_db()` (copper-init.c) does not just write the `I:` line any
+more: it reads each device's sysfs capabilities and classifies it exactly the
+way udev's `input_id` builtin would — keyboard, mouse, touchpad, joystick and
+the rest — writing `ID_INPUT_KEYBOARD=1` and its fellows into the record. PID 1
+reports `wrote N record(s), M naming a device type` at boot, and warns loudly
+when M is 0; `starthyprland.sh` warns from the user's side. The unit test drives
+the classifier with real keyboard/mouse bitmaps (`tests/init-session.c`), but
+the whole chain — record → libinput → moving pointer — is still **not
+boot-verified**: that is the open half of bug #34, and a boot is not done until
+the log shows `M` greater than 0 and the pointer moves.
+
 **Built, not booted.** Nothing here has run on a real machine: CI has no GPU,
 and the compositor is a glibc Wayland binary the Windows build box cannot run.
 What is proven is the build (the chroot gate) and the launcher (the gate); the

@@ -445,6 +445,49 @@ booted.
 
 ---
 
+# 34. the libudev records name no device type — input is still dead — impact 10/10 [ASSIGNED TO 12HRFORMAT]
+
+**How it affects things:** exactly like #30 again, on a real boot, after the
+records had been written and the boot log said so. Two fixes in (#30, #32), the
+seeder reporting records written, and the session still came up with a pointer
+that does not move and a keyboard that types nowhere.
+
+**What happens:** libinput does not work out what a device is from its kernel
+capabilities — it reads udev's `ID_INPUT_*` tags, and the gate near the top of
+`evdev_device_create()` in libinput's `evdev.c` drops a device the moment its
+tags say nothing beyond the type-agnostic one:
+
+    if ((udev_tags & EVDEV_UDEV_TAG_INPUT) == 0 ||
+        (udev_tags & ~EVDEV_UDEV_TAG_INPUT) == 0)
+                goto err;   /* "not tagged as supported input device" */
+
+`ID_INPUT` alone makes the second half of that test true, so every record this
+image wrote was read, parsed and thrown away — the same outcome as the missing
+directory in #32, reached from the other side. And the drop is silent where it
+matters: libinput logs it at INFO, Aquamarine maps libinput's non-ERROR levels
+to DEBUG, and Hyprland filters those, so nothing reaches the serial log.
+
+**Root cause:** the seeder wrote the initialise stamp and `E:ID_INPUT=1`, which
+is what libudev needs to call a device initialized, and stopped. On a real
+machine the rest comes from udev's `input_id` builtin, which reads
+`capabilities/{ev,key,rel,abs}` and `properties` out of sysfs and writes down
+the verdict — `ID_INPUT_KEYBOARD`, `ID_INPUT_MOUSE`, `ID_INPUT_TOUCHPAD` and
+the rest. This image has no udev, so nobody ever wrote them, and the two fixes
+before this one repaired parts of the record that were never the part libinput
+was reading.
+
+**Status:** fix in the tree, **not yet verified on a boot**.
+`seed_udev_input_db()` now classifies each device the way udev's `input_id`
+does — the same sysfs attributes, the same rules, including its joystick
+heuristics — and writes the type tags next to `ID_INPUT=1`. `tests/init-session.c`
+drives it with a keyboard's bitmaps, a mouse's and a device that earns no type,
+and PID 1 reports how many records named a type, so this bug reads at boot as
+`input: none names a type, so libinput will ignore every device` instead of
+looking like absent hardware. Closing it needs a real boot with a moving
+pointer.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -796,7 +839,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-33 bugs total: 27 fixed, 6 open.
+34 bugs total: 27 fixed, 7 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -833,3 +876,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 31 | 12hrformat | Ctrl-Alt-Del did nothing — PID 1 ignored SIGINT | (2026-10-17) |
 | bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
 | bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
+| bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` | (fix in tree 2026-10-18) |
