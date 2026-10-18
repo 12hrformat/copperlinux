@@ -67,6 +67,12 @@ WAIT_TRIES=${WAIT_TRIES:-100}
 # without a GPU or a running seatd; nothing here overrides them.
 DRM_DIR=${COPPER_DRM_DIR:-/dev/dri}
 SEATD=${COPPER_SEATD_SOCK:-/run/seatd.sock}
+# Where the input devices and the libudev records PID 1 writes live. Real paths
+# by default; overridable for the same reason as the two above -- the gate has
+# to be able to show the "a device gets dropped" branch without a machine that
+# has a keyboard it drops.
+INPUT_SYS=${COPPER_INPUT_SYS:-/sys/class/input}
+UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
 
 # The component manifest and the installer it drives. starthyprland only offers
 # components; it does not hardcode which ones.
@@ -102,28 +108,54 @@ fi
 # the compositor still starts, seat, config and DRM master all fine, with a
 # pointer that does not move and a keyboard that types nowhere -- so say which
 # half is missing rather than leave the user to guess.
-if [ -d /sys/class/input ] && ! ls /run/udev/data/c* >/dev/null 2>&1; then
-    say "warning: no libudev records under /run/udev/data, so libinput will"
+if [ -d "$INPUT_SYS" ] && ! ls "$UDEV_DATA"/c* >/dev/null 2>&1; then
+    say "warning: no libudev records under $UDEV_DATA, so libinput will"
     say "  take no input device and the session will have a dead pointer and no"
     say "  keyboard. PID 1 writes one record per input device at boot, so none"
     say "  here means it wrote none: no event node, or it could not write into"
     say "  the directory."
-elif [ -d /sys/class/input ]; then
-    typed=no
-    for rec in /run/udev/data/c*; do
-        [ -f "$rec" ] || continue
-        if grep -q 'E:ID_INPUT_' "$rec" 2>/dev/null; then
-            typed=yes
-            break
-        fi
+elif [ -d "$INPUT_SYS" ]; then
+    # Per device, not "does any record carry a type". A pointer that moves
+    # while nothing types is one specific device being dropped, and a record
+    # with a type in it somewhere says nothing about the device that is
+    # missing one -- so the earlier form of this check stayed silent through
+    # exactly the failure it was written for. The device's own name is what
+    # makes a line actionable, and every device is listed so that "not here"
+    # can be told apart from "here, with no type".
+    listed=""
+    nl='
+'
+    dropped=no
+    for dev in "$INPUT_SYS"/input*; do
+        [ -d "$dev" ] || continue
+        devname=$(cat "$dev/name" 2>/dev/null)
+        for node in "$dev"/event*; do
+            [ -d "$node" ] || continue
+            num=$(cat "$node/dev" 2>/dev/null)
+            rec="$UDEV_DATA/c$num"
+            tags=$(grep 'E:ID_INPUT_' "$rec" 2>/dev/null)
+            what=""
+            for t in $tags; do what="$what $t"; done
+            if [ -z "$what" ]; then
+                what=" (no ID_INPUT_* line, libinput drops it)"
+                dropped=yes
+            fi
+            listed="$listed$nl  $node \"$devname\" ->$what"
+        done
     done
-    if [ "$typed" = no ]; then
-        say "warning: the libudev records under /run/udev/data name no device"
-        say "  type, and libinput drops every device whose only tag is ID_INPUT:"
-        say "  dead pointer, no keyboard, session up as if all were well. PID 1"
-        say "  writes the type from the device's sysfs capabilities"
-        say "  (seed_udev_input_db in copper-init.c), so none here means it read"
-        say "  no capabilities out of /sys/class/input/input*."
+    if [ "$dropped" = yes ]; then
+        say "warning: libinput will ignore at least one input device, and a"
+        say "  dropped keyboard is a session where the pointer moves and nothing"
+        say "  types. Every input device, and what its record says:"
+        oldifs=$IFS
+        IFS='
+'
+        for line in $listed; do say "$line"; done
+        IFS=$oldifs
+        say "  PID 1 writes each record from the device's sysfs capabilities"
+        say "  (seed_udev_input_db in copper-init.c), so a line above with no"
+        say "  ID_INPUT_* is a device it read no capabilities out of, and a"
+        say "  device that is not listed at all had no event node to write."
     fi
 fi
 
@@ -148,6 +180,10 @@ Environment, all optional:
   COPPER_INGOT       installer for the components  (default ingot)
   COPPER_SUDO        how to gain root for the install (default sudo; empty
                      means already root or never use it)
+  COPPER_DRM_DIR     where DRM nodes live        (default /dev/dri)
+  COPPER_SEATD_SOCK  seatd's socket              (default /run/seatd.sock)
+  COPPER_INPUT_SYS   where the input devices live (default /sys/class/input)
+  COPPER_UDEV_DATA   the libudev records PID 1 writes (default /run/udev/data)
   XDG_RUNTIME_DIR    the session's private runtime directory (default
                      /run/user/<uid>, made here when missing)
 

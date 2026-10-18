@@ -84,6 +84,12 @@ run_sut() {
     SUT_DRM=${SUT_DRM:-$TMP/dri}
     SUT_SEATD=${SUT_SEATD:-$TMP/no-seatd.sock}
     SUT_RUNTIME=${SUT_RUNTIME:-$TMP/run}
+    # Point the input preflight at a tree that does not exist unless a case
+    # builds one: on a Linux host /sys/class/input is real and has devices, and
+    # the preflight would then narrate this machine's own input instead of the
+    # case under test.
+    SUT_INPUT_SYS=${SUT_INPUT_SYS:-$TMP/no-input}
+    SUT_UDEV_DATA=${SUT_UDEV_DATA:-$TMP/no-udevdata}
     # stdin is /dev/null, so the launcher's interactive questions are never put
     # to a terminal here: every case below is deterministic whether or not the
     # person running the gate has one, and the pty case at the end drives the
@@ -95,6 +101,7 @@ run_sut() {
     COPPER_HYPR_APPS="${APPS_MANIFEST:-$TMP/no-apps}" \
     COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
     COPPER_DRM_DIR="$SUT_DRM" COPPER_SEATD_SOCK="$SUT_SEATD" \
+    COPPER_INPUT_SYS="$SUT_INPUT_SYS" COPPER_UDEV_DATA="$SUT_UDEV_DATA" \
     WAIT_TRIES="$tries" sh "$SUT" "$@" < /dev/null 2>&1
 }
 
@@ -137,6 +144,42 @@ EOF
     chmod +x "$TMP/ingot"
     SKEL="$TMP/skel"
     INGOT_STUB="$TMP/ingot"
+}
+
+# The input-records cases share one shape: a bare home, a config to seed from, a
+# compositor that comes up, and a fake input tree under $TMP whose records the
+# case decides. The preflight reads /sys/class/input and /run/udev/data for real,
+# which is this host's own input on Linux, so run_sut points it at this tree
+# instead. setup_input_case leaves SUT_INPUT_SYS and SUT_UDEV_DATA set; the
+# caller clears them after the case.
+setup_input_case() {
+    reset
+    mkdir -p "$TMP/skel/.config/hypr"
+    printf -- '-- cfg\n' > "$TMP/skel/.config/hypr/hyprland.lua"
+    SKEL="$TMP/skel"
+    cat > "$TMP/Hyprland" <<EOF
+#!/bin/sh
+mkdir -p "\$XDG_RUNTIME_DIR/hypr/gate"
+: > "\$XDG_RUNTIME_DIR/hypr/gate/.socket.sock"
+sleep 1
+exit 0
+EOF
+    chmod +x "$TMP/Hyprland"
+
+    # The two devices from the machine this bug was found on: an AT keyboard and
+    # a PS/2 mouse, each with one event node carrying the device number its
+    # record is named after. The mouse's record always names a type, because the
+    # mouse works -- that is what makes the keyboard's silence the bug.
+    mkdir -p "$TMP/input/input0/capabilities" "$TMP/input/input0/event0" \
+             "$TMP/input/input1/capabilities" "$TMP/input/input1/event1" \
+             "$TMP/udevdata"
+    printf 'AT Translated Set 2 keyboard\n' > "$TMP/input/input0/name"
+    printf '13:3\n' > "$TMP/input/input0/event0/dev"
+    printf 'ImExPS/2 Generic Explorer Mouse\n' > "$TMP/input/input1/name"
+    printf '13:4\n' > "$TMP/input/input1/event1/dev"
+    printf 'I:1\nE:ID_INPUT=1\nE:ID_INPUT_MOUSE=1\n' > "$TMP/udevdata/c13:4"
+    SUT_INPUT_SYS="$TMP/input"
+    SUT_UDEV_DATA="$TMP/udevdata"
 }
 
 echo "=== it has to parse as POSIX sh, not just as bash ==="
@@ -467,8 +510,7 @@ hasnt "  never invokes the installer" "ingot-stub: install" "$out"
 has "  still seeds the shipped config" "session config seeded" "$out"
 
 echo
-echo "=== case 19: the interactive question (needs a pty) ==="
-# The only case that must be answered by a person: run_sut sends stdin from
+echo "=== case 19: the interactive question (needs a pty) ==="# The only case that must be answered by a person: run_sut sends stdin from
 # /dev/null, so the question only exists under a terminal. `script` supplies
 # one; where it is absent (the Windows box this tree is kept on) the case is
 # skipped rather than failed, the same shape as the python3-gated seat case.
@@ -490,6 +532,49 @@ else
     has "  Enter defaults to installing" "installing the hyprland config files (hypr-configs)" "$out"
     has "  the installer really was invoked" "ingot-stub: install hypr-configs" "$out"
 fi
+
+echo
+echo "=== case 20: a record with no type is named, per device ==="
+# The shape this was written for: the mouse's record names a type (the pointer
+# works), the keyboard's names only ID_INPUT, so libinput drops it and the
+# session comes up with a pointer that moves and a keyboard that types nowhere.
+# The old preflight asked "does any record carry a type" and went quiet here;
+# it has to name the device instead.
+setup_input_case
+printf 'I:1\nE:ID_INPUT=1\n' > "$TMP/udevdata/c13:3"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; SUT_INPUT_SYS=; SUT_UDEV_DATA=
+eq "  exit code is 0" 0 "$rc"
+has "  says a device will be ignored" "will ignore at least one input device" "$out"
+has "  names the device it will drop" "AT Translated Set 2 keyboard" "$out"
+has "  shows the event node" "event0" "$out"
+has "  says the record has no type line" "no ID_INPUT_* line" "$out"
+has "  shows the working mouse with its type" \
+    'Generic Explorer Mouse" -> E:ID_INPUT_MOUSE=1' "$out"
+hasnt "  does not flag the typed mouse as dropped" \
+    'Generic Explorer Mouse" -> (no ID_INPUT_* line' "$out"
+
+echo
+echo "=== case 21: every device typed -> the preflight stays quiet ==="
+setup_input_case
+printf 'I:1\nE:ID_INPUT=1\nE:ID_INPUT_KEY=1\nE:ID_INPUT_KEYBOARD=1\n' \
+    > "$TMP/udevdata/c13:3"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; SUT_INPUT_SYS=; SUT_UDEV_DATA=
+eq "  exit code is 0" 0 "$rc"
+hasnt "  says nothing about dropping devices" \
+    "will ignore at least one input device" "$out"
+
+echo
+echo "=== case 22: a device with no record at all is named too ==="
+# No event node has a record: the first branch fires, and it must not claim to
+# list devices when it cannot, but it must say what is missing.
+setup_input_case
+rm -f "$TMP/udevdata"/c*
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; SUT_INPUT_SYS=; SUT_UDEV_DATA=
+eq "  exit code is 0" 0 "$rc"
+has "  says there are no records" "no libudev records under" "$out"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
