@@ -574,12 +574,26 @@ static int power_how(int sig) {
    ("go through init"). Copper's PID 1 used to ignore SIGUSR1/SIGUSR2/SIGTERM,
    so `sudo reboot` and `sudo poweroff` silently did nothing (bug 18).
    sync() twice -- the second pass is the usual belt and braces for the
-   persisted overlay upper -- then hand the machine to the kernel. */
+   persisted overlay upper -- then hand the machine to the kernel.
+
+   If reboot(2) refuses, this used to _exit(0), which kills PID 1: the kernel
+   panics "Attempted to kill init" and takes the reason down with it. The
+   handler now reports on the console (write(2), because printf is not
+   async-signal-safe; fd 2 is /dev/console, main() dup2s it there) and
+   returns instead -- the session below keeps running and the machine stays
+   up, which is the better failure for a live image. Returning makes the
+   interrupted waitpid in the main loop come back with EINTR, so that loop
+   retries rather than reading it as "the session ended" (two shells, one
+   tty -- the bug described at spawn_tty).
+   updated by farcrowx, bug 33, iso/src-init/copper-init.c:on_power_signal */
 static void on_power_signal(int sig) {
     sync();
     sync();
-    reboot(power_how(sig));
-    _exit(0);                           /* only if reboot(2) failed */
+    if (reboot(power_how(sig)) != 0) {
+        static const char msg[] =
+            "copper-init: reboot(2) failed; system stays up\n";
+        write(STDERR_FILENO, msg, sizeof msg - 1);
+    }
 }
 
 /* ---- the boot splash ------------------------------------------------------
@@ -933,8 +947,16 @@ int main(void) {
         prepare_session_dirs(&g_session);
         pid_t session = spawn_tty(1);
         int wst;
+        /* EINTR, not a bare wait: the power handler above returns when
+           reboot(2) fails, and a returning handler leaves the syscall it
+           interrupted with EINTR. Read as "the session ended" that would
+           spawn a second copper-sh on the same tty -- the two-shells bug
+           described above -- so retry on EINTR and only treat a real reap as
+           the session's end.
+           updated by farcrowx, bug 33, iso/src-init/copper-init.c (main loop) */
         if (session > 0)
-            waitpid(session, &wst, 0);
+            while (waitpid(session, &wst, 0) < 0 && errno == EINTR)
+                ;
     }
     return 0;                        /* never reached */
 }

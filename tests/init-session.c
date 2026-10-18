@@ -23,10 +23,24 @@
  */
 
 #define main copper_init_main
+/* reboot(2) is faked for this whole translation unit, so the failure-path
+ * test can make it FAIL: a real reboot(2) here would reboot (or halt) the
+ * machine the test runs on. copper-init.c's #include <sys/reboot.h> therefore
+ * declares fake_reboot instead of reboot, and its one call site -- the power
+ * handler -- calls it. The mapping tests below still use the RB_* macros,
+ * which the macro does not touch.
+ * updated by farcrowx, bug 33, tests/init-session.c */
+#define reboot fake_reboot
 #include "copper-init.c"
+#undef reboot
 #undef main
 
 static int fails;
+
+/* Matches the declaration sys/reboot.h left behind via the macro above.
+ * Always fails: EPERM is what reboot(2) answers when it refuses. */
+static int fake_reboot_how = -1;
+int fake_reboot(int how) { fake_reboot_how = how; errno = EPERM; return -1; }
 
 static void ok(const char *what) { printf("ok   %s\n", what); }
 static void bad(const char *what) { printf("FAIL %s\n", what); fails++; }
@@ -292,6 +306,70 @@ int main(void) {
     } else {
         printf("FAIL SIGINT (ctrl-alt-del) maps to reboot\n");
         fails++;
+    }
+#ifdef SIGPWR
+    /* The ACPI power button lands as SIGPWR, and power_how()'s comment has
+       promised "halt" for it since bug 18 -- but nothing asserted it, so the
+       mapping shipped untested. Same stakes as the others: a swapped signal
+       powers the machine off when it should stop, or vice versa. */
+    if (power_how(SIGPWR) == RB_HALT_SYSTEM) {
+        printf("ok   SIGPWR (power button) maps to halt\n");
+    } else {
+        printf("FAIL SIGPWR (power button) maps to halt\n");
+        fails++;
+    }
+#endif
+
+    /* ------------------------------------------------- the failure path */
+    /* reboot(2) refusing must not take PID 1 down with it: the handler used
+       to _exit(0), the kernel panicked "Attempted to kill init", and the
+       reason was never printed (bug 33). It has to report on stderr (which
+       main() points at /dev/console) and return, having applied the signal's
+       action (SIGTERM -> RB_AUTOBOOT, checked through fake_reboot_how --
+       which also proves the real reboot(2) was never reached: this test
+       cannot power off the machine it runs on). */
+    {
+        int pfd[2];
+        if (pipe(pfd) != 0) {
+            printf("FAIL pipe: %s\n", strerror(errno));
+            fails++;
+        } else {
+            pid_t pid = fork();
+            if (pid == 0) {
+                dup2(pfd[1], STDERR_FILENO);
+                close(pfd[0]);
+                close(pfd[1]);
+                fake_reboot_how = -1;
+                on_power_signal(SIGTERM);
+                /* Reached only if the handler returned instead of
+                   _exit()ing; 43 means it never even asked to reboot. */
+                _exit(fake_reboot_how == RB_AUTOBOOT ? 42 : 43);
+            }
+            close(pfd[1]);
+            char msg[256];
+            ssize_t r = read(pfd[0], msg, sizeof msg - 1);
+            if (r < 0) r = 0;
+            msg[r] = '\0';
+            close(pfd[0]);
+            int st = 0;
+            if (pid > 0) waitpid(pid, &st, 0);
+            if (WIFEXITED(st) && WEXITSTATUS(st) == 42) {
+                printf("ok   the handler returns when reboot(2) fails "
+                       "(PID 1 would survive)\n");
+            } else {
+                printf("FAIL the handler must return when reboot(2) fails "
+                       "(exit %d, signal %d)\n",
+                       WIFEXITED(st) ? WEXITSTATUS(st) : -1,
+                       WIFSIGNALED(st) ? WTERMSIG(st) : -1);
+                fails++;
+            }
+            if (strstr(msg, "reboot(2) failed") != NULL) {
+                printf("ok   it says why, on the console (stderr)\n");
+            } else {
+                printf("FAIL no failure message on stderr (got '%s')\n", msg);
+                fails++;
+            }
+        }
     }
 
     if (fails) {
