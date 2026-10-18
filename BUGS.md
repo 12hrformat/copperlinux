@@ -371,6 +371,38 @@ the way it does everywhere else. `tests/init-session.c` asserts the mapping.
 
 ---
 
+# 32. the libudev-record fix for #30 wrote nothing — impact 10/10 [ASSIGNED TO 12HRFORMAT]
+
+**How it affects things:** exactly like #30, on a real boot, after a green CI run
+and a clean boot log. `starthyprland` still came up with a dead pointer and no
+keyboard, and the boot log carried no line saying a record was written. The
+first fix had shipped, passed its test, and done nothing.
+
+**What happens:** `seed_udev_input_db()` builds the record path as
+`<dbdir>/c<major>:<minor>` and opens it with `fopen(dst, "w")`, but the call in
+the boot loop only created `/run/udev` — never `/run/udev/data` underneath it,
+and the function did not make its own directory either. Every `fopen` therefore
+failed with `ENOENT`, `written` stayed 0, the boot message was never printed,
+and the launcher's warning fired. The boot log read exactly like a machine whose
+input devices were not present, which sent the diagnosis at the kernel and the
+device enumeration instead of at the six lines that were written to write a file
+into a directory that did not exist.
+
+**Root cause:** the seeder depended on its caller having made its output
+directory, and the caller made only the parent. `tests/init-session.c` did not
+catch it because the test fixture created the directory itself before calling
+the function — the one arrangement in which the bug cannot happen. The test was
+shaped around the code instead of around the use.
+
+**Status:** fixed 2026-10-17. `seed_udev_input_db()` now makes its own database
+directory (`mkdir(dbdir, 0755)`, EEXIST ignored on every pass after the first),
+and PID 1 says `input: no /sys/class/input/event* node to seed yet` when it
+writes none, so a future failure is legible at boot instead of looking like
+absent hardware. The test fixture no longer creates the directory, so the test
+fails if the seeder stops making it.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -722,7 +754,7 @@ Each of these cost a wrong turn once. All were checked against real sources.
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-31 bugs total: 25 fixed, 6 open.
+32 bugs total: 26 fixed, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -757,3 +789,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 29 | 12hrformat | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17) |
 | bug 30 | 12hrformat | Hyprland had no keyboard or pointer — libinput wants udev records nothing wrote | (2026-10-17) |
 | bug 31 | 12hrformat | Ctrl-Alt-Del did nothing — PID 1 ignored SIGINT | (2026-10-17) |
+| bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |

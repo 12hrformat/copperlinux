@@ -358,6 +358,15 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir) {
     DIR *d = opendir(sysdir);
     if (!d) return 0;
 
+    /* The database directory is ours to make: there is no udev daemon here to
+       have made it. The caller creates the parent (/run/udev), but a record
+       cannot be written until the leaf directory itself exists, and mkdir's
+       failure is deliberately ignored -- EEXIST is the normal case on every
+       pass after the first. Without this, every fopen() below fails with
+       ENOENT and the function reports zero records while looking, to the boot
+       log, exactly like a machine with no input devices at all. */
+    (void)mkdir(dbdir, 0755);
+
     unsigned long long usec = 0;
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
@@ -911,12 +920,15 @@ int main(void) {
            is: the compositor needs them the moment starthyprland runs. Every
            pass, not just the first, so a session that logs out and back in --
            or a keyboard that only showed up later -- still gets its records.
-           /run/udev is ours to make; there is no daemon to have made it. */
+           /run/udev is ours to make; there is no daemon to have made it, and
+           the seeder makes the data/ directory under it. */
         mkdir("/run/udev", 0755);
         int seeded = seed_udev_input_db("/sys/class/input", "/run/udev/data");
         if (seeded > 0)
             say("input: wrote %d libudev record(s) so libinput takes the devices",
                 seeded);
+        else
+            say("input: no /sys/class/input/event* node to seed yet");
         grant_devices(&g_session);
         prepare_session_dirs(&g_session);
         pid_t session = spawn_tty(1);

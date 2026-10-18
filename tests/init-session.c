@@ -187,8 +187,10 @@ int main(void) {
        every device libudev calls uninitialized. With no udev daemon in the
        image nothing ever writes the record that clears that flag, so
        seed_udev_input_db writes it by hand. Point it at a fake
-       /sys/class/input and check the one thing that matters: the file name and
-       the I: line libudev reads. */
+       /sys/class/input and a database directory that does not exist yet --
+       making that directory is the function's job, because the version that
+       left it to the caller wrote nothing at all -- and check the file name
+       and the I: line libudev reads. */
     {
         char base[] = "/tmp/copper-init-input-XXXXXX";
         char *dir = mkdtemp(base);
@@ -200,7 +202,10 @@ int main(void) {
             snprintf(sysdir, sizeof sysdir, "%s/input", dir);
             snprintf(dbdir, sizeof dbdir, "%s/data", dir);
             mkdir(sysdir, 0755);
-            mkdir(dbdir, 0755);
+            /* Deliberately not created: making dbdir is the seeder's job, and
+               the first version of it left that to the caller, so every write
+               failed with ENOENT while the boot log read like a machine with
+               no input devices at all. */
 
             /* Two event nodes, and one that is not: the joystick node must be
                skipped, because libinput only ever looks at event*. */

@@ -102,8 +102,9 @@ fi
 if [ -d /sys/class/input ] && ! ls /run/udev/data/c* >/dev/null 2>&1; then
     say "warning: no libudev records under /run/udev/data, so libinput will"
     say "  take no input device and the session will have a dead pointer and no"
-    say "  keyboard. PID 1 writes these at boot; seeing them missing means it"
-    say "  found no /sys/class/input/event* to write them for."
+    say "  keyboard. PID 1 writes one record per /sys/class/input/event* at"
+    say "  boot, so none here means it wrote none: no event node, or it could"
+    say "  not write into the directory."
 fi
 
 usage() {
