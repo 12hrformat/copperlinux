@@ -332,11 +332,11 @@ static void grant_devices(const struct session *s) {
     closedir(d);
 }
 
-/* Make the input devices visible to libinput.
+/* Make the input devices visible to libinput -- and say what each one is.
 
-   Hyprland gets its keyboard and pointer from libinput, and libinput throws
-   away every device that libudev calls "not initialized". That flag does not
-   mean the device is broken: it means udevd has written a record for it under
+   Hyprland gets its keyboard and pointer from libinput, and libinput discards
+   every device that libudev calls "not initialized". That flag does not mean
+   the device is broken: it means udevd has written a record for it under
    /run/udev/data. This image runs no udev daemon -- the note under "the
    desktop as a real user" in HANDOFF.md explains why -- so nothing ever writes
    those records, libinput enumerates /sys/class/input/event*, discards every
@@ -351,10 +351,380 @@ static void grant_devices(const struct session *s) {
    does not follow hotplug -- but it is exactly what libudev reads, and the
    devices in a VM are present from boot anyway.
 
+   Clearing that flag is only half of being seen. libinput does not work out a
+   device's type from its kernel capabilities: it reads udev's ID_INPUT_* tags,
+   and a device whose only tag is ID_INPUT is dropped by the gate near the top
+   of evdev_device_create():
+
+       if ((udev_tags & EVDEV_UDEV_TAG_INPUT) == 0 ||
+           (udev_tags & ~EVDEV_UDEV_TAG_INPUT) == 0)
+               goto err;
+
+   So a record that says only "ID_INPUT=1" is worth what no record at all is
+   worth: the device is enumerated, then it is dropped, and the session still
+   has no keyboard -- while the boot log says the records were written and
+   everything looks right. On a real machine those tags come from udev's
+   input_id builtin, which reads the device's sysfs capabilities and writes
+   down what it found. There is no udev here to do that, so the same verdicts
+   are reached here, from the same attributes and by the same rules (systemd's
+   udev-builtin-input_id.c). The rules are worth following rather than
+   approximating, because the two ways to be wrong are not symmetrical: an
+   extra tag costs a setting, a missing one costs the device.
+
    Takes the sysfs directory and the database directory as arguments rather
    than naming the real ones, so tests/init-session.c can point it at a fake
-   tree. Returns how many records it wrote. */
-static int seed_udev_input_db(const char *sysdir, const char *dbdir) {
+   tree, and reports how many records carried a type -- which is the difference
+   between input working and input being enumerated and dropped. Returns how
+   many records it wrote. */
+
+/* Input event codes, button ranges and property bits, from linux/input.h and
+   linux/input-event-codes.h. Spelled out rather than included, for the same
+   reason the ARPHRD_* above are: this builds against musl, whose gcc wrapper
+   has only musl's own headers on the include path (build.sh, build_musl), so
+   <linux/input.h> is not reachable from here. These are kernel ABI -- assigned
+   once and never moved -- and they are the numbers udev's input_id builtin
+   compares against. */
+#define EV_KEY                  0x01
+#define EV_REL                  0x02
+#define EV_SW                   0x05
+
+#define REL_X                   0x00
+#define REL_Y                   0x01
+#define REL_HWHEEL              0x06
+#define REL_WHEEL               0x08
+
+#define ABS_X                   0x00
+#define ABS_Y                   0x01
+#define ABS_Z                   0x02
+#define ABS_RX                  0x03
+#define ABS_PRESSURE            0x18
+#define ABS_MT_SLOT             0x2f
+#define ABS_MT_POSITION_X       0x35
+#define ABS_MT_POSITION_Y       0x36
+
+#define INPUT_PROP_DIRECT       0x01
+#define INPUT_PROP_POINTING_STICK 0x05
+#define INPUT_PROP_ACCELEROMETER  0x06
+
+#define BTN_MISC                0x100
+#define BTN_0                   0x100
+#define BTN_1                   0x101
+#define BTN_MOUSE               0x110   /* BTN_LEFT */
+#define BTN_JOYSTICK            0x120   /* BTN_TRIGGER */
+#define BTN_DIGI                0x140   /* BTN_TOOL_PEN: the same number */
+#define BTN_TOOL_PEN            0x140
+#define BTN_TOOL_FINGER         0x145
+#define BTN_TOUCH               0x14a
+#define BTN_STYLUS              0x14b
+#define BTN_DPAD_UP             0x220
+#define BTN_DPAD_RIGHT          0x223
+#define BTN_TRIGGER_HAPPY       0x2c0
+#define BTN_TRIGGER_HAPPY1      0x2c0
+#define BTN_TRIGGER_HAPPY40     0x2e7
+
+#define KEY_OK                  0x160
+#define KEY_ALS_TOGGLE          0x230
+#define KEY_LEFTCTRL            29
+#define KEY_CAPSLOCK            58
+#define KEY_NUMLOCK             69
+#define KEY_INSERT              110
+#define KEY_MUTE                113
+#define KEY_CALC                140
+#define KEY_FILE                144
+#define KEY_MAIL                155
+#define KEY_PLAYPAUSE           164
+#define KEY_BRIGHTNESSDOWN      224
+
+#define BUS_I2C                 0x18
+
+/* The capability attributes are hex bitmaps, most significant word first
+   ("120013", or "0 0 1f"), and a word the kernel left out is zero. KEY_MAX,
+   the largest bit any of them carries, is 0x2ff: sixteen 64-bit words. */
+#define CAP_WORDS 16
+
+struct capset {
+    unsigned long long word[CAP_WORDS];
+};
+
+/* Read one capability attribute into `c`. A missing or empty attribute is not
+   an error: it means the device has none of those bits. */
+static void cap_read(struct capset *c, const char *dir, const char *attr) {
+    memset(c, 0, sizeof *c);
+
+    /* 384 rather than 320: dir is itself a 320-byte buffer, and a truncated
+       path only looks like an unreadable attribute -- a device silently
+       becomes unclassifiable and libinput drops it. */
+    char path[384];
+    snprintf(path, sizeof path, "%s/%s", dir, attr);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    /* Split into words, then take them from the end: the last word printed
+       holds bits 0-63, the one before it 64-127, and so on. */
+    const char *word[CAP_WORDS];
+    size_t words = 0;
+    for (char *p = buf; *p != '\0' && words < CAP_WORDS; ) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p == '\0') break;
+        word[words++] = p;
+        while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+        if (*p != '\0') *p++ = '\0';
+    }
+    for (size_t i = 0; i < words; i++)
+        c->word[i] = strtoull(word[words - 1 - i], NULL, 16);
+}
+
+/* Is that bit set? */
+static int cap_test(const struct capset *c, unsigned bit) {
+    return (bit >> 6) < CAP_WORDS
+        && (int)((c->word[bit >> 6] >> (bit & 63)) & 1ULL);
+}
+
+/* Is any bit below `limit` set? udev asks this of whole blocks of keys. */
+static int cap_any(const struct capset *c, unsigned limit) {
+    for (unsigned i = 0; i < CAP_WORDS && i * 64 < limit; i++) {
+        unsigned long long v = c->word[i];
+        if ((i + 1) * 64 > limit)
+            v &= (1ULL << (limit - i * 64)) - 1ULL;
+        if (v) return 1;
+    }
+    return 0;
+}
+
+/* One bit per ID_INPUT_* property the classifier can decide on, and the name
+   each is written under. The order is udev's. */
+enum {
+    TAG_POINTINGSTICK = 1u << 0,
+    TAG_MOUSE         = 1u << 1,
+    TAG_TOUCHPAD      = 1u << 2,
+    TAG_TOUCHSCREEN   = 1u << 3,
+    TAG_JOYSTICK      = 1u << 4,
+    TAG_TABLET        = 1u << 5,
+    TAG_TABLET_PAD    = 1u << 6,
+    TAG_ACCELEROMETER = 1u << 7,
+    TAG_KEY           = 1u << 8,
+    TAG_KEYBOARD      = 1u << 9,
+    TAG_SWITCH        = 1u << 10
+};
+
+static const struct {
+    unsigned flag;
+    const char *property;
+} input_tags[] = {
+    { TAG_POINTINGSTICK, "ID_INPUT_POINTINGSTICK" },
+    { TAG_MOUSE,         "ID_INPUT_MOUSE" },
+    { TAG_TOUCHPAD,      "ID_INPUT_TOUCHPAD" },
+    { TAG_TOUCHSCREEN,   "ID_INPUT_TOUCHSCREEN" },
+    { TAG_JOYSTICK,      "ID_INPUT_JOYSTICK" },
+    { TAG_TABLET,        "ID_INPUT_TABLET" },
+    { TAG_TABLET_PAD,    "ID_INPUT_TABLET_PAD" },
+    { TAG_ACCELEROMETER, "ID_INPUT_ACCELEROMETER" },
+    { TAG_KEY,           "ID_INPUT_KEY" },
+    { TAG_KEYBOARD,      "ID_INPUT_KEYBOARD" },
+    { TAG_SWITCH,        "ID_INPUT_SWITCH" }
+};
+
+/* A sysfs attribute holding one hex number, or 0 when it is not there. */
+static unsigned hex_attr(const char *dir, const char *attr) {
+    char path[384], buf[32];
+    snprintf(path, sizeof path, "%s/%s", dir, attr);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    if (!fgets(buf, sizeof buf, f)) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    return (unsigned)strtoul(buf, NULL, 16);
+}
+
+/* The tags this device earns. The rules are udev's: test_pointers() decides
+   what kind of pointer it is, test_key() whether it is a keyboard, and the
+   builtin around them adds the two smaller cases at the end. */
+static unsigned input_device_tags(const char *dir) {
+    struct capset ev, key, rel, abs, props;
+    cap_read(&ev, dir, "capabilities/ev");
+    cap_read(&key, dir, "capabilities/key");
+    cap_read(&rel, dir, "capabilities/rel");
+    cap_read(&abs, dir, "capabilities/abs");
+    cap_read(&props, dir, "properties");
+
+    unsigned tags = 0;
+    int is_pointer = 0;
+
+    /* --------------------------------------------- pointers (test_pointers) */
+    int has_keys = cap_test(&ev, EV_KEY);
+    int has_abs_coordinates = cap_test(&abs, ABS_X) && cap_test(&abs, ABS_Y);
+    int has_3d = has_abs_coordinates && cap_test(&abs, ABS_Z);
+    int is_accelerometer = cap_test(&props, INPUT_PROP_ACCELEROMETER);
+    if (!has_keys && has_3d)
+        is_accelerometer = 1;
+
+    if (is_accelerometer) {
+        /* An accelerometer is its own kind, and udev stops here rather than
+           also asking what kind of pointer it is. */
+        tags |= TAG_ACCELEROMETER;
+        is_pointer = 1;
+    } else {
+        int is_pointing_stick = cap_test(&props, INPUT_PROP_POINTING_STICK);
+        int has_stylus = cap_test(&key, BTN_STYLUS);
+        int has_pen = cap_test(&key, BTN_TOOL_PEN);
+        int finger_but_no_pen = cap_test(&key, BTN_TOOL_FINGER) && !has_pen;
+        int has_mouse_button = 0;
+        for (unsigned b = BTN_MOUSE; b < BTN_JOYSTICK && !has_mouse_button; b++)
+            has_mouse_button = cap_test(&key, b);
+        int has_rel = cap_test(&ev, EV_REL) && cap_test(&rel, REL_X)
+                   && cap_test(&rel, REL_Y);
+        int has_mt = cap_test(&abs, ABS_MT_POSITION_X)
+                  && cap_test(&abs, ABS_MT_POSITION_Y);
+        /* A device claiming every absolute axis there is, both multi-touch
+           ones included, is not really multi-touch. */
+        if (has_mt && cap_test(&abs, ABS_MT_SLOT) && cap_test(&abs, ABS_MT_SLOT - 1))
+            has_mt = 0;
+        int is_direct = cap_test(&props, INPUT_PROP_DIRECT);
+        int has_touch = cap_test(&key, BTN_TOUCH);
+        int has_pad_buttons = cap_test(&key, BTN_0) && cap_test(&key, BTN_1)
+                           && !has_pen;
+        int has_wheel = cap_test(&ev, EV_REL)
+                     && (cap_test(&rel, REL_WHEEL) || cap_test(&rel, REL_HWHEEL));
+
+        /* Buttons in the joystick range -- unless the mouse range runs into
+           it, which is what a mouse with more than sixteen buttons does. */
+        int stick_buttons = 0, stick_axes = 0;
+        if (!cap_test(&key, BTN_JOYSTICK - 1)) {
+            for (unsigned b = BTN_JOYSTICK; b < BTN_DIGI; b++)
+                if (cap_test(&key, b)) stick_buttons++;
+            for (unsigned b = BTN_TRIGGER_HAPPY1; b <= BTN_TRIGGER_HAPPY40; b++)
+                if (cap_test(&key, b)) stick_buttons++;
+            for (unsigned b = BTN_DPAD_UP; b <= BTN_DPAD_RIGHT; b++)
+                if (cap_test(&key, b)) stick_buttons++;
+        }
+        for (unsigned a = ABS_RX; a < ABS_PRESSURE; a++)
+            if (cap_test(&abs, a)) stick_axes++;
+
+        int is_tablet = 0, is_touchpad = 0, is_touchscreen = 0, is_joystick = 0;
+        int is_mouse = 0, is_abs_mouse = 0, is_tablet_pad = 0;
+
+        if (has_abs_coordinates) {
+            if (has_stylus || has_pen)
+                is_tablet = 1;
+            else if (finger_but_no_pen && !is_direct)
+                is_touchpad = 1;
+            else if (has_mouse_button)
+                is_abs_mouse = 1;      /* VMware's USB mouse: axes, no touch */
+            else if (has_touch || is_direct)
+                is_touchscreen = 1;
+            else if (stick_buttons > 0 || stick_axes > 0)
+                is_joystick = 1;
+        } else if (stick_buttons > 0 || stick_axes > 0) {
+            is_joystick = 1;
+        }
+
+        if (has_mt) {
+            if (has_stylus || has_pen)
+                is_tablet = 1;
+            else if (finger_but_no_pen && !is_direct)
+                is_touchpad = 1;
+            else if (has_touch || is_direct)
+                is_touchscreen = 1;
+        }
+
+        if (is_tablet && has_pad_buttons)
+            is_tablet_pad = 1;
+
+        /* Two pad buttons and a wheel, with no relative axes: a tablet pad. */
+        if (has_pad_buttons && has_wheel && !has_rel) {
+            is_tablet = 1;
+            is_tablet_pad = 1;
+        }
+
+        if (!is_tablet && !is_touchpad && !is_joystick && has_mouse_button
+            && (has_rel || !has_abs_coordinates))
+            is_mouse = 1;
+
+        /* There is no such thing as an i2c mouse: that is a trackpoint. */
+        if (is_mouse && hex_attr(dir, "id/bustype") == BUS_I2C)
+            is_pointing_stick = 1;
+
+        /* Un-detecting joysticks: keyboards carry the odd joystick button, so
+           a device with several of the keys below is a keyboard, and one with
+           fewer than two buttons or axes is not a joystick either. */
+        if (is_joystick) {
+            static const unsigned keyboard_keys[] = {
+                KEY_LEFTCTRL, KEY_CAPSLOCK, KEY_NUMLOCK, KEY_INSERT, KEY_MUTE,
+                KEY_CALC, KEY_FILE, KEY_MAIL, KEY_PLAYPAUSE, KEY_BRIGHTNESSDOWN
+            };
+            int well_known = 0;
+            if (has_keys)
+                for (size_t i = 0; i < sizeof keyboard_keys / sizeof keyboard_keys[0]; i++)
+                    if (cap_test(&key, keyboard_keys[i])) well_known++;
+            if (well_known >= 4 || stick_buttons + stick_axes < 2)
+                is_joystick = 0;
+            if (has_wheel && has_pad_buttons)
+                is_joystick = 0;
+        }
+
+        if (is_pointing_stick)          tags |= TAG_POINTINGSTICK;
+        if (is_mouse || is_abs_mouse)   tags |= TAG_MOUSE;
+        if (is_touchpad)                tags |= TAG_TOUCHPAD;
+        if (is_touchscreen)             tags |= TAG_TOUCHSCREEN;
+        if (is_joystick)                tags |= TAG_JOYSTICK;
+        if (is_tablet)                  tags |= TAG_TABLET;
+        if (is_tablet_pad)              tags |= TAG_TABLET_PAD;
+
+        is_pointer = is_tablet || is_mouse || is_abs_mouse || is_touchpad
+                  || is_touchscreen || is_joystick || is_pointing_stick;
+    }
+
+    /* ------------------------------------------------------ keys (test_key) */
+    int is_key = 0;
+    if (cap_test(&ev, EV_KEY)) {
+        /* Any KEY_* below the mouse and joystick buttons, or one of the two
+           high blocks that hold the few keys above them. */
+        int found = cap_any(&key, BTN_MISC);
+        for (unsigned b = KEY_OK; b < BTN_DPAD_UP && !found; b++)
+            if (cap_test(&key, b)) found = 1;
+        for (unsigned b = KEY_ALS_TOGGLE; b < BTN_TRIGGER_HAPPY && !found; b++)
+            if (cap_test(&key, b)) found = 1;
+        if (found) {
+            tags |= TAG_KEY;
+            is_key = 1;
+        }
+
+        /* The first 32 bits are ESC, the numbers and Q to D: a device with all
+           of them is a full keyboard, whatever else it also looks like. The
+           reserved key 0 is not asked for. */
+        if ((key.word[0] & 0xFFFFFFFEULL) == 0xFFFFFFFEULL) {
+            tags |= TAG_KEYBOARD;
+            is_key = 1;
+        }
+    }
+
+    /* Some evdev nodes are a scroll wheel and nothing else. */
+    if (!is_pointer && !is_key && cap_test(&ev, EV_REL)
+        && (cap_test(&rel, REL_WHEEL) || cap_test(&rel, REL_HWHEEL)))
+        tags |= TAG_KEY;
+
+    if (cap_test(&ev, EV_SW))
+        tags |= TAG_SWITCH;
+
+    return tags;
+}
+
+/* Does this directory look like an input device? Its capability attributes
+   say so. */
+static int is_input_device(const char *dir) {
+    char probe[384];
+    snprintf(probe, sizeof probe, "%s/capabilities/ev", dir);
+    return access(probe, R_OK) == 0;
+}
+
+static int seed_udev_input_db(const char *sysdir, const char *dbdir, int *typed) {
     DIR *d = opendir(sysdir);
     if (!d) return 0;
 
@@ -373,29 +743,62 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir) {
         usec = (unsigned long long)ts.tv_sec * 1000000ULL
              + (unsigned long long)ts.tv_nsec / 1000ULL;
 
-    char src[320], dst[320], num[64];
-    int written = 0;
+    /* `src` carries a whole event path, and the compiler can see that the two
+       names inside it make 580 bytes possible: give it the room, because a
+       truncated path skips a device with nothing said. */
+    char src[640], dst[320], num[64], devdir[320];
+    int written = 0, named = 0;
     struct dirent *e;
+
+    /* Walk the devices rather than the event nodes. The inputN entries are the
+       input devices themselves -- the directory udev's input_id builtin reaches
+       by walking up from an event node -- so the capability attributes it reads
+       are right there, and no guess that the two numbers are equal: event12 is
+       a child of input19, and they are not the same number. The event node is
+       what carries the device number, and that number is the record's name,
+       because event nodes are what libinput enumerates. A class entry with no
+       event node (js0, mouse0) writes nothing. */
     while ((e = readdir(d)) != NULL) {
-        if (strncmp(e->d_name, "event", 5) != 0) continue;
-        snprintf(src, sizeof src, "%s/%s/dev", sysdir, e->d_name);
-        FILE *in = fopen(src, "r");
-        if (!in) continue;
-        if (!fgets(num, sizeof num, in)) {
+        if (strncmp(e->d_name, "input", 5) != 0) continue;
+        snprintf(devdir, sizeof devdir, "%s/%s", sysdir, e->d_name);
+        if (!is_input_device(devdir)) continue;
+
+        /* What the device is, once per device. It is answered before any
+           record is written: the record is the only place the answer can go,
+           and libinput ignores a device whose record names no type. */
+        unsigned tags = input_device_tags(devdir);
+
+        DIR *v = opendir(devdir);
+        if (!v) continue;
+        struct dirent *c;
+        while ((c = readdir(v)) != NULL) {
+            if (strncmp(c->d_name, "event", 5) != 0) continue;
+            snprintf(src, sizeof src, "%s/%s/dev", devdir, c->d_name);
+            FILE *in = fopen(src, "r");
+            if (!in) continue;
+            if (!fgets(num, sizeof num, in)) {
+                fclose(in);
+                continue;
+            }
             fclose(in);
-            continue;
+            num[strcspn(num, "\r\n")] = '\0';
+            if (strchr(num, ':') == NULL) continue;
+
+            snprintf(dst, sizeof dst, "%s/c%s", dbdir, num);
+            FILE *out = fopen(dst, "w");
+            if (!out) continue;
+            fprintf(out, "I:%llu\nE:ID_INPUT=1\n", usec);
+            for (size_t i = 0; i < sizeof input_tags / sizeof input_tags[0]; i++)
+                if (tags & input_tags[i].flag)
+                    fprintf(out, "E:%s=1\n", input_tags[i].property);
+            fclose(out);
+            written++;
+            if (tags) named++;
         }
-        fclose(in);
-        num[strcspn(num, "\r\n")] = '\0';
-        if (strchr(num, ':') == NULL) continue;
-        snprintf(dst, sizeof dst, "%s/c%s", dbdir, num);
-        FILE *out = fopen(dst, "w");
-        if (!out) continue;
-        fprintf(out, "I:%llu\nE:ID_INPUT=1\n", usec);
-        fclose(out);
-        written++;
+        closedir(v);
     }
     closedir(d);
+    if (typed) *typed = named;
     return written;
 }
 
@@ -937,12 +1340,20 @@ int main(void) {
            /run/udev is ours to make; there is no daemon to have made it, and
            the seeder makes the data/ directory under it. */
         mkdir("/run/udev", 0755);
-        int seeded = seed_udev_input_db("/sys/class/input", "/run/udev/data");
-        if (seeded > 0)
-            say("input: wrote %d libudev record(s) so libinput takes the devices",
-                seeded);
-        else
+        int typed = 0;
+        int seeded = seed_udev_input_db("/sys/class/input", "/run/udev/data", &typed);
+        if (seeded > 0) {
+            say("input: wrote %d libudev record(s), %d naming a device type",
+                seeded, typed);
+            /* A record with no type in it is a record libinput will not use,
+               and the session that follows looks like a working one: seat,
+               config and DRM all fine, with a pointer that does not move. Say
+               so here, where the only evidence is. */
+            if (typed == 0)
+                say("input: none names a type, so libinput will ignore every device");
+        } else {
             say("input: no /sys/class/input/event* node to seed yet");
+        }
         grant_devices(&g_session);
         prepare_session_dirs(&g_session);
         pid_t session = spawn_tty(1);

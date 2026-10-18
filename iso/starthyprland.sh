@@ -95,16 +95,36 @@ fi
 # seatd and open the devices; libinput then has to accept each one, and it
 # discards every device libudev calls uninitialized. Only a record under
 # /run/udev/data clears that flag, there is no udev daemon in this image, and
-# PID 1 writes those records at boot (seed_udev_input_db in copper-init.c). If
-# they are missing the compositor still starts -- seat, config and DRM master
-# all fine -- with a pointer that does not move and a keyboard that types
-# nowhere, so say it rather than leave the user to guess.
+# PID 1 writes those records at boot (seed_udev_input_db in copper-init.c).
+# Clearing the flag is not enough on its own: the record also has to say what
+# the device is, because libinput reads udev's ID_INPUT_* tags and drops any
+# device whose only tag is ID_INPUT. Both mistakes end in the same place --
+# the compositor still starts, seat, config and DRM master all fine, with a
+# pointer that does not move and a keyboard that types nowhere -- so say which
+# half is missing rather than leave the user to guess.
 if [ -d /sys/class/input ] && ! ls /run/udev/data/c* >/dev/null 2>&1; then
     say "warning: no libudev records under /run/udev/data, so libinput will"
     say "  take no input device and the session will have a dead pointer and no"
-    say "  keyboard. PID 1 writes one record per /sys/class/input/event* at"
-    say "  boot, so none here means it wrote none: no event node, or it could"
-    say "  not write into the directory."
+    say "  keyboard. PID 1 writes one record per input device at boot, so none"
+    say "  here means it wrote none: no event node, or it could not write into"
+    say "  the directory."
+elif [ -d /sys/class/input ]; then
+    typed=no
+    for rec in /run/udev/data/c*; do
+        [ -f "$rec" ] || continue
+        if grep -q 'E:ID_INPUT_' "$rec" 2>/dev/null; then
+            typed=yes
+            break
+        fi
+    done
+    if [ "$typed" = no ]; then
+        say "warning: the libudev records under /run/udev/data name no device"
+        say "  type, and libinput drops every device whose only tag is ID_INPUT:"
+        say "  dead pointer, no keyboard, session up as if all were well. PID 1"
+        say "  writes the type from the device's sysfs capabilities"
+        say "  (seed_udev_input_db in copper-init.c), so none here means it read"
+        say "  no capabilities out of /sys/class/input/input*."
+    fi
 fi
 
 usage() {
