@@ -555,6 +555,31 @@ build_tools() {
   stamp_set "$WORK/tools.stamp" "$SELF"
 }
 
+# Point the SysV power commands at busybox -- in BOTH directories PATH
+# searches for them. The order is /usr/local/sbin:/usr/local/bin:/usr/sbin:
+# /usr/bin:/sbin:/bin (assert_commands_reachable above keeps it in step with
+# copper-init's setenv, and sudo's secure_path and /etc/profile carry the same
+# list), so /usr/sbin comes FIRST: a `reboot` left there by systemd-sysv wins
+# the name over a busybox link in /sbin, and `sudo reboot` answers "System has
+# not been booted with systemd" (bug 29). The 2026-10-17 fix only relinked
+# /sbin; the CI ISO built from it still shipped
+# /usr/sbin/reboot|poweroff|halt|shutdown -> ../bin/systemctl, which is how
+# this was caught -- by reading the links back off the shipped disc, and
+# re-checked there by build_iso's gate.
+# /usr/sbin/shutdown points at our wrapper: busybox ships no shutdown applet.
+# Called after every stage that copies packages into $TGT (copper, gui, hypr;
+# plymouth only copies its own lib directory).
+# updated by farcrowx, bug 29, iso/build.sh (the /sbin-only relink loops)
+power_links() {          # power_links <staged-root>
+  local root=$1 cmd
+  mkdir -p "$root/sbin" "$root/usr/sbin"
+  for cmd in reboot poweroff halt; do
+    ln -sf /bin/busybox "$root/sbin/$cmd"
+    ln -sf /bin/busybox "$root/usr/sbin/$cmd"
+  done
+  ln -sf /sbin/shutdown "$root/usr/sbin/shutdown"
+}
+
 # ---------------------------------------------------------------
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
@@ -611,9 +636,8 @@ local SRC="$ROOT/../src"
   # that try to talk to PID 1 over D-Bus. PID 1 here is busybox init, so they
   # fail with "System has not been booted with systemd". Point them at the
   # busybox applets instead, which signal PID 1 the way copper-init expects.
-  for cmd in reboot poweroff halt; do
-    ln -sf /bin/busybox "$TGT/sbin/$cmd"
-  done
+  # Both sbin/ and usr/sbin/: PATH searches usr/sbin first (bug 29).
+  power_links "$TGT"
 
   # switch_root is going to need all of these, and a staged tree missing one
   # of them is a black screen on a machine with no shell to debug it from.
@@ -1301,11 +1325,11 @@ build_gui() {
     exit 1
   fi
 
-  # Re-point reboot/poweroff/halt at busybox: the gui stage just copied
-  # systemd/sysvinit-utils versions that cannot talk to busybox init (bug 29).
-  for cmd in reboot poweroff halt; do
-    ln -sf /bin/busybox "$TGT/sbin/$cmd"
-  done
+  # Re-point the power commands at busybox: the gui stage just copied
+  # systemd/sysvinit-utils versions that cannot talk to busybox init -- in
+  # /sbin and in /usr/sbin, which PATH (and sudo's secure_path) searches first
+  # (bug 29; the /usr/sbin half is what the 2026-10-17 fix missed).
+  power_links "$TGT"
 
   echo "  display stack staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
   stamp_set "$WORK/gui.stamp" "$SELF"
@@ -1706,6 +1730,13 @@ build_hypr() {
     exit 1
   fi
 
+  # The Hyprland closure is the one that carries systemd-sysv (an empty dpkg
+  # status makes apt keep every Priority: important package systemd ships),
+  # and that is where /usr/sbin/reboot|poweroff|halt|shutdown ->
+  # ../bin/systemctl came from in the shipped ISO. Re-point them after the
+  # copy, or `sudo reboot` resolves to systemctl first (bug 29).
+  power_links "$TGT"
+
   echo "  Hyprland session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
   stamp_set "$WORK/hypr.stamp" "$SELF"
 }
@@ -2077,6 +2108,37 @@ WRAP
     exit 1
   fi
   echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
+
+  # The power commands, read back off the disc -- bug 29 in one check. PATH
+  # (copper-init's setenv, /etc/profile) and sudo's secure_path all search
+  # /usr/sbin before /sbin, so a `reboot` there pointing at ../bin/systemctl
+  # beats the busybox link in /sbin and `sudo reboot` dies with "System has
+  # not been booted with systemd". The 2026-10-17 fix relinked /sbin only, and
+  # the ISO CI built from it still shipped systemd-sysv's copies in /usr/sbin
+  # -- found by inspecting that artifact, so the same inspection is what this
+  # gate automates. Same readback discipline as sudo's mode above.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /sbin "$ex/sbin" >/dev/null 2>&1 || true
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/sbin "$ex/usr-sbin" >/dev/null 2>&1 || true
+  local pbad="" pt
+  for cmd in reboot poweroff halt; do
+    for d in "$ex/sbin" "$ex/usr-sbin"; do
+      pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
+      [ "$pt" = "/bin/busybox" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
+    done
+  done
+  pt=$(readlink "$ex/usr-sbin/shutdown" 2>/dev/null || echo missing)
+  [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad usr-sbin/shutdown -> $pt"
+  if [ ! -f "$ex/sbin/shutdown" ] || [ -L "$ex/sbin/shutdown" ]; then
+    pbad="$pbad sbin/shutdown (not the wrapper file)"
+  fi
+  if [ -n "$pbad" ]; then
+    echo "iso: power commands in the ISO are wrong:$pbad" >&2
+    echo "iso: /usr/sbin is searched before /sbin, so 'sudo reboot' would not reboot" >&2
+    exit 1
+  fi
+  echo "  iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the disc"
 
   echo "$want" > "$WORK/iso.stamp"
   ls -lh "$OUT/copper.iso"

@@ -292,22 +292,32 @@ know to type `busybox reboot` (or find the power button) — and most will not.
 This is a real launch blocker for a live ISO: a user who cannot reboot cleanly
 will yank the power, which is worse for the overlay and any mounted disks.
 
-**What happens:** `/sbin/reboot` and `/sbin/shutdown` on the image are the
-systemd-flavoured ones (pulled in by a dependency that ships them), so they
-try to talk to PID 1 over the systemd D-Bus socket. PID 1 is busybox init, so
-there is no such socket and the call fails. BusyBox itself has working
-`reboot`/`poweroff`/`halt` applets, but they are not what `reboot` resolves to.
+**What happens:** the systemd-flavoured copies are the ones PATH resolves.
+Both the login shell's PATH (`etc/profile`, copper-init's `setenv`) and
+`sudo`'s `secure_path` search **`/usr/sbin` before `/sbin`**, and
+`systemd-sysv` -- kept by the empty dpkg status the Hyprland closure is
+resolved against -- ships `/usr/sbin/reboot|poweroff|halt|shutdown|telinit ->
+../bin/systemctl`. systemctl finds no systemd to talk to (PID 1 is
+copper-init) and answers "System has not been booted with systemd". BusyBox
+itself has working `reboot`/`poweroff`/`halt` applets, but they are not what
+`reboot` resolves to.
 
 **Root cause:** the image mixes glibc binaries from packages that assume
 systemd with an init that is not systemd. The package set never re-points the
-`reboot`/`shutdown`/`poweroff`/`halt` commands at the busybox applets.
+`reboot`/`shutdown`/`poweroff`/`halt` commands at the busybox applets -- in
+*both* directories PATH searches for them.
 
-**Status:** fixed 2026-10-17. `build.sh` now symlinks `/sbin/reboot`,
-`/sbin/poweroff` and `/sbin/halt` to `/bin/busybox` in both the rootfs and gui
-stages (so the gui stage's systemd/sysvinit-utils versions cannot clobber
-them), and `sbin/shutdown` already maps its flags onto those applets.
-`sudo reboot` / `sudo shutdown now` / `sudo poweroff` now work on busybox
-init. `sudo` already grants `wheel` full rights, so elevation is unchanged.
+**Status:** fixed 2026-10-18. The fix claimed 2026-10-17 relinked `/sbin`
+only (rootfs and gui stages); the CI ISO built from it (run 39055205600, HEAD
+6f40e31) still shipped `/usr/sbin/reboot -> ../bin/systemctl` -- verified by
+reading the links back off that artifact -- so `sudo reboot` on that image
+still resolves to systemctl. `build.sh` now relinks **both** directories
+through one `power_links()` helper after every stage that copies packages
+(copper, gui, hypr), and `build_iso` re-reads both link sets off the disc and
+fails the build if any is wrong. Verified by the gates
+(`tests/shutdown-gate.sh`, `tests/init-session.sh`) and by inspecting the
+artifact -- a real boot of a fixed ISO has **not** been run yet. `sudo`'s
+`wheel` model is unchanged.
 
 ---
 
@@ -400,6 +410,38 @@ and PID 1 says `input: no /sys/class/input/event* node to seed yet` when it
 writes none, so a future failure is legible at boot instead of looking like
 absent hardware. The test fixture no longer creates the directory, so the test
 fails if the seeder stops making it.
+
+# 33. The power path fails silently — impact 6/10 [ASSIGNED TO FARCROWX]
+
+**How it affects things:** two ways to lose the machine without a word. The
+`shutdown` wrapper accepted arguments it did not understand: `shutdown +10`
+(a normal util-linux incantation) powered the machine off **immediately**
+instead of in ten minutes, `shutdown --bogus` powered it off too, and
+`shutdown -r -h now` guessed which mode you meant. And if `reboot(2)`
+refused, `on_power_signal()` called `_exit(0)`: PID 1 died, the kernel
+panicked "Attempted to kill init", and nothing anywhere said why.
+
+**What happens:** the flag loop in `iso/shutdown.sh` matched the flags it
+knew and silently ignored every other argument, so an unsupported request
+fell through to the default action (power off now). The image has no
+scheduler, so there is no correct way to honour `+10` anyway -- the honest
+answer is an error, not someone's machine powering off mid-work.
+
+**Root cause:** parsing without a contract (anything unrecognised falls
+through to the default) and a signal handler whose failure path was
+`_exit(0)` -- the cheapest exit, taken exactly when a message matters most.
+
+**Status:** fixed 2026-10-18. `shutdown.sh` validates every argument --
+unknown options, conflicting mode flags, any time operand but `now` -- and
+exits non-zero with a message on stderr without running an applet; `--help`
+prints the exact interface. `on_power_signal()` reports through `write(2)`
+(async-signal-safe; fd 2 is `/dev/console`) and returns instead of exiting,
+and the main loop's `waitpid` retries on `EINTR` so a returned handler
+cannot spawn a second shell on the same tty. `tests/shutdown-gate.sh`
+asserts the rejection path (non-zero exit, no applet ran) and
+`tests/init-session.c` drives the handler with a failing fake `reboot(2)`
+plus the previously-unasserted `SIGPWR -> halt` mapping. Gates only -- not
+booted.
 
 ---
 
@@ -786,7 +828,8 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
 | bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
-| bug 29 | 12hrformat | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17) |
+| bug 29 | 12hrformat, farcrowx | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17, completed 2026-10-18) |
 | bug 30 | 12hrformat | Hyprland had no keyboard or pointer — libinput wants udev records nothing wrote | (2026-10-17) |
 | bug 31 | 12hrformat | Ctrl-Alt-Del did nothing — PID 1 ignored SIGINT | (2026-10-17) |
 | bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
+| bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
