@@ -9,7 +9,7 @@ their graves are in the tracker at the bottom of the file.
 
 ---
 
-# 15. firefox install dies of ENOSPC — impact 10/10 (see #20)
+# 15. firefox install dies of ENOSPC — impact 10/10 (root cause was #20 — fixed and boot-verified)
 
 **How it affects things:** you can't install bigger apps, and the disk you
 gave the VM does literally nothing while you watch it happen.
@@ -28,8 +28,10 @@ its ~450 MB unpacked tree coexist until unpack finishes.
 (`iso/live/init`, with the `/tmp` entry in `etc/fstab` kept in step), so it
 fits on a 2 GB box. Still RAM, still throwaway.
 
-**The real fix is bug 20** (persistence): the upper moves to a disk. That code
-is in the tree now but has not booted yet, so the stopgap stands until then.
+**The real fix is bug 20** (persistence): the upper moves to a disk. That is
+boot-verified now (2026-10-19: the writable layer was a 20 GB disk with 19 GB
+free), so the ENOSPC ceiling should be gone. The stopgap stands until
+`ingot install firefox` is re-run on a persistent boot and passes.
 
 Also caught in that same log: `mousepad`, `ristretto`, `xfce4-taskmanager`,
 `xarchiver` answered `no package named X in the index` — the live index had
@@ -70,102 +72,13 @@ the live overlay and can throw work away.
 `/sbin` with stubs in a private mount namespace, and `tests/init-session.c`
 checks the signal mapping — but nothing in CI boots the image.
 
----
-
-# 20. persistence isn't built — the writable layer is RAM — impact 10/10b [ASSIGNED TO FARCROWX]
-
-**How it affects things:** every reboot throws your files away, and the disk
-you attach to the VM is never written to. This is the root cause behind bug 15.
-
-**The fix is in the tree (2026-10-11), but nobody has booted it yet.** Same
-overlay, different `upperdir`: the writable layer goes on a disk.
-
-- `iso/live/init` scans the attached disks for one carrying the ext4 label
-  `COPPER` and mounts it where the tmpfs used to go. No label, or a labeled
-  disk that will not mount → the 50% tmpfs, so the ISO still boots anywhere.
-  A stale overlay `work/` left by an unclean shutdown is cleared first.
-- The wizard's last page (`copper-firstboot.c`) lists the spare whole disks,
-  makes the user pick one and type `ERASE`, then runs `mkfs.ext4 -q -F -L
-  COPPER`. Explicit choice, never "grab the first disk we see": the medium it
-  booted from and anything already mounted are never offered, and the page only
-  runs on a real Copper boot (`/init` leaves `/var/lib/copper/live-boot`).
-- Activates on the next boot, never mid-session. Hot-swapping the upper under a
-  live overlay is not the kind of thing we ship.
-- `e2fsprogs` is in the gui stage for the real `mkfs.ext4`, and that stage now
-  fails the build when the tool does not arrive. busybox's `mke2fs` applet
-  cannot stand in: it makes ext2 only and leaves the xattr feature bit clear,
-  which is exactly what overlayfs refuses as an upper (see the config facts at
-  the bottom).
-
-**Still open because:** "built" is not "verified". The blocker is unchanged —
-a fresh CI-built ISO and a real boot: format a disk in the wizard, reboot,
-confirm the session comes back and the writable layer is no longer RAM.
-`tests/persist.sh` covers the wizard's disk choices against a stub `mkfs.ext4`
-(nothing real is ever formatted) and runs in CI, but nothing in CI boots the
-image.
-
----
-
-# 24. a persisted /tmp makes startxfce reuse a dead display — impact 5/10
-
-**How it affects things:** on the machine that has the persistence disk, the
-second boot can come back with no desktop. `startxfce` announces
-`an X server is already on :0, using it` and hands XFCE a display that nothing
-is listening on, so the session hangs against a server that is not there.
-
-**What happens:** `display_live()` treats the very existence of
-`/tmp/.X11-unix/X0` as proof that a server is listening. It is not: X does not
-remove the socket when it exits, and with persistence the writable layer is a
-disk, so `/tmp` comes back with the socket the last boot left behind. The
-launcher reuses it instead of starting a real server.
-
-**Root cause:** `startxfce` prefers a liveness probe when the image has one —
-`$COPPER_XPROBE`, then `/usr/bin/xprobe`, then `xdpyinfo` — and only falls back
-to trusting the bare socket when it has none. `xprobe` is in the repo
-(`iso/x11/probe/xprobe.c`, written for exactly this) but `build_copper` never
-compiled or installed it, and `x11-utils` (`xdpyinfo`) is not in the image, so
-the socket-only fallback was the only path the image ever had. That was
-harmless while the writable layer was RAM and every boot began with an empty
-`/tmp`; it is not harmless once persistence puts `/tmp` on the disk.
-
-**Fix in the tree (2026-10-11), not booted yet.** `build_copper` now compiles
-`iso/x11/probe/xprobe.c` — static musl, like the other in-image binaries — to
-`/usr/bin/xprobe`, lists it in the stage's existence loop, and folds it into
-both the skip check and the stamp, so a change to the probe cannot be skipped
-against an unchanged tree. `startxfce` already prefers it; only the build was
-missing.
-
-**Hardened (2026-10-14), still not booted.** Three residual ways the same
-symptom could return were closed, each with a regression test:
-
-- **The probe could hang.** `xprobe` set no receive timeout, so a socket that
-  accepts a connection and then never answers (a server still starting, or a
-  wedged one) blocked it forever — and the launcher with it. It now sets
-  `SO_RCVTIMEO`/`SO_SNDTIMEO` (`XPROBE_TIMEOUT`, default 5s) and returns a
-  distinct code instead of blocking.
-- **The probe said only "alive / not alive".** A timeout, a permission
-  failure or a malformed reply all looked like "not alive", and the launcher
-  deleted the socket on any negative — including a live server it merely could
-  not speak to yet. `xprobe` now exits `0` live, `1` not-live (no socket /
-  refused / peer closed), `2` usage, `3` unknown (timeout / permission /
-  auth / malformed); `startxfce` only clears the socket on `1` and leaves it
-  alone on `3`.
-- **A rootfs with no probe at all.** The bare socket-existence fallback *is*
-  the bug. With no probe, `startxfce` now consults `/proc/net/unix`
-  (busybox-safe, exact pathname match) and treats "bound" as live, "absent"
-  as dead, and "cannot read" as unknown — never as live.
-
-Regression tests: `tests/xprobe-gate.sh` drives the real compiled binary
-against a synthetic X server (no third-party deps, skips cleanly without a C
-compiler) and is wired into `tests/branch-gate.sh` and the ISO workflow;
-`tests/startxfce-gate.sh` gained cases 16-21 for the no-probe fallback, live
-reuse, the unknown-leaves-the-socket rule, the bounded startup timeout,
-`XPROBE_TIMEOUT` passthrough and a probe stuck at "not live".
-
-**Still open because:** "built" is not "verified". Needs a boot with the
-persistence disk: start a desktop, reboot, and `startxfce` must start a fresh
-server rather than announce the stale one. For this change a full ISO build
-and a VM reboot were **not** run; verification stopped at the passing gates.
+**First real-boot evidence (2026-10-19, against CI run 131's ISO):** `sudo
+reboot` printed red `System has not been booted with systemd as init system
+(PID 1)` errors and **did not restart the machine** — the session sat there
+until `sudo /sbin/reboot -f` forced it. Whatever #29 and #33 fixed, the command
+a user actually types is still dead on a real boot. This is the missing
+evidence this entry asked for; the entry stays open until a fix lands and a
+boot proves it.
 
 ---
 
@@ -505,6 +418,31 @@ Closing this needs one more boot, whose log now names the fate of every device.
 
 ---
 
+# 35. the wizard offers the persistence disk while it is mounted — impact 6/10
+
+**How it affects things:** the "Keeping your files" page is destructive — the
+pick gets `mkfs.ext4 -L COPPER`'d. Offering the disk that is *currently* the
+session's writable upper turns one absent-minded `ERASE` into wiping the
+filesystem the machine is running from.
+
+**What happened (2026-10-19, during bug 20's verification):** boot 1 formatted
+the spare NVMe. On boot 2 `/init` claimed it and mounted it — the live-boot
+marker read `upper=/dev/nvme0n1`, which `iso/live/init` only writes after the
+mount succeeded — and the wizard's last page *still* listed that same
+`nvme0n1` as a spare disk to erase. The pick was skipped and nothing was
+formatted; every later boot was correct.
+
+**Why it should be impossible:** `disk_in_use()` refuses any disk named by a
+line in `/proc/mounts`, and `/dev/nvme0n1 ... /mnt/upper ext4 ...` should have
+matched it. Either that read saw something else, or the page ran against a view
+of the system without the mount. Needs one boot that prints the wizard's
+`/proc/mounts` next to its offered list.
+
+**Status:** open. Caught by the human, not a test — `tests/persist.sh`'s
+fixture never mounts the disk it offers, so the gate cannot see this.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -694,7 +632,8 @@ disk only when it carries the ext4 label `COPPER` — the label the wizard write
 on its last page — and `iso/live/init` falls back to the tmpfs when there is
 none. You'll think "just attach a bigger disk and it fixes itself" — it does
 not: a disk with no label does nothing, and the upper stays in RAM. (Built
-2026-10-11; the real boot is still bug 20's open question.)
+2026-10-11, boot-verified 2026-10-19 — on the verification boots the upper
+was a labelled 20 GB disk.)
 
 **`busybox adduser` and `addgroup` write to the real `/etc/passwd` and
 `/etc/group` regardless of `HOME`, `PWD`, or anything else.** Probing them
@@ -851,12 +790,21 @@ Each of these cost a wrong turn once. All were checked against real sources.
   that is *not* compressed — a small detail that makes a `.zst`-only sweep look
   complete while skipping it.
 
+**Copper's kernel has no VMware SCSI host driver.** The build asserts
+`BLK_DEV_NVME`, `BLK_DEV_SD`, `ATA_PIIX` and (via defconfig) `SATA_AHCI`, but
+nothing enables `SCSI_MPTSPI`, `SCSI_MPTSAS`, `SCSI_SYM53C8XX` or
+`VMWARE_PVSCSI` — and `MODULES` is disabled, so none can arrive later. A
+VMware disk attached as **SCSI (LSI Logic / LSI SAS / PVSCSI) is invisible to
+the guest**: the wizard lists nothing and /init finds nothing. Add disks as
+**NVMe** (first choice — build-gated) or SATA. Found the hard way during
+bug 20's verification (2026-10-19).
+
 ---
 
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-34 bugs total: 27 fixed, 7 open.
+35 bugs total: 29 fixed, 6 open.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -879,11 +827,11 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 17 | 12hrformat | startxfce false-started on a dead server / missing XFCE | (1bf9a4f) |
 | bug 18 | still open | `sudo shutdown` / `sudo reboot` do nothing |  |
 | bug 19 | 12hrformat | the desktop session runs as root — firefox refused to start | (711fcb9) |
-| bug 20 | still open | persistence isn't built — the writable layer is RAM |  |
+| bug 20 | 12hrformat | persistence isn't built — the writable layer is RAM | (boot-verified 2026-10-19) |
 | bug 21 | 12hrformat | VMware framebuffer unproven — real VMware boot paints XFCE | (boot-verified 2026-10-11) |
 | bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
-| bug 24 | still open | startxfce reuses a dead display when /tmp persists |  |
+| bug 24 | farcrowx, dragon | startxfce reuses a dead display when /tmp persists | (boot-verified 2026-10-19) |
 | bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
 | bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
@@ -894,3 +842,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
 | bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
 | bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` (pointer boot-verified 2026-10-18; keyboard still silent, PID 1 now names each device) | (fix in tree 2026-10-18) |
+| bug 35 | still open | the wizard offers the persistence disk while it is mounted |  |
