@@ -32,8 +32,8 @@ that make it *Copper* are written by hand.
 
 The desktop is done: XFCE is packaged into the ISO and paints a desktop under
 QEMU and on real VMware (2026-10-11), with ingot as the package manager. The
-session user is done and boot-verified. Remaining work is confirming
-persistence (bug 20) and the two-boot `/tmp` case (bug 24) on a real boot.
+session user is done and boot-verified. Persistence (bug 20) and the two-boot
+`/tmp` case (bug 24) are boot-verified as well (2026-10-19).
 A second, optional desktop — **Hyprland** — is now built into the image and
 gated, but not yet booted; see *starthyprland* under "The desktop".
 
@@ -147,8 +147,7 @@ from artifacts that were taken apart and read before being trusted.
   pins, and the `-sharevts` VT flag. See BUGS.md.
 - **Anything on real non-VM hardware.** Every measurement in this document is
   a VM.
-- **Persistence (G6) end to end.** Built; the disk has not been claimed on a
-  real boot yet.
+- ~~**Persistence (G6) end to end.**~~ Done — boot-verified 2026-10-19.
 
 **A note on green CI runs:** a green run does not mean the artifact is
 correct. Run `36220249701` was fully green and shipped an ISO built from the
@@ -362,7 +361,7 @@ interface-selection bug that broke wired DHCP is already handled for wifi:
 source, `CONFIG_BT=y` with the protocol drivers. BlueZ wants a D-Bus daemon;
 that's the part to budget time for.
 
-## G6 — Persistence ✅ built / ⚠️ not yet booted
+## G6 — Persistence ✅ boot-verified 2026-10-19
 
 **Done looks like:** a reboot keeps your files, and the 10 GB disk you gave
 the VM actually gets written to instead of sitting there doing nothing.
@@ -396,10 +395,19 @@ disk.
   a stub `mkfs.ext4` in a mount namespace — nothing real is formatted — and runs
   in CI via `tests/branch-gate.sh`.
 
-**Boot-verification is the blocker.** Everything above is built, but built is
-not booted. It needs a fresh CI-built ISO with a spare disk: format it in the
-wizard, reboot, confirm the session comes back and the upper is the disk. That
-is bug 20's open question.
+**Boot-verified 2026-10-19.** CI run 131's ISO on a VMware guest with a spare
+NVMe disk (SCSI would not have worked — no VMware SCSI host driver in the
+kernel): boot 1 the wizard formatted the spare, boot 2 `/init` claimed it
+(`/var/lib/copper/live-boot` read `upper=/dev/nvme0n1`), `df -h /` showed the
+overlay at 20 GB with 19 GB free instead of a ~1 GB tmpfs, and a file written
+in that session came back after a further reboot. The two-boot desktop case
+came along on the same boots: `startxfce` started a fresh X server rather than
+reusing the stale `/tmp` socket — bug 24's test, also closed.
+
+Two findings from that boot, logged in BUGS.md: the wizard re-offered the very
+disk /init had mounted (bug 35 — the pick was skipped, nothing formatted), and
+`sudo reboot` printed systemd errors and did nothing (bug 18's first real-boot
+evidence).
 
 ## G7 — Land `patch-1`
 
@@ -413,19 +421,20 @@ Status: **done and boot-verified (2026-10-11).** A real boot of the current ISO
 logs in as the wizard user, `startxfce` (no `sudo`) paints XFCE, and **Firefox
 and nmap run in the session** — bugs 19, 22 and 23 closed. That boot was a
 VMware guest, which also settles the VMware framebuffer — bug 21 closed. What
-remains is the edges, not "does it work": a persisted `/tmp` making the second
-boot reuse a dead display (bug 24 — the build integration is fixed in the tree
-and the residual hang / false-live paths are now hardened, with real-binary and
-launcher regression gates, but the two-boot test is still owed) and
-`sudo shutdown`/`sudo reboot` (bug 18, fixed in the tree, needs a boot).
+remains is the edges, not "does it work": ~~a persisted `/tmp` making the second
+boot reuse a dead display (bug 24)~~ — the two-boot test passed 2026-10-19 —
+and `sudo shutdown`/`sudo reboot` (bug 18, fixed in the tree, still failing on
+a real boot: see its 2026-10-19 evidence).
 
 Order of the remaining work — 1–3 are done (boot-verified 2026-10-11):
 
 1. ~~Drop privileges in the session shell.~~ Done — bug 19.
 2. ~~Xorg as the wizard user, device nodes and VT flags sorted.~~ Done — bug 23.
 3. ~~The VMware framebuffer.~~ Done — bug 21, on the same VMware boot.
-4. Still to confirm: the persisted `/tmp` two-boot case (bug 24) and
-   `sudo shutdown`/`reboot` (bug 18).
+4. ~~the persisted `/tmp` two-boot case (bug 24)~~ — boot-verified
+   2026-10-19, fresh server on the second boot. `sudo shutdown`/`reboot`
+   (bug 18) still owes a working boot: on that same boot `sudo reboot`
+   printed systemd errors and did nothing; only `reboot -f` worked.
 
 CI's six-hour cap is a real constraint on the heavy build stages; `restore-keys`
 is what makes a warm cache survive an unrelated change (that bug is 2 in BUGS.md's
@@ -518,9 +527,10 @@ which the launcher already handles.
 `-sharevts` line plus the `553528f` ownership/mode pins) logs in as the wizard
 user, `startxfce` with no `sudo` paints XFCE, and **Firefox and nmap run in the
 session** — bugs 19, 22 and 23 closed together. That guest is VMware, so the
-display half of bug 21 is closed as well. Still unverified on a boot: the
-persisted `/tmp` two-boot case (bug 24) and `sudo shutdown`/`reboot` (bug 18,
-fixed in the tree after this boot).
+display half of bug 21 is closed as well. ~~Still unverified on a boot: the
+persisted `/tmp` two-boot case (bug 24)~~ — both verified 2026-10-19, on the
+persistence boots (`sudo shutdown`/`reboot` / bug 18 remains open: `sudo
+reboot` still did nothing there).
 
 ### The desktop session runs as root — brief for the implementer
 
@@ -723,11 +733,11 @@ VMware Workstation, guest OS **Linux / Other Linux 6.x kernel 64-bit**, 2 GB,
 2 processors, **NAT** networking (bridged may not answer DHCP), and the ISO on
 the CD drive with **Connected at power on** ticked.
 
-**Give the guest a spare disk for the G6 persistence test.** A second virtual
-disk (10 GB is plenty, leave it unformatted) is what the wizard's last page will
-offer to claim. Pick it, type `ERASE`, then reboot: the session should come back
-with your files, and `/` should be the disk, not RAM. That is the boot nobody
-has done yet — the one that closes bug 20.
+**Give the guest a spare disk for the G6 persistence test.** ✅ Done
+2026-10-19 — but add it as **NVMe**, not SCSI: the kernel has no VMware SCSI
+host driver, and a SCSI disk is invisible to the guest (config fact in
+BUGS.md). Pick it, type `ERASE`, then reboot: the session came back with its
+files and `/` was the disk, not RAM. That was the boot that closed bug 20.
 
 Then **Add… → Serial Port**, "This end is connected to" → **Output to file** →
 a `.txt` path (VMware insists on `.txt` and will warn the file doesn't exist;
