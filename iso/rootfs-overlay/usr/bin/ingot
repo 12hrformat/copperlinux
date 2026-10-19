@@ -243,10 +243,11 @@ fetch_meta() { # fetch_meta <name> -> prints its JSON file path, or nothing
 
 # ---- commands -------------------------------------------------------------
 
-cmd_install() { # cmd_install <name>
+cmd_install() { # cmd_install <name> [force] — force installs over an existing tree
   name=$1
+  force=${2:-}
   require_root install || return 1
-  if [ -f "$MAN/$name.installed" ]; then
+  if [ -f "$MAN/$name.installed" ] && [ -z "$force" ]; then
     echo "ingot: $name is already installed"
     return 0
   fi
@@ -273,7 +274,9 @@ cmd_install() { # cmd_install <name>
     echo "ingot: resolving dependencies for $name" >&2
     for dep in $deps; do
       [ -n "$dep" ] || continue
-      ( cmd_install "$dep" ) || { rm -f "/tmp/$name"; return 1; }
+      # A dependency is never force-installed: force is this call's business,
+      # and the already-installed guard above still has to stop the recursion.
+      ( force=; cmd_install "$dep" ) || { rm -f "/tmp/$name"; return 1; }
     done
   fi
 
@@ -315,13 +318,38 @@ cmd_install() { # cmd_install <name>
     tar -tzf "$payload" 2>/dev/null
   } > "$MAN/$name.installed.tmp"
 
+  # A force install (update/reinstall) replaces the package in place. Every step
+  # that can fail -- the page fetch, the download, the sha256 check, the tar
+  # listing just now -- has run before this line and none of them touched the old
+  # tree, so a failed transfer can no longer turn an update into an uninstall.
+  # Keep the old file list to prune whatever the new payload does not ship.
+  oldmf=
+  if [ -n "$force" ] && [ -f "$MAN/$name.installed" ]; then
+    oldmf="/tmp/$name.old.$$"
+    cp "$MAN/$name.installed" "$oldmf" || oldmf=
+  fi
+
   ( cd "$ROOT" && tar -xzf "$payload" ) || {
-    echo "ingot: unpacking $name failed; nothing was recorded as installed" >&2
+    echo "ingot: unpacking $name failed; the install was not changed" >&2
     rm -f "/tmp/$name" "$payload" "$MAN/$name.installed.tmp"
     return 1
   }
 
   mv "$MAN/$name.installed.tmp" "$MAN/$name.installed"
+
+  # Drop files the old version listed and the new one does not, or an update
+  # leaves the previous version's files behind. Directories are left alone, as
+  # `remove` does: another package may still hold files in them. -F and -e keep
+  # a recorded path that starts with '-' a literal, not a grep option.
+  if [ -n "$oldmf" ]; then
+    sed -n '2,$p' "$oldmf" | while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      case "$line" in */) continue ;; esac
+      grep -Fqx -e "$line" "$MAN/$name.installed" || rm -f "$ROOT/$line"
+    done
+    rm -f "$oldmf"
+  fi
+
   rm -f "/tmp/$name" "$payload"
   echo "ingot: installed $name"
 
@@ -449,8 +477,11 @@ update_one() { # update_one <name> — reinstall if the repo's sha256 changed
     return 0
   fi
   echo "ingot: updating $name"
-  cmd_remove "$name" || return 1
-  cmd_install "$name"
+  # Install straight over the old tree instead of removing first: cmd_install
+  # fetches and verifies the new payload before it writes anything, so a bad
+  # transfer cannot delete a working install (bug 27). The old version is only
+  # replaced once the new payload is proven and unpacked.
+  cmd_install "$name" force
 }
 
 cmd_update() { # cmd_update [name] — update one installed package, or all
@@ -473,13 +504,12 @@ cmd_update() { # cmd_update [name] — update one installed package, or all
   return 0
 }
 
-cmd_reinstall() { # cmd_reinstall <name> — remove then install again, fresh
+cmd_reinstall() { # cmd_reinstall <name> — install again, replacing it in place
   name=$1
   require_root reinstall || return 1
-  if [ -f "$MAN/$name.installed" ]; then
-    cmd_remove "$name" || return 1
-  fi
-  cmd_install "$name"
+  # Same safety as update: removing first would leave nothing behind when the
+  # fresh payload cannot be fetched. force installs over the existing tree.
+  cmd_install "$name" force
 }
 
 cmd_inspect() { # cmd_inspect <name> — show the installed record, not the repo page
@@ -544,7 +574,7 @@ usage() {
   echo "  remove   <name>... delete the files those installs recorded"
   echo "  update   [name]... reinstall any installed package whose payload"
   echo "                   changed; all of them if no name is given"
-  echo "  reinstall <name>... remove then install again, fresh"
+  echo "  reinstall <name>... install again, fresh (nothing removed first)"
   echo "  inspect  <name>  show the installed record: version, url, sha256, files"
   echo "  info     <name>  print the package's JSON from the repo"
   echo "  search   <term>  grep the package index"

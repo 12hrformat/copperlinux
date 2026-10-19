@@ -21,6 +21,8 @@
 #   - update reinstalls a package whose page sha256 moved, and reports
 #     "up to date" when nothing changed, and update (all) keeps going when one
 #     package's page cannot be fetched
+#   - a failed update (payload 404) leaves the installed package and its record
+#     untouched, and a later good payload still updates it (bug 27)
 #   - search is literal and option-safe: a regex metacharacter cannot abort it
 #     and a leading dash is a term, not a flag
 #   - install/remove/update/reinstall on the real / refuse for a non-root
@@ -50,7 +52,7 @@ cleanup() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 
 # A stale /tmp from an earlier failed run would make the "cleaned" checks lie.
-rm -f /tmp/pinwheel /tmp/cog /tmp/forged /tmp/cogwheel
+rm -f /tmp/pinwheel /tmp/cog /tmp/forged /tmp/cogwheel /tmp/keystone
 
 mkdir -p "$REPO_ROOT/iso/copper/pkg/fun" "$REPO_ROOT/payloads" "$ROOT"
 
@@ -61,7 +63,8 @@ cat > "$REPO_ROOT/iso/copper/pkg/index.json" <<EOF
   "bigwheel": "fun",
   "pinwheel": "fun",
   "cog": "fun",
-  "forged": "fun"
+  "forged": "fun",
+  "keystone": "fun"
 }
 EOF
 
@@ -322,6 +325,94 @@ else
   note_bad "update cog (newer) failed: $out"
 fi
 
+# ---- bug 27: a failed update must not delete the installed package ----------
+# update used to remove the old install and only then fetch the new payload, so
+# a 404 turned an update into a silent uninstall. Install keystone 1.0 (two
+# files), point its page at a payload that is not there, and update: it must
+# fail, and 1.0 must still be on disk, still recorded, still version 1.0.
+mkdir -p "$WORK/stage5/usr/bin" "$WORK/stage5/usr/share/keystone"
+printf 'keystone 1.0\n' > "$WORK/stage5/usr/bin/keystone"
+printf 'old extra file\n' > "$WORK/stage5/usr/share/keystone/old.txt"
+( cd "$WORK/stage5" && tar -czf "$REPO_ROOT/payloads/keystone-1.0.tar.gz" usr )
+SHA_KEYSTONE=$(sha256sum "$REPO_ROOT/payloads/keystone-1.0.tar.gz" | awk '{print $1}')
+SIZE_KEYSTONE=$(wc -c < "$REPO_ROOT/payloads/keystone-1.0.tar.gz")
+cat > "$REPO_ROOT/iso/copper/pkg/fun/keystone" <<EOF
+{
+  "name": "keystone",
+  "version": "1.0",
+  "category": "fun",
+  "url": "http://127.0.0.1:$PORT/payloads/keystone-1.0.tar.gz",
+  "size": $SIZE_KEYSTONE,
+  "sha256": "$SHA_KEYSTONE"
+}
+EOF
+sh "$INGOT" install keystone >/dev/null 2>&1
+[ -f "$ROOT/usr/bin/keystone" ] && note_ok "keystone 1.0 installed" || note_bad "keystone 1.0 did not install"
+
+# 2.0's page claims a payload the server does not have -- the shape of a dropped
+# transfer or a CDN 404. The sha256 is new on purpose so update tries it.
+cat > "$REPO_ROOT/iso/copper/pkg/fun/keystone" <<EOF
+{
+  "name": "keystone",
+  "version": "2.0",
+  "category": "fun",
+  "url": "http://127.0.0.1:$PORT/payloads/keystone-2.0.tar.gz",
+  "size": 123456,
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+}
+EOF
+
+if out=$( sh "$INGOT" update keystone 2>&1 ); then
+  note_bad "update keystone succeeded with a 404 payload"
+else
+  note_ok "update keystone failed on the missing payload"
+fi
+[ -f "$ROOT/usr/bin/keystone" ] \
+  && note_ok "the working install survived the failed update (bug 27)" \
+  || note_bad "a failed update deleted the installed package (bug 27)"
+[ -f "$ROOT/var/lib/ingot/keystone.installed" ] \
+  && note_ok "the package record survived the failed update" \
+  || note_bad "a failed update removed the recorded manifest"
+grep -q '^keystone|1.0|' "$ROOT/var/lib/ingot/keystone.installed" 2>/dev/null \
+  && note_ok "the record still names version 1.0" \
+  || note_bad "a failed update rewrote the record"
+
+# The payload exists now, and 2.0 no longer ships old.txt. The same update must
+# succeed, swap 1.0 -> 2.0, and prune the file the new version dropped.
+printf 'keystone 2.0\n' > "$WORK/stage5/usr/bin/keystone"
+rm -f "$WORK/stage5/usr/share/keystone/old.txt"
+rmdir "$WORK/stage5/usr/share/keystone" 2>/dev/null
+( cd "$WORK/stage5" && tar -czf "$REPO_ROOT/payloads/keystone-2.0.tar.gz" usr )
+SHA_KEYSTONE_20=$(sha256sum "$REPO_ROOT/payloads/keystone-2.0.tar.gz" | awk '{print $1}')
+SIZE_KEYSTONE_20=$(wc -c < "$REPO_ROOT/payloads/keystone-2.0.tar.gz")
+cat > "$REPO_ROOT/iso/copper/pkg/fun/keystone" <<EOF
+{
+  "name": "keystone",
+  "version": "2.0",
+  "category": "fun",
+  "url": "http://127.0.0.1:$PORT/payloads/keystone-2.0.tar.gz",
+  "size": $SIZE_KEYSTONE_20,
+  "sha256": "$SHA_KEYSTONE_20"
+}
+EOF
+if out=$( sh "$INGOT" update keystone 2>&1 ); then
+  grep -q "keystone 2.0" "$ROOT/usr/bin/keystone" 2>/dev/null \
+    && note_ok "the recovered update landed 2.0" \
+    || note_bad "update did not land the new payload: $out"
+  grep -q '^keystone|2.0|' "$ROOT/var/lib/ingot/keystone.installed" \
+    && note_ok "the record moved to 2.0" \
+    || note_bad "the record is still on the old version"
+  [ ! -e "$ROOT/usr/share/keystone/old.txt" ] \
+    && note_ok "the file 2.0 dropped was pruned" \
+    || note_bad "a file from the old version lingered after the update"
+else
+  note_bad "update keystone (2.0 available) failed: $out"
+fi
+
+# Leave the repo as the later update-all checks expect it, and clean /tmp.
+sh "$INGOT" remove keystone >/dev/null 2>&1
+rm -f /tmp/keystone
+
 # ---- update all: cog is current again, reports up to date --------------------
 if out=$( sh "$INGOT" update 2>&1 ); then
   printf '%s' "$out" | grep -q "up to date" && note_ok "update-all sees nothing to do" || note_bad "update-all odd: $out"
@@ -354,7 +445,7 @@ printf '%s' "$out" | grep -q "up to date" \
 # ---- the pretty bar: on a real tty, big downloads animate ----------------
 # Non-tty runs must stay plain (asserted above); this one forces a pty and a
 # >1MiB payload so the bar path triggers for real and we can see the frames.
-if command -v python3 >/dev/null 2>&1; then
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import pty, fcntl' >/dev/null 2>&1; then
   bar_out=$( python3 "$REPO/tests/pty-run.py" sh "$INGOT" install bigwheel 2>&1 )
   printf '%s' "$bar_out" | grep -q '%' \
     && note_ok "tty bar shows a percentage" || note_bad "tty bar has no percent: $bar_out"
@@ -367,7 +458,7 @@ if command -v python3 >/dev/null 2>&1; then
   [ -f "$ROOT/usr/lib/big.dat" ] && note_ok "pty install landed the payload" \
     || note_bad "pty install left no payload"
 else
-  note_ok "python3 missing: pty bar test skipped"
+  note_ok "python3/pty unavailable: pty bar test skipped"
 fi
 
 # ---- the root contract: mutating commands on the real / need root ----------
