@@ -65,6 +65,39 @@ made it in.
 
 # Where things actually stand
 
+**Latest, 2026-10-20** — a real VMware boot of the 2026-10-19 image put several
+open entries under the microscope, and two more fixes are in the tree (full
+entries in `BUGS.md`):
+
+- **A non-root `startxfce` no longer dies at the input config (#44 — a
+  blocker).** The writability probe used `: > file`, a POSIX **special builtin**
+  whose failed redirection *exits* the shell, so the first candidate — root's
+  `/etc/X11/xorg.conf` — killed the launcher before its `/tmp` fallback ran.
+  `sudo startxfce` printed `can't create /etc/X11/xorg.conf: Permission denied`
+  and went straight back to the prompt. The probe is a subshell now;
+  `tests/startxfce-gate.sh` case 5c locks it.
+- **`ingot update`/`reinstall` can no longer uninstall on a bad transfer
+  (#27, fixed by farcrowx).** `cmd_install` takes a `force` flag: an update
+  installs over the old tree and only touches it after the new payload is
+  fetched, verified and tar-listed, then prunes files the new version dropped.
+  `tests/ingot-gate.sh` grew a 404 keystone case. That fix landed on `main`
+  while this branch was open, so a parallel fix written here was dropped in its
+  favour.
+- **The boot splash has its serial-console switch (#25).** `iso/boot/grub.cfg`'s
+  normal entry passes `plymouth.ignore-serial-consoles` beside
+  `plymouth.ignore-udev`, through the same kernel-argument path. The
+  `plymouthd` CLI flags the old plan named are not documented in this build, so
+  the kernel argument is the safe lever.
+- **Bug 34's seeder is confirmed working on the boot.** The log named every
+  device (`input1 "AT Translated Set 2 keyboard" -> KEY KEYBOARD`); what still
+  needs a boot is typing *inside* a Hyprland session, which a text console does
+  not exercise. **Bug 41's identity is live too**: fastfetch on the booted
+  image printed `Copper Linux 0.1 (Ingot) x86_64`.
+- **One rough edge seen, left alone:** `sudo startxfce` asks the
+  install-components question twice — once as root, once after bug 42's drop —
+  but only when the answer is "no" (a "yes" installs them, so the second pass
+  finds nothing missing).
+
 **Latest, 2026-10-19** — in the tree and gated; the boot-verifications below it
 are what has actually been run. Every one of these is detailed in `BUGS.md`
 (#41, #42) and gated by `tests/startxfce-gate.sh`:
