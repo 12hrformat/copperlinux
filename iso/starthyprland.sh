@@ -263,6 +263,56 @@ fi
 # the user has no config and the image has one to give, seed it. When neither is
 # true there is nothing to start: an unconfigured Hyprland is not the session
 # anyone asked for, and 21 names that.
+
+# Copy everything the shipped tree has and the home does not: make the missing
+# directories, then copy the files and symlinks that are absent. A file that is
+# already there is never touched, so a user's edits survive; what is missing is
+# filled in, so a home that was seeded -- or half-seeded -- by an older image can
+# be repaired in place instead of staying broken forever.
+#
+# This is not `cp -a -n`, which is the one-liner it looks like and the thing this
+# used to do. busybox's cp reads -n as "skip an existing *anything*": given a
+# ~/.config that already exists it skips the whole directory, copies nothing
+# below it, and reports success while doing so. That is invisible on a bare home
+# and permanent on a used one -- and it is why a home seeded before bug 26 (when
+# the build's empty-file gate dropped the zero-byte Lua stubs the config
+# require()s) stayed broken: the hyprland.lua that was there kept the seeding
+# branch from running, and the seeding branch could not have repaired it anyway.
+#
+# Walking the tree is a few hundred stat() calls and no surprises. seed_added
+# counts what was written so the caller can say whether the pass changed
+# anything.
+seed_added=0
+seed_config() {
+    seed_added=0
+    seed_list=${TMPDIR:-/tmp}/starthyprland-seed.$$
+    if [ ! -d "$SKEL" ]; then
+        return 1
+    fi
+    if ! ( cd "$SKEL" && find . \( -type f -o -type l \) ) > "$seed_list" 2>/dev/null; then
+        rm -f "$seed_list"
+        return 1
+    fi
+    while IFS= read -r seed_f; do
+        seed_rel=${seed_f#./}
+        [ -n "$seed_rel" ] || continue
+        if [ -e "$HOME/$seed_rel" ] || [ -L "$HOME/$seed_rel" ]; then
+            continue
+        fi
+        seed_dir=${seed_rel%/*}
+        if [ "$seed_dir" != "$seed_rel" ]; then
+            mkdir -p "$HOME/$seed_dir" 2>/dev/null || :
+        fi
+        if cp -a "$SKEL/$seed_rel" "$HOME/$seed_rel" 2>/dev/null; then
+            seed_added=$((seed_added + 1))
+        else
+            say "  could not copy $seed_rel into $HOME"
+        fi
+    done < "$seed_list"
+    rm -f "$seed_list"
+    return 0
+}
+
 if [ "$user_config" != 1 ]; then
     if [ "$skel_config" = 1 ]; then
         do_cfg=
@@ -296,16 +346,15 @@ if [ "$user_config" != 1 ]; then
         say "seeding the session config from $SKEL into $HOME"
         # The whole shipped home, not just .config/hypr: the tree carries the
         # ml4w/, waybar/, quickshell/ and gtk configuration the session reads
-        # from the same place. -n so a partial home keeps whatever it already
-        # has; the missing hyprland.lua is what brought us here.
-        if cp -a -n "$SKEL"/. "$HOME"/ 2>/dev/null; then
-            :
+        # from the same place.
+        if ! seed_config; then
+            say "the shipped config tree at $SKEL is not readable"
         fi
         if [ -e "$user_hypr/hyprland.lua" ]; then
             say "session config seeded"
         else
             say "could not seed the session config from $SKEL"
-            say "  (the copy failed; check that $HOME is writable)"
+            say "  (nothing was written; check that $HOME is writable)"
             exit 21
         fi
     else
@@ -313,6 +362,20 @@ if [ "$user_config" != 1 ]; then
         say "cannot start the session: no config in $user_hypr"
         say "  and the image has no shipped tree to seed it from."
         exit 21
+    fi
+else
+    # A config is already there and it may still be incomplete: a home seeded by
+    # an older image is missing exactly the files that image's build dropped, and
+    # nothing in the session will ever ask for them back. Repair it in place on
+    # every start. The pass only writes what is absent, so it costs a few hundred
+    # stat() calls once the tree is whole and it says nothing when it changes
+    # nothing.
+    if [ "$skel_config" = 1 ]; then
+        if seed_config && [ "$seed_added" -gt 0 ]; then
+            say "repaired the session config: added $seed_added missing file(s) from $SKEL"
+            say "  (a home seeded by an older image can be missing files the config"
+            say "  require()s; the shipped tree has them, and the session now does)"
+        fi
     fi
 fi
 
