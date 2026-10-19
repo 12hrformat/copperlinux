@@ -132,35 +132,6 @@ the entry and append `plymouth.ignore-serial-consoles` (or
 
 ---
 
-# 27. `ingot update` can delete a package it then fails to reinstall — impact 6/10
-
-**How it affects things:** updating a package whose new payload then fails to
-download leaves the package *gone* — files removed, manifest removed, and
-`ingot list` no longer knows it was ever there. A dropped transfer on the CDN
-(the thing `dl` retries five times for) turns an update into a silent
-uninstall.
-
-**What happens:** `update_one` removes the installed package and only *then*
-calls `cmd_install`. `cmd_remove` unlinks every recorded file and deletes
-`/var/lib/ingot/<name>.installed`; the page fetch, payload download and sha256
-check all happen after that. Any failure in that second half — the page pulled
-from the repo, a download that exhausts its retries, an unpack error — returns
-nonzero with the old install already destroyed.
-
-**Root cause:** the two halves are ordered for convenience, not safety. The one
-step that can run before the old install is touched is the fetch-and-verify, and
-it is placed last.
-
-**Status:** not fixed. The minimal safe fix is to fetch and verify the new
-payload into `/tmp` first and only then remove and install, or to give
-`cmd_install` a force path that installs over the old tree and prunes whatever
-the old manifest covered and the new one does not — either way `update` must not
-be able to delete a working package on a bad transfer. `cmd_reinstall` has the
-same window. A regression test needs an installed package whose new payload
-404s.
-
----
-
 # 28. `ingot` packages installed a binary you could not invoke by name — impact 8/10
 
 **How it affects things:** eight already-published packages reported a clean
@@ -1203,7 +1174,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-43 bugs total: 34 fixed, 8 open, 1 that only looked like one.
+43 bugs total: 36 fixed, 6 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -1233,7 +1204,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 24 | farcrowx, dragon | startxfce reuses a dead display when /tmp persists | (boot-verified 2026-10-19) |
 | bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16, completed 2026-10-19) |
-| bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
+| bug 27 | farcrowx | `ingot update` deleted a package it then failed to reinstall | (fix in tree 2026-10-20, gate-tested) |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
 | bug 29 | 12hrformat, farcrowx | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17, completed 2026-10-18) |
 | bug 30 | 12hrformat | Hyprland had no keyboard or pointer — libinput wants udev records nothing wrote | (2026-10-17) |
