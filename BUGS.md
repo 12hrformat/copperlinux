@@ -496,6 +496,17 @@ is missing exactly those files.
    copies `b`. The image builds 1.36.1, and that `-n` behaviour is not
    version-specific.
 
+**Why the file was missing at all, which is not a seeding problem:** bug 26
+exempted the shipped skeleton from the rootfs stage's empty-file **gate** and
+stopped there. The same stage's tree-wide empty-file **sweep** had no such
+exemption, and its guards were written for `find .` while the tree is named by
+an absolute path, so they matched nothing. A build that re-ran rootfs over a
+cached tree deleted the stubs out of the skeleton already in it, and the
+Hyprland stage's stamp still reported "already staged" and did not put them
+back. So the ISO's own skeleton could be missing the file, and a home seeded
+from it was broken from the first boot -- bug 40 is that half, fixed the same
+day.
+
 **Status:** fixed in the tree 2026-10-19. `starthyprland.sh` no longer uses
 `cp` for this: `seed_config()` walks the shipped tree, makes the directories
 that are missing, and copies only the files and symlinks that are absent -- a
@@ -565,6 +576,84 @@ The first boot that reproduces it should capture `discord`'s own stderr, the
 output of `ps -o pid,ppid,stat,comm`, and `ls -l /dev/shm` next to it.
 
 **Status:** open. Not diagnosed; needs one live reproduction.
+
+---
+
+# 39. the published `index.json` was missing its closing brace — impact 3/10
+
+**How it affects things:** `ingot` itself is fine -- it reads the index as text,
+one `"name": "category"` line at a time. Every other reader is not. `jq`, a
+browser, `python -m json.tool`, any client that parses the file fails on it, and
+it is served from GitHub Pages as the repository's index. A package repository
+whose index is not JSON is one nobody can build a client against.
+
+**What happens:** `12hrformat/copper-ingot-repo`'s
+`iso/copper/pkg/index.json` ended with the last entry and a newline: one byte
+short of the `}` that closes the object. The generator was an awk script
+(`regen-index.sh`) that printed the entries and no terminator, it had run that
+way since the repository was created, and nothing ever parsed the result --
+`ingot`'s `category_for()` seds the line and never sees the end of the file.
+
+**Fix, 2026-10-19:** the generator moves into the repository, as
+`tools/index.py`, and is the only thing that writes the index. It validates
+every page (JSON; `name` and `category` agreeing with the file and directory it
+lives in; `version`, `url`, `size`, `sha256`, `depends` all present; `sha256` 64
+hex characters), refuses a `depends` that names something with no page, writes
+strict JSON with one entry per line (because `ingot` reads it as text), and then
+**re-reads what it wrote** and asserts it parses and matches. `--check` fails if
+the file is out of step with the pages. `tools/audit.py` covers the release
+half: every page against the asset it points at (name, size, and the `sha256`
+GitHub reports) plus any asset no page names. Two pages, `libpcap` and `tree`,
+had no `depends` key at all and now carry `"depends": []` like the rest.
+
+**Status:** fixed 2026-10-19. The index was regenerated (72 entries) and the
+copy Pages actually serves was fetched back and parsed.
+
+---
+
+# 40. the rootfs empty-file sweep deleted the Hyprland skeleton's Lua stubs — impact 7/10
+
+**How it affects things:** bug 26 exempted the shipped Hyprland skeleton from the
+rootfs stage's empty-file **gate** and stopped there. The same stage also
+**sweeps** every zero-byte file out of the tree just before that gate, and the
+skeleton was not exempt from the sweep. A rebuild that re-ran rootfs over a
+cached tree therefore deleted the skeleton's include stubs -- the files ML4W's
+Lua configuration `require()`s -- and the ISO shipped without them. Every home
+seeded from that ISO came up half-loaded, which is what the human hit. Bug 36 is
+the other half: once a home has a config, it could not repair itself either.
+
+**What happens, exactly:** `build_rootfs` runs
+`find "$TGT" -type f -size 0 ... -delete`. Its guards were written for
+`find .` -- `! -path './etc/motd'`, `! -path './etc/timezone'` -- while the tree
+is named by an absolute path (`TGT="$WORK/rootfs"`), so no guard could ever
+match: `find /path/rootfs` emits `/path/rootfs/etc/motd`, never `./etc/motd`.
+`/etc/motd` and `/etc/timezone` are not zero bytes in the image, so that went
+unnoticed; the skeleton's stubs are, and did not. Stage order makes it
+intermittent and cache-dependent: rootfs is stage 6 and hypr is stage 8, so a
+bare build copies the skeleton *after* the sweep and is fine. The damage needs a
+rebuild where rootfs re-runs -- any edit under `iso/rootfs-overlay/` -- while
+hypr's stamp still matches. Then the sweep deletes the stubs from the skeleton
+already in the cached tree and nothing puts them back, and the ISO carries it.
+
+**Fix, in the tree 2026-10-19:**
+
+1. The sweep runs `( cd "$TGT" && find . ... )`, so its guards mean what they
+   say, and it names the skeleton
+   (`! -path './usr/share/copper/hyprland-skel/*'`) exactly as the gate already
+   did. The now-effective `motd`/`timezone` guards are not a behaviour change:
+   the gate exempts both, so the sweep was deleting files the next assertion
+   was written to allow.
+2. `build_hypr` no longer counts the tree as staged when the stub is gone:
+   `conf/environments/default.lua` is part of its "already staged" condition, so
+   a damaged skeleton re-runs the stage and gets a whole one.
+3. The ISO stage reads the stub back **off the disc** with xorriso -- the same
+   check the power links and sudo's mode already get -- and fails the build if it
+   is not there. A regression cannot ship silently a second time.
+
+**Status:** fixed in the tree 2026-10-19; `bash -n` and all five gates green
+(`starthyprland-gate` cases 23-25 include the zero-byte stub contract).
+Boot-verify: a boot whose seeded `~/.config/hypr/conf/environments/default.lua`
+exists, and a session log that names no missing module.
 
 ---
 
@@ -929,7 +1018,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-38 bugs total: 29 fixed, 8 open, 1 that only looked like one.
+40 bugs total: 31 fixed, 8 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -958,7 +1047,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | farcrowx, dragon | startxfce reuses a dead display when /tmp persists | (boot-verified 2026-10-19) |
 | bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
-| bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16) |
+| bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16, completed 2026-10-19) |
 | bug 27 | still open | ingot update deletes a package it then fails to reinstall |  |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
 | bug 29 | 12hrformat, farcrowx | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17, completed 2026-10-18) |
@@ -971,3 +1060,5 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 36 | dragon | a home is seeded once and never repaired — busybox `cp -a -n` skips an existing directory, so a missing config file could never come back | (fix in tree 2026-10-19; needs a boot) |
 | bug 37 | no fix needed | GNU tar's "Directory renamed before its status could be extracted" on `ingot install` — cosmetic, the payloads are intact | (explained 2026-10-19) |
 | bug 38 | still open | Discord hangs on a real boot |  |
+| bug 39 | dragon | the published `index.json` was missing its closing brace — the generator wrote the entries and stopped | (fix in tree 2026-10-19) |
+| bug 40 | dragon | the rootfs empty-file sweep deleted the Hyprland skel's Lua stubs — bug 26 exempted the gate, not the sweep | (fix in tree 2026-10-19) |

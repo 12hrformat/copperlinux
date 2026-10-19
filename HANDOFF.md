@@ -252,10 +252,17 @@ the one bash, ~1.4 MB, and it exists for the vendored tree alone.
 The skel also carries intentional zero-byte files — ML4W's Lua `require()` stubs
 (`hyprland-gui.lua`, the `conf/*/default.lua` includes) and markers whose
 *presence* is the setting (`waybar-disabled`, `software.sh`) — so the `rootfs`
-stage's whole-tree empty-file gate exempts that subtree by path (bug 26), and the
-`hypr` stage prunes the same legacy zero-byte `usr/share/mime/icons` map the
-`gui` stage prunes, because it re-runs `update-mime-database` and would otherwise
-re-create it.
+stage exempts that subtree by path from **both** of its empty-file checks: the
+gate *and* the sweep that runs just before it (bug 26, finished as bug 40 — the
+sweep's guards were written for `find .` against a tree named by an absolute
+path, so nothing was exempt and the skeleton lost its stubs on any rebuild that
+re-ran `rootfs` while `hypr`'s stamp still matched). Three things now keep it
+whole: the sweep exempts the subtree; `build_hypr` counts a missing
+`conf/environments/default.lua` as "not staged" and re-unpacks the skeleton; and
+the `iso` stage extracts that stub back off the disc and fails the build if it is
+not there. The `hypr` stage also prunes the same legacy zero-byte
+`usr/share/mime/icons` map the `gui` stage prunes, because it re-runs
+`update-mime-database` and would otherwise re-create it.
 
 `starthyprland` (`iso/starthyprland.sh`, POSIX sh) is the launcher, the twin of
 `startxfce`: it seeds the shipped config tree into the user's home, makes
