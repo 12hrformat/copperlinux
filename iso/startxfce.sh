@@ -345,6 +345,52 @@ if [ -z "$XPROBE" ] || [ ! -x "$XPROBE" ]; then
     say "  /usr/bin/xdpyinfo); checking the kernel's socket table instead."
 fi
 
+# --- who owns the desktop ---------------------------------------------------
+#
+# The account the wizard made owns the session, and copper-init starts the
+# console shell as it already. The way that gets undone is `sudo startxfce`.
+# That is what a person types when the plain one did not work, and sudo makes
+# *this* root: X inherits it, and so does everything the desktop runs -- the
+# panel's settings, each app's config, every file they create. A machine with a
+# real account on it ends up with a root desktop.
+#
+# So when this is root and there is a session account, become it. Everything
+# that needed root already happened above: the splash was quit, and any missing
+# ingot components were installed. The marker is read exactly the way
+# copper-init reads it (iso/src-init/copper-init.c): the first line of
+# /etc/copper-firstboot.done, and only if it names a real account. No marker --
+# a first boot before the wizard -- means root is all there is, and that is
+# what this stays.
+#
+# COPPER_USER names the account explicitly; COPPER_USER=root keeps a root
+# desktop on purpose.
+if [ "$(id -u)" = 0 ]; then
+    _as=${COPPER_USER:-}
+    if [ -z "$_as" ] && [ -r "${COPPER_USER_MARKER:-/etc/copper-firstboot.done}" ]; then
+        _as=$(head -n1 "${COPPER_USER_MARKER:-/etc/copper-firstboot.done}" 2>/dev/null)
+        # the first line is a login name; a stray byte from a hand-edited file
+        # would make it something else, and id would say so
+        _as=$(printf '%s' "$_as" | tr -d '[:space:]')
+    fi
+    if [ -n "$_as" ] && [ "$_as" != root ] && id "$_as" >/dev/null 2>&1; then
+        _sudo=$(command -v sudo 2>/dev/null) || _sudo=
+        if [ -n "$_sudo" ]; then
+            # $0 is "startxfce" when it was typed, and resolved through PATH
+            # here so that what sudo runs is the same script and not its own
+            # guess at a relative path.
+            _self=$(command -v "$0" 2>/dev/null) || _self=$0
+            [ -n "$_self" ] || _self=$0
+            say "starting the desktop as $_as, not as root"
+            say "  root's HOME is /root; a desktop running as root puts"
+            say "  every setting it writes there instead of in $_as's"
+            say "  COPPER_USER=root starts it as root anyway"
+            COPPER_SESSION_AS=$_as exec "$_sudo" -u "$_as" -H -- "$_self" "$@"
+        else
+            say "this desktop is root's: no sudo to become $_as with"
+        fi
+    fi
+fi
+
 disp_state=$(display_state)
 if [ "$disp_state" = live ]; then
     say "an X server is already on :$DISPLAY_NUM, using it"

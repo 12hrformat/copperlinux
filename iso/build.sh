@@ -1036,6 +1036,52 @@ assert_hotfix_db_readable() {
 }
 
 # ---------------------------------------------------------------
+# 6d2. whose distribution is this
+# ---------------------------------------------------------------
+# build_gui copies the display stack out of noble's packages with
+# `cp -a "$STAGE/." "$TGT/"` -- no -n, so the packages win over what rootfs
+# (stage 6) and the overlay already put there. base-files is in that closure,
+# and base-files is what owns /etc/os-release, /etc/lsb-release, /etc/issue and
+# /usr/lib/os-release. The moment the packages land, the image stops being
+# Copper and becomes "Ubuntu 24.04.5 LTS" with LOGO=ubuntu-logo -- which is
+# what fastfetch then draws on a Copper machine (bug 41, the Ubuntu logo).
+#
+# Nothing in the build reads those files, which is why it stayed invisible.
+# Put Copper's back here, still from iso/rootfs-overlay so there is one source
+# of truth, and assert the result rather than trusting the copy order to stay
+# this way forever. Called at the end of build_gui and on its cached early
+# return: a warm tree whose gui stage is skipped must be repaired too, since it
+# was written by whatever ran last.
+#
+# Both /etc/os-release and /usr/lib/os-release are plain files on this image
+# (on a normal Debian the first is a symlink to the second), and a reader may
+# open either, so both are written and then compared.
+copper_identity() {
+  local rel id
+  for rel in etc/os-release etc/lsb-release etc/issue; do
+    if [ ! -f "$ROOT/rootfs-overlay/$rel" ]; then
+      echo "gui: iso/rootfs-overlay/$rel is missing; without it the image" >&2
+      echo "     identifies itself as Ubuntu to every tool that asks" >&2
+      exit 1
+    fi
+    install -D -m 0644 "$ROOT/rootfs-overlay/$rel" "$TGT/$rel"
+  done
+  install -D -m 0644 "$ROOT/rootfs-overlay/etc/os-release" "$TGT/usr/lib/os-release"
+
+  id=$(sed -n 's/^ID=//p' "$TGT/etc/os-release" | head -n1)
+  if [ "$id" != copper ]; then
+    echo "gui: /etc/os-release does not say ID=copper (it says '${id:-nothing}')" >&2
+    echo "     base-files' copy won again; see copper_identity above" >&2
+    exit 1
+  fi
+  if ! cmp -s "$TGT/etc/os-release" "$TGT/usr/lib/os-release"; then
+    echo "gui: /etc/os-release and /usr/lib/os-release disagree" >&2
+    exit 1
+  fi
+  echo "  identity: $(sed -n 's/^PRETTY_NAME=//p' "$TGT/etc/os-release" | head -n1)"
+}
+
+# ---------------------------------------------------------------
 # 6e. the display stack: Xorg + XFCE, unpacked from packages
 # ---------------------------------------------------------------
 # Copper builds its own base system from source, and a desktop is not part of
@@ -1065,7 +1111,11 @@ assert_hotfix_db_readable() {
 build_gui() {
   if [ -e "$TGT/usr/bin/Xorg" ] && [ -e "$TGT/usr/bin/startxfce4" ] \
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then
-    echo "gui: already staged, skipping"; return
+    echo "gui: already staged, skipping"
+    # Skipping the packages must not skip their repair: a cached tree written
+    # before this existed still calls itself Ubuntu. Cheap and idempotent.
+    copper_identity
+    return
   fi
   echo "==> display stack (Xorg + XFCE)"
   local DG="$DL/gui" status="$WORK/gui-status" STAGE="$WORK/gui-root" deb n
@@ -1348,6 +1398,9 @@ build_gui() {
   # /sbin and in /usr/sbin, which PATH (and sudo's secure_path) searches first
   # (bug 29; the /usr/sbin half is what the 2026-10-17 fix missed).
   power_links "$TGT"
+
+  # Last, so nothing copied in after it can undo it: whose distribution this is.
+  copper_identity
 
   echo "  display stack staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
   stamp_set "$WORK/gui.stamp" "$SELF"
@@ -2059,6 +2112,20 @@ build_iso() {
   # overlay, not its own tmpfs, so this mode is the one the session gets.
   mkdir -p "$TGT/tmp"
   chmod 1777 "$TGT/tmp"
+
+  # Whose distribution is about to be written to the disc. build_gui repairs
+  # this after it copies base-files in (see copper_identity), and this is the
+  # last look before the ISO is produced, so a stage that runs after gui and
+  # brings its own os-release with it -- the Hyprland PPA closure is the
+  # candidate -- cannot ship a Copper ISO that calls itself Ubuntu.
+  local osid; osid=$(sed -n 's/^ID=//p' "$TGT/etc/os-release" 2>/dev/null | head -n1)
+  if [ "$osid" != copper ]; then
+    echo "iso: the staged tree's /etc/os-release says ID='${osid:-nothing}', not copper" >&2
+    echo "iso: something after the gui stage overwrote the image's identity" >&2
+    exit 1
+  fi
+  echo "  iso: the image identifies itself as $(sed -n 's/^PRETTY_NAME=//p' "$TGT/etc/os-release" | head -n1)"
+
   # Fold this script into the stamp as well as the tree. The ISO is produced
   # by grub-mkrescue plus the xorriso filter below; without $SELF here, a
   # change to either of those against an unchanged tree would skip the rebuild

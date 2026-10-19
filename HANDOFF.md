@@ -65,6 +65,27 @@ made it in.
 
 # Where things actually stand
 
+**Latest, 2026-10-19** — in the tree and gated; the boot-verifications below it
+are what has actually been run. Every one of these is detailed in `BUGS.md`
+(#41, #42) and gated by `tests/startxfce-gate.sh`:
+
+- **Copper finally says it is Copper.** `/etc/os-release`, `/etc/lsb-release`
+  and `/etc/issue` are Copper's, and the gui stage re-applies them *after* its
+  packages land, because Ubuntu's `base-files` is in that closure and owns
+  those exact paths. That is the whole reason a new machine answered
+  `fastfetch` with Ubuntu's logo (#41).
+- **fastfetch is Copper's by default.** `/etc/fastfetch/config.jsonc` is the
+  owner's config; `/usr/share/copper/fastfetch-logo.txt` is their logo
+  rendered into what xfce4-terminal can actually draw (a PNG logo is not
+  drawable here — #41 has the measurement). A user's own
+  `~/.config/fastfetch/config.jsonc` still wins, because `/etc` is last.
+- **`sudo startxfce` no longer makes a root desktop.** When it is root and
+  `/etc/copper-firstboot.done` names a real account, the launcher re-executes
+  itself as that account; `COPPER_USER=root` overrides it. (#42)
+- **`ingot` takes more than one name**: `sudo ingot install curl git firefox`,
+  and the same for `remove`, `reinstall` and `update`. Every name is
+  attempted, and the exit status is nonzero if any of them failed.
+
 **The box boots, gets on the network, and runs the first-boot wizard.** A
 VMware guest, 2 GB, NAT, booting the ISO, produced this:
 
