@@ -739,13 +739,31 @@ build_rootfs() {
   # stages (kitty/python __init__.py, sensors.d/.placeholder, ...). Those
   # stages prune their own empties during their run, but rootfs runs first and
   # the gate below would otherwise fail on the stale copies. Drop every empty
-  # regular file now, except the two the gate already exempts by name, so the
+  # regular file now, except the ones the gate already exempts by name, so the
   # gate sees the tree the stages are trying to produce.
-  find "$TGT" -type f -size 0 \
-    ! -path './etc/motd' ! -path './etc/timezone' ! -name 'mach_kernel' \
-    -delete 2>/dev/null || true
+  #
+  # Run it from inside the tree. The guards say './etc/motd', which is the
+  # shape find prints for `find .`; the first version of this sweep was
+  # `find "$TGT"` beside them, and $TGT is absolute, so they matched nothing
+  # and the exemption the gate below carries never applied here. That went
+  # unnoticed for motd and timezone -- neither is empty in this image -- but
+  # not for the Hyprland skeleton: its Lua configuration require()s files that
+  # are DELIBERATELY empty, a stub like conf/environments/default.lua existing
+  # only to be required, and those are precisely the zero-byte files. Rootfs is
+  # stage 6 and hypr is stage 8, so the skeleton is unpacked after this sweep
+  # on a cold build and survives -- but any rebuild that re-ran rootfs (any
+  # edit under iso/rootfs-overlay/) swept the skel already sitting in the
+  # cached tree, and hypr's stamp still matched, so nothing put the stubs back.
+  # The ISO shipped a skeleton missing the files its own config requires
+  # (bug 26), and every home seeded from it failed to start.
+  ( cd "$TGT" && find . -type f -size 0 \
+      ! -path './etc/motd' \
+      ! -path './etc/timezone' \
+      ! -path './usr/share/copper/hyprland-skel/*' \
+      ! -name 'mach_kernel' \
+      -delete ) 2>/dev/null || true
 
-assert_no_empty_files
+  assert_no_empty_files
   assert_commands_reachable
   assert_shell_scripts_parse
   assert_hotfix_db_readable
@@ -1376,8 +1394,17 @@ build_gui() {
 # a change of its own. Waybar ships from the PPA and is the bar instead; see
 # HANDOFF.md. Nothing here pretends Quickshell is present.
 build_hypr() {
+  # The skeleton is unpacked here, but a stage that runs earlier can take files
+  # back out of it: build_rootfs sweeps every zero-byte file in the tree, and
+  # the Lua configuration's include stubs are zero bytes on purpose -- empty is
+  # valid Lua and require() loads it. The sweep exempts the skeleton now (bug 40,
+  # the half bug 26 left), but a cached tree can already have been swept, and
+  # hypr's stamp would still match and skip the stage that puts the files back.
+  # So the stub the config require()s is part of "already staged": if it is
+  # gone, the skeleton is not whole and the whole stage re-runs to re-unpack it.
   if [ -e "$TGT/usr/bin/Hyprland" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/conf/environments/default.lua" ] \
      && stamped_skip "$WORK/hypr.stamp" "$SELF"; then
     echo "hypr: already staged, skipping"; return
   fi
@@ -2139,6 +2166,27 @@ WRAP
     exit 1
   fi
   echo "  iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the disc"
+
+  # The Hyprland skeleton, read back off the disc -- bug 26's second half, in
+  # one check. The session config is Lua whose include stubs are DELIBERATELY
+  # empty: a stub exists to be require()d and holds nothing. The one tree-wide
+  # empty-file sweep, in build_rootfs, used to delete them -- its guards were
+  # written for `find .` against a tree named by an absolute path, so they
+  # matched nothing, and the skeleton had no guard at all. rootfs runs before
+  # hypr, so only a cached tree that re-ran rootfs lost the stubs, and hypr's
+  # stamp then reported "already staged" and did not put them back: the ISO
+  # shipped a skeleton missing the file its own config requires, and every home
+  # seeded from it came up half-loaded. That is what the human hit. Same
+  # readback discipline as sudo's mode above -- check the artifact, on the disc.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/share/copper/hyprland-skel/.config/hypr/conf/environments \
+      "$ex/skel-env" >/dev/null 2>&1 || true
+  if [ ! -f "$ex/skel-env/default.lua" ]; then
+    echo "iso: the Hyprland skeleton in the ISO has no conf/environments/default.lua" >&2
+    echo "iso: its Lua config require()s that file; the seeded session would load half" >&2
+    exit 1
+  fi
+  echo "  iso: the Hyprland skeleton's zero-byte Lua include is on the disc"
 
   echo "$want" > "$WORK/iso.stamp"
   ls -lh "$OUT/copper.iso"
