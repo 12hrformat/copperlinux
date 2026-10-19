@@ -793,6 +793,55 @@ xfce4-terminal saying that account.
 
 ---
 
+# 43. Discord installs and then opens nothing — impact 5/10
+
+**How it affects things:** `ingot install discord` reported success, the menu
+entry was there, and launching it produced no window and no explanation — the
+classic "it worked, so why is nothing happening". The owner's trial found the
+shape of it: nothing on a plain start, a window with `--no-sandbox`, from a
+terminal launch as well as the menu.
+
+**Why:** on Linux Discord is a Chromium app behind a shell bootstrapper, and
+Chromium will not start unless it can put its renderers under one of two
+sandboxes — the kernel's, using unprivileged user namespaces, or its own
+`chrome-sandbox` helper, which must be **root-owned and setuid**: Chromium
+checks the ownership before it uses it and refuses to run rather than run
+unsandboxed. That helper is inside the app directory, and the bootstrapper
+installs the app directory into the *user's* `$XDG_CONFIG_HOME/discord/Discord`
+on first run. Nothing a user's own process unpacks in their own home can be
+root-owned and setuid, so that check can never be satisfied here.
+
+Which also means this is a bug in the **payload**, not in the image: there is
+no image-side wrapper that helps, because the vendor's own
+`Exec=/usr/bin/discord --url -- %u` (and the terminal's `discord`) both hit
+`/usr/bin/discord`, and that path belongs to the payload.
+
+**The fix (2026-10-19):** a republished payload,
+`discord-1.0.161-copper1.tar.gz`, with the vendor bootstrapper's two execs
+given the flag and a header comment on that one file saying what was added and
+why:
+
+```sh
+    exec "$config_home/$DIR/$app_dir/$EXE" --no-sandbox "$@"
+    ...
+exec "$discord_host" --no-sandbox "$@"
+```
+
+Nothing else in the archive changed — it was unpacked, the one file
+rewritten, and repacked from the original's own name list: 16,967 entries
+before and after, every mode and owner the same, the same 6,733 symlinks and
+the same 135 of them dangling, and a full recursive compare of the two
+extractions differs in exactly one file, that script (`hrwx`/hardlink
+duplication is what a naive `tar -c -T` re-tar produces — `--no-recursion` is
+the tell). The page's URL, sha256 and size moved with it.
+
+**Status:** fixed in the payload the page points at (2026-10-19). Because it
+is a payload and not an ISO, a machine already running the 2026-10-19 image
+takes it with `ingot reinstall discord` — no rebuild. Boot-verify: `discord`
+from the whisker menu opens.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -1154,7 +1203,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-42 bugs total: 33 fixed, 8 open, 1 that only looked like one.
+43 bugs total: 34 fixed, 8 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -1200,3 +1249,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 40 | dragon | the rootfs empty-file sweep deleted the Hyprland skel's Lua stubs — bug 26 exempted the gate, not the sweep | (fix in tree 2026-10-19) |
 | bug 41 | 12hrformat | fastfetch shows the Ubuntu logo — the image's os-release is base-files', and the owner's config was never in the image | (fix in tree 2026-10-19) |
 | bug 42 | 12hrformat | `sudo startxfce` leaves a root desktop — the launcher had no inverse of init's drop | (fix in tree 2026-10-19) |
+| bug 43 | 12hrformat | Discord installs and opens nothing — its Chromium sandbox needs a root-owned setuid `chrome-sandbox`, and the app is unpacked into the user's own home | (payload republished 2026-10-19) |
