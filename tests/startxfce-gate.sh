@@ -829,6 +829,69 @@ pkill -f "$TMP/Xorg" 2>/dev/null; pkill -f "$PSOCK" 2>/dev/null
 eq "  the wait ends, with a nonzero exit" 22 "$rc"
 has "  says the display never opened" "never opened" "$out"
 
+# --- 23: reaching for sudo does not make the desktop root's -----------------
+#
+# The wizard's account owns the session (copper-init drops the console shell to
+# it, see tests/init-session.c), so the launcher has to agree -- otherwise
+# `sudo startxfce`, which is what a person types when the plain one did not
+# work, gives an XFCE that writes everything to /root while the real account
+# sits unused. That is the state this check exists to end.
+#
+# The account comes from /etc/copper-firstboot.done, read the way copper-init
+# reads it; COPPER_USER_MARKER points at one of our own so the gate does not
+# depend on the host having a wizard. sudo is a stub that records what it was
+# asked to do: the decision is under test, not sudo.
+reset
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/sudo" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TMP/sudo.args"
+exit 0
+EOF
+chmod +x "$TMP/bin/sudo"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/Xorg";       chmod +x "$TMP/Xorg"
+
+run_drop() { # run_drop [VAR=value...] -- the launcher, with the stubs above
+    rm -f "$TMP/sudo.args"
+    env PATH="$TMP/bin:$PATH" "$@" \
+        COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+        COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+        COPPER_XPROBE="$PROBE" COPPER_XORGCONF="$TMP/xorg.conf" \
+        COPPER_XFCE_APPS="$TMP/no-apps" COPPER_INGOT=ingot COPPER_SUDO="" \
+        XSOCKDIR="$TMP/.X11-unix" sh "$SUT" 2>&1
+}
+
+if [ "$(id -u)" != 0 ]; then
+    printf '  --    the marker check needs root; this is uid %s\n' "$(id -u)"
+elif ! id nobody >/dev/null 2>&1; then
+    printf '  --    no account to test with (looked for nobody)\n'
+else
+    marker="$TMP/firstboot.done"
+    printf 'nobody\n' > "$marker"
+    out=$(run_drop COPPER_USER_MARKER="$marker")
+    has "  the marker's account is who it becomes" "as nobody" "$out"
+    has "  ...and sudo is asked for that account" "-u nobody" "$(cat "$TMP/sudo.args" 2>/dev/null)"
+
+    out=$(run_drop)
+    hasnt "  with no marker at all it says nothing about becoming one" \
+          "starting the desktop as" "$out"
+    if [ -s "$TMP/sudo.args" ]; then
+        bad "  ...and does not reach for sudo" "$(cat "$TMP/sudo.args")"
+    else
+        ok "  ...and does not reach for sudo"
+    fi
+
+    out=$(run_drop COPPER_USER=root COPPER_USER_MARKER="$marker")
+    hasnt "  COPPER_USER=root keeps a root desktop, on purpose" \
+          "starting the desktop as" "$out"
+    if [ -s "$TMP/sudo.args" ]; then
+        bad "  ...and does not reach for sudo" "$(cat "$TMP/sudo.args")"
+    else
+        ok "  ...and does not reach for sudo"
+    fi
+fi
+
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
 echo

@@ -706,6 +706,93 @@ exists, and a session log that names no missing module.
 
 ---
 
+# 41. `fastfetch` paints the Ubuntu logo on a Copper machine — impact 6/10
+
+**How it affects things:** the first command most people type on a new machine
+tells them it is not Copper. fastfetch is not the problem — to everything that
+asks, the image *is* Ubuntu. It also meant the owner's own config had nowhere
+to live: the file they use was in a home the image has never seen.
+
+**What happens, exactly.** Three facts, all measured on the 2026-10-19
+artifact rather than reasoned about:
+
+1. `/etc/os-release` — and its second copy at `/usr/lib/os-release` — is
+   Ubuntu 24.04.5's, `ID=ubuntu`, `LOGO=ubuntu-logo`, byte for byte. So is
+   `/etc/lsb-release`; `/etc/issue` says Ubuntu 24.04.5 LTS.
+2. Nothing we ship put it there, and nothing we ship reads it, which is why it
+   went unnoticed for weeks.
+3. `build_gui` is what put it there. The closure apt computes for the display
+   stack includes `base-files`, and `base-files` **is** `/etc/os-release`,
+   `/etc/lsb-release`, `/etc/issue` and `/usr/lib/os-release`. The stage then
+   merges with `cp -a "$STAGE/." "$TGT/"` — no `-n` — so the packages win over
+   the same paths rootfs took from the overlay.
+
+fastfetch reads os-release and only then its builtin table, `LOGO=` is not what
+it looks at (`ID` is), and an unknown `ID` is resolved through `ID_LIKE` — so
+`ID=copper, ID_LIKE="ubuntu debian"`, which is what the identity was meant to
+say, *also* gets Ubuntu's logo. Both were reproduced against the artifact's own
+fastfetch build in a mount namespace, by swapping /etc/os-release under it.
+
+**The fix (in the tree, 2026-10-19):**
+
+- Copper's own `iso/rootfs-overlay/etc/os-release`, `/etc/lsb-release` and
+  `/etc/issue`: `NAME="Copper Linux"`, `ID=copper`, `ID_LIKE="ubuntu debian"`
+  (true — the display stack is noble's), `LOGO=copper`.
+- `build_gui` re-applies them **after** the packages land, and asserts
+  `ID=copper` and that the two os-release copies agree: `copper_identity`,
+  called at the end of the stage and on its cached early return, so a warm tree
+  written before this existed is repaired too. `build_iso` asserts it again
+  before the disc is written, which is what stops a later stage that brings its
+  own os-release from shipping.
+- The owner's config is the image default now
+  (`iso/rootfs-overlay/etc/fastfetch/config.jsonc` +
+  `/usr/share/copper/fastfetch-logo.*`), so this does not depend on anyone
+  answering a prompt — `/etc/fastfetch/` is the last of fastfetch's search
+  paths, so a user's `~/.config/fastfetch/` still wins.
+- The logo is the one thing measurement changed: the config names a PNG, and
+  this fastfetch build can only draw an image through kitty, iTerm, sixel or
+  libchafa — none of which is in this build or in xfce4-terminal. A PNG logo
+  comes out as the file's raw bytes (seen), or as nothing. So the image ships
+  the PNG *rendered at build time* by chafa into truecolor half blocks
+  (`/usr/share/copper/fastfetch-logo.txt`) and points the config at that;
+  the PNG stays next to it for terminals that can draw it.
+
+**Status:** fix in the tree 2026-10-19 — `bash -n`, `sh -n`, and the five
+gates green. Boot-verify: `cat /etc/os-release` says `ID=copper` on the running
+image and a fresh terminal shows Copper's logo.
+
+---
+
+# 42. `sudo startxfce` starts a desktop whose files belong to root — impact 6/10
+
+**How it affects things:** "i need to launch it with sudo startxfce but still
+why are we root?" sudo goes up and nothing brought the desktop back down, so
+the panel's settings, every app's configuration and every file the session
+creates are root's — while the account the wizard made sits there unused. Same
+family as #19, different door.
+
+**Why it is like that:** copper-init drops the console shell to the account in
+`/etc/copper-firstboot.done` (`drop_to_session`, and the wizard writes that
+file), so a plain `startxfce` is already that account's. But `sudo startxfce`
+is what a person types when the plain one did not work, and sudo makes the
+*launcher* root; the launcher had no inverse of its own.
+
+**The fix (in the tree, 2026-10-19):** `iso/startxfce.sh` re-executes itself
+through `sudo -u "$account" -H` when it is root and the marker names a real
+account — late enough that the root-only work above it has already happened
+(the splash is quit, the missing ingot pieces are installed). With no marker
+(a first boot before the wizard) root is all there is and stays what it is,
+which is the honest answer; `COPPER_USER=root` keeps a root desktop on purpose.
+`tests/startxfce-gate.sh` case 23 covers all three with a stubbed sudo, so what
+is asserted is the decision and not sudo.
+
+**Status:** fix in the tree 2026-10-19 — `bash -n`, `sh -n`, all five gates
+green (startxfce-gate: 90 checks). Boot-verify: `sudo startxfce` on an image
+with a wizard-made account leaves `whoami` at the bottom of an
+xfce4-terminal saying that account.
+
+---
+
 # Everything fixed — the details are gone, the lessons stay
 
 Fixed bugs were removed from the list above per the rules. The lessons they
@@ -1067,7 +1154,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-40 bugs total: 31 fixed, 8 open, 1 that only looked like one.
+42 bugs total: 33 fixed, 8 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -1111,3 +1198,5 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 38 | still open | Discord is not in its payload — the first run downloads it silently; diagnosed and reproduced on the artifact | (diagnosed 2026-10-19) |
 | bug 39 | dragon | the published `index.json` was missing its closing brace — the generator wrote the entries and stopped | (fix in tree 2026-10-19) |
 | bug 40 | dragon | the rootfs empty-file sweep deleted the Hyprland skel's Lua stubs — bug 26 exempted the gate, not the sweep | (fix in tree 2026-10-19) |
+| bug 41 | 12hrformat | fastfetch shows the Ubuntu logo — the image's os-release is base-files', and the owner's config was never in the image | (fix in tree 2026-10-19) |
+| bug 42 | 12hrformat | `sudo startxfce` leaves a root desktop — the launcher had no inverse of init's drop | (fix in tree 2026-10-19) |

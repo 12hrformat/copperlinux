@@ -506,32 +506,62 @@ cmd_list() { # cmd_list — installed packages and their versions
   return 0
 }
 
+# One name or several. `ingot install curl git` is the same as both commands
+# run one after the other, which is what it means to a person typing it: the
+# table in the repo is flat and the index is fetched once per name either way.
+# The loop deliberately does not stop at the first failure -- a typo in the
+# third of five names should still install the other four -- and the exit
+# status is nonzero if any of them failed, so `ingot install a b && ...` still
+# means what it looks like.
+#
+# The variables are prefixed because POSIX sh here has no `local`, and
+# cmd_install is a function that leans on globals (name/url/want/meta) for the
+# package it is installing; a bare `name` in this loop would overwrite the one
+# it is working with.
+bulk() { # bulk <command> <name>...
+  bulk_cmd=$1; shift
+  bulk_ok=0
+  bulk_failed=
+  for bulk_name in "$@"; do
+    [ -n "$bulk_name" ] || continue
+    if "$bulk_cmd" "$bulk_name"; then
+      bulk_ok=$((bulk_ok + 1))
+    else
+      bulk_failed="$bulk_failed $bulk_name"
+    fi
+  done
+  if [ -n "$bulk_failed" ]; then
+    echo "ingot: $bulk_ok of $# ok; failed:$bulk_failed" >&2
+    return 1
+  fi
+  return 0
+}
+
 usage() {
-  echo "usage: ingot <install|remove|update|reinstall|inspect|info|search|list> <name>"
-  echo "  install  <name>  fetch its JSON from the repo, download the real"
-  echo "                   payload, verify sha256, unpack into $ROOT"
-  echo "  remove   <name>  delete the files the install recorded"
-  echo "  update   [name]  reinstall any installed package whose payload"
+  echo "usage: ingot <install|remove|update|reinstall|inspect|info|search|list> <name>..."
+  echo "  install  <name>... fetch each one's JSON from the repo, download the"
+  echo "                   real payload, verify sha256, unpack into $ROOT"
+  echo "  remove   <name>... delete the files those installs recorded"
+  echo "  update   [name]... reinstall any installed package whose payload"
   echo "                   changed; all of them if no name is given"
-  echo "  reinstall <name> remove then install again, fresh"
+  echo "  reinstall <name>... remove then install again, fresh"
   echo "  inspect  <name>  show the installed record: version, url, sha256, files"
   echo "  info     <name>  print the package's JSON from the repo"
   echo "  search   <term>  grep the package index"
   echo "  list             list installed packages and versions"
   echo
   echo "install/remove/update/reinstall write into / and need root:"
-  echo "    sudo ingot install <name>"
+  echo "    sudo ingot install <name>..."
   echo "with INGOT_ROOT set to a scratch tree they run unprivileged."
   echo "repo: $repo_url"
 }
 
 [ $# -ge 1 ] || { usage; exit 1; }
 case "$1" in
-  install)    [ $# -eq 2 ] || { usage; exit 1; }; cmd_install "$2" ;;
-  remove)     [ $# -eq 2 ] || { usage; exit 1; }; cmd_remove "$2" ;;
-  reinstall)  [ $# -eq 2 ] || { usage; exit 1; }; cmd_reinstall "$2" ;;
-  update)     [ $# -ge 1 ] && [ $# -le 2 ] || { usage; exit 1; }
-              if [ $# -eq 2 ]; then cmd_update "$2"; else cmd_update; fi ;;
+  install)    [ $# -ge 2 ] || { usage; exit 1; }; shift; bulk cmd_install "$@" ;;
+  remove)     [ $# -ge 2 ] || { usage; exit 1; }; shift; bulk cmd_remove "$@" ;;
+  reinstall)  [ $# -ge 2 ] || { usage; exit 1; }; shift; bulk cmd_reinstall "$@" ;;
+  update)     if [ $# -eq 1 ]; then cmd_update; else shift; bulk cmd_update "$@"; fi ;;
   inspect)    [ $# -eq 2 ] || { usage; exit 1; }; cmd_inspect "$2" ;;
   info)       [ $# -eq 2 ] || { usage; exit 1; }; cmd_info "$2" ;;
   search)     [ $# -eq 2 ] || { usage; exit 1; }; cmd_search "$2" ;;

@@ -1,0 +1,12 @@
+NAME="Copper Linux"
+PRETTY_NAME="Copper Linux 0.1 (Ingot)"
+VERSION_ID="0.1"
+VERSION="0.1 (Ingot)"
+VERSION_CODENAME=ingot
+ID=copper
+ID_LIKE="ubuntu debian"
+HOME_URL="https://github.com/12hrformat/copperlinux"
+SUPPORT_URL="https://github.com/12hrformat/copperlinux/issues"
+BUG_REPORT_URL="https://github.com/12hrformat/copperlinux/issues"
+LOGO=copper
+UBUNTU_CODENAME=noble
