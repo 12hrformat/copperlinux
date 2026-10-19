@@ -87,8 +87,10 @@ Environment, all optional:
   XPROBE_TIMEOUT     seconds xprobe waits for a display to answer before it
                      reports it unknown and the launcher moves on  (default 5)
   COPPER_XORGCONF    where the generated input config is written
-                     (default /etc/X11/xorg.conf; falls back to /tmp/xorg.conf
-                     when the login cannot write there)
+                     (default /etc/X11/xorg.conf)
+  COPPER_XORGCONF_FALLBACK  the second path tried when the first cannot be
+                     written        (default /tmp/xorg.conf; X is always handed
+                     whichever one won, with -config)
   COPPER_XFCE_APPS   where the component manifest lives
                      (default /etc/copper/xfce-apps; absence disables the
                      offer entirely)
@@ -478,13 +480,36 @@ else
     # root, and the login that starts a desktop is not root by design. A
     # config that cannot be written is the same failure as no devices: X
     # runs, draws a cursor, and hunts for input through udev, which is not
-    # there. So the write tries the requested path and falls back to /tmp,
-    # and says which one won. X is then handed the file explicitly with
-    # -config, so it uses what was written instead of hoping the default
-    # search path found it.
+    # there. So the write tries the requested path and falls back to
+    # $xorgconf2 (/tmp unless told otherwise), and says which one won. X is
+    # then handed the file explicitly with -config, so it uses what was
+    # written instead of hoping the default search path found it.
+    #
+    # The probe that decides writability is a SUBSHELL, and that is not
+    # decoration. `: > file` runs the `:` special builtin, and POSIX says a
+    # non-interactive shell shall exit when a special builtin's redirection
+    # fails -- dash and busybox ash both do. So the obvious test
+    #
+    #     { : > "$cand" 2>/dev/null; }        # WRONG: aborts the launcher
+    #
+    # killed the whole script on the first unwritable candidate, and the
+    # fallback below it was never reached. `sudo startxfce` (bug 42's drop)
+    # runs this as the session user, where /etc/X11 is root's, so every
+    # non-root launch died there -- seen on a real boot as
+    #
+    #     /usr/bin/startxfce: line 487: can't create /etc/X11/xorg.conf: Permission denied
+    #
+    # with no desktop and no further output (bug 44). The subshell confines
+    # the exit to the probe, so a failed candidate costs a status and the
+    # loop moves on. `2>/dev/null` hangs on the subshell, not the builtin,
+    # because the builtin's own redirects are set up in order -- `>` first,
+    # and it fails before `2>/dev/null` is ever applied, which is why the
+    # error was leaking to the console too.
+    # updated by 12hrformat, bug 44, iso/startxfce.sh (the xorg.conf probe)
+    xorgconf2=${COPPER_XORGCONF_FALLBACK:-/tmp/xorg.conf}
     cfg=
-    for cand in "$xorgconf" /tmp/xorg.conf; do
-        if mkdir -p "${cand%/*}" 2>/dev/null && { : > "$cand" 2>/dev/null; }; then
+    for cand in "$xorgconf" "$xorgconf2"; do
+        if mkdir -p "${cand%/*}" 2>/dev/null && ( : > "$cand" ) 2>/dev/null; then
             cfg=$cand
             break
         fi
