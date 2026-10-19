@@ -1846,6 +1846,14 @@ build_hypr() {
 # (libply-splash-core.so.5 NEEDs libudev.so.1), so the library is staged, but
 # no code path ever calls into the daemon.
 #
+# A second switch travels the same way. `plymouth.ignore-serial-consoles` maps
+# to PLY_DEVICE_MANAGER_FLAGS_IGNORE_SERIAL_CONSOLES, and without it plymouthd
+# treats the machine's second console= (ttyS0 in the VM) as a serial console,
+# sets serial_consoles_detected in ply-device-manager.c, and returns before it
+# ever creates a renderer -- the splash loads, runs its script, and draws no
+# frame (bug 25). grub.cfg passes it too; it changes only what plymouth treats
+# as the display, not the console= entries themselves.
+#
 # Only what the live image uses is copied out of the packages: the daemon, the
 # control client, the four libply libraries, the script and text plugins and
 # the two renderers. The systemd units, the SysV init script and the
