@@ -558,24 +558,58 @@ payload build should stop producing them.
 
 ---
 
-# 38. Discord hangs on a real boot — impact 5/10
+# 38. Discord is not in its payload — the first run downloads it, silently — impact 5/10
 
-**How it affects things:** `discord` (1.0.161, packaged from the vendor `.deb`,
-page `network/discord`) is offered by `startxfce` like every other component and
-its payload publishes and verifies. On a real boot it hangs instead of starting.
+**How it affects things:** `discord` (1.0.161, page `network/discord`, payload
+`discord-1.0.161.tar.gz`) is offered by `startxfce` like every other component,
+its payload publishes, verifies, and installs. Then clicking it does nothing for
+minutes: no window, no error, no process that finishes. The reasonable reading,
+and the human's, is "it hung".
 
-**What is known:** nothing diagnostic yet. No console text, no `ps`, no exit
-code -- the report is "discord hangs", and the machine is a live ISO where the
-window either never appears or never finishes coming up.
+**What the payload actually contains:** not Discord. `usr/bin/discord` is the
+vendor's **bootstrapper** — a shell script that looks for
+`$XDG_CONFIG_HOME/discord/Discord`, and when that is not executable runs
+`updater_bootstrap --zenity "$config_home/discord" stable
+https://updates.discord.com/` and execs whatever that leaves behind.
+`usr/share/discord/` holds `updater_bootstrap` (4.3 MB), an icon, a `.desktop`
+and the deb's `postinst.sh`. There is no `Discord` binary, no `app.asar`, no
+`.pak` anywhere in the 16,967 entries. Most of the 128,600,911 bytes is the
+**dependency closure** for an app that is not there — `libLLVM.so.20.1` alone is
+143 MB uncompressed.
 
-**Where to look first** (untested, in order): Electron's setuid sandbox wants a
-root-owned `chrome-sandbox` with mode 4755, and without it Electron refuses or
-stalls; there is no logind, so no `XDG_SESSION_TYPE`/seat it can borrow; and a
-small `/dev/shm` -- the live image's is tmpfs -- is a classic Electron stall.
-The first boot that reproduces it should capture `discord`'s own stderr, the
-output of `ps -o pid,ppid,stat,comm`, and `ls -l /dev/shm` next to it.
+**Why nothing appears:** the vendor launcher passes `--zenity`, because stdout is
+not a tty — which is every launch from the menu. The bootstrap's own strings say
+what that flag is for: `zenity --progress --text=Downloading Discord
+--auto-kill`, and `Failed to wait on zenity!`. There is no `zenity` in the
+payload and none in the image: nothing in either repository names it. So the
+one thing that would have shown the download cannot start, and the progress the
+bootstrap falls back to writing goes to **stderr**, which a `.desktop` launch
+throws away.
 
-**Status:** open. Not diagnosed; needs one live reproduction.
+**Reproduced on the published artifact**, extracted from the tarball and run in
+a plain WSL with no zenity and no display:
+
+    updater_bootstrap --zenity    /tmp/d d stable https://updates.discord.com/
+    updater_bootstrap --no-zenity /tmp/d d stable https://updates.discord.com/
+
+Both downloaded and neither hung: 20 MB in 30 s and 47 MB in 60 s, printing
+`Downloading Discord - N%` to stderr, failing to wait on zenity and carrying on.
+What that means on a real boot is minutes of silence while hundreds of
+megabytes arrive, and only then an Electron app starting — viewed by someone
+who clicked an icon.
+
+**Not the whole story:** the app that arrives is extracted **as the user** into
+`~/.config/discord`, so its own `chrome-sandbox` can never be root-owned and
+setuid. Whether that aborts Discord or is saved by the kernel's user namespaces
+is the second thing to measure, and it can only be measured after the download.
+
+**Status:** open, diagnosed. The download is the wall the human hit; the
+sandbox is the wall behind it. The fix is a packaging decision, not a code one:
+either bake the real app into the payload so there is no first run to sit
+through, or ship `zenity` so the vendor's progress dialog appears and the wait
+is visible. Whichever way, `--zenity` without zenity is a launcher asking for
+something the image does not have, and that is ours to notice.
+
 
 ---
 
@@ -1059,6 +1093,6 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 35 | still open | the wizard offers the persistence disk while it is mounted |  |
 | bug 36 | dragon | a home is seeded once and never repaired — busybox `cp -a -n` skips an existing directory, so a missing config file could never come back | (fix in tree 2026-10-19; needs a boot) |
 | bug 37 | no fix needed | GNU tar's "Directory renamed before its status could be extracted" on `ingot install` — cosmetic, the payloads are intact | (explained 2026-10-19) |
-| bug 38 | still open | Discord hangs on a real boot |  |
+| bug 38 | still open | Discord is not in its payload — the first run downloads it silently; diagnosed and reproduced on the artifact | (diagnosed 2026-10-19) |
 | bug 39 | dragon | the published `index.json` was missing its closing brace — the generator wrote the entries and stopped | (fix in tree 2026-10-19) |
 | bug 40 | dragon | the rootfs empty-file sweep deleted the Hyprland skel's Lua stubs — bug 26 exempted the gate, not the sweep | (fix in tree 2026-10-19) |
