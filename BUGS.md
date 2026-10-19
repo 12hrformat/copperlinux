@@ -112,23 +112,40 @@ deliberate (see the config facts below: the last `console=` owns
 (noble), not assumed: the strings, the flag handling in `main.c`, and the
 `IGNORE_SERIAL_CONSOLES` path in `ply-device-manager.c` all match.
 
-**Fix planned (not written):** tell Plymouth the serial console is not the
-display. `plymouthd` already supports `--graphical-boot` and
-`--ignore-serial-consoles`; `--graphical-boot` also forces the graphical
-splash. Either pass the flag from `splash_spawn()` in
-`iso/src-init/copper-init.c` (both the attach and non-attach paths), or add
-`plymouth.ignore-serial-consoles` to the kernel command line in
-`iso/boot/grub.cfg`, or both — `plymouthd` reads
-`plymouth.ignore-serial-consoles` as a kernel argument directly.
+**Fix written (2026-10-20):** tell Plymouth the serial console is not the
+display, through the kernel argument it already reads for its other switch.
+`iso/boot/grub.cfg`'s normal entry now ends
 
-**Still open because:** the fix is not written or booted yet. Verification is a
-QEMU boot of a remastered ISO (or `-kernel`/`-initrd` with the same `-append`),
+    ... quiet splash plymouth.ignore-udev plymouth.ignore-serial-consoles \
+        console=ttyS0,115200 console=tty0
+
+next to `plymouth.ignore-udev`, and `iso/build.sh`'s plymouth-stage comment
+records why. It maps to `PLY_DEVICE_MANAGER_FLAGS_IGNORE_SERIAL_CONSOLES` the
+same way `plymouth.ignore-udev` maps to its flag in `main.c`, and it changes
+only what Plymouth treats as the display — the two `console=` entries are
+untouched and the serial log still fills.
+
+**Why the kernel argument and not the `plymouthd` flags.** The earlier plan
+named `--graphical-boot`/`--ignore-serial-consoles`, but the noble
+`plymouthd(8)` man page (`plymouth 24.004.60-1ubuntu7.2`) documents neither,
+and an option the daemon rejects would kill the splash outright rather than
+mis-draw it. The kernel argument is the mechanism this build already relies on
+for `ignore-udev`, is confirmed by upstream's own console-detection bug reports
+(the exact `console=ttyS0 console=tty0` case), and cannot break the daemon if it
+is ever unrecognised — it is simply ignored.
+
+**Why this entry stays in the list even though the fix is written.** Unlike
+bug 27, this one cannot be closed by a script test: it is a boot-time renderer
+decision, and the only proof is a booted ISO drawing frames. It stays here until
+a boot says so.
+
+**Still open because:** the fix is not booted yet. Verification is a QEMU boot
+of a remastered ISO (or `-kernel`/`-initrd` with the same `-append`),
 confirming the non-blank sample count jumps towards a full frame and changes
 from frame to frame.
 
 Until a new ISO lands, the splash can be forced by hand at the GRUB menu: edit
-the entry and append `plymouth.ignore-serial-consoles` (or
-`plymouth.graphical`) before booting.
+the entry and append `plymouth.ignore-serial-consoles` before booting.
 
 ---
 
@@ -407,6 +424,15 @@ not tell those two apart. Both do now:
   (cases 20-22): keyboard dropped, all typed, no records at all.
 
 Closing this needs one more boot, whose log now names the fate of every device.
+
+**That boot ran (2026-10-20).** Its log shows the seeder working end to end —
+`input: wrote 4 libudev record(s), 4 naming a device type`, and per device
+`input1 "AT Translated Set 2 keyboard" -> KEY KEYBOARD`. The keyboard's record
+*does* carry its type, so the "missing type" half of the two possibilities is
+gone. What is still unconfirmed is typing **inside a Hyprland session**: that
+boot typed at the text console, which does not go through libinput. The entry
+stays open until a `starthyprland` boot has a working keyboard in the
+compositor.
 
 ---
 
@@ -732,6 +758,13 @@ fastfetch build in a mount namespace, by swapping /etc/os-release under it.
 gates green. Boot-verify: `cat /etc/os-release` says `ID=copper` on the running
 image and a fresh terminal shows Copper's logo.
 
+**Identity boot-confirmed (2026-10-20).** On a real boot, `ingot install
+fastfetch` installed cleanly and fastfetch printed
+`Copper Linux 0.1 (Ingot) x86_64` — that distro line is read from
+`/etc/os-release`, so the identity half is live, not just in tree. The logo
+could not be judged from that report: it arrived as a pasted serial capture,
+and the logo is ANSI art a paste can drop.
+
 ---
 
 # 42. `sudo startxfce` starts a desktop whose files belong to root — impact 6/10
@@ -810,6 +843,57 @@ the tell). The page's URL, sha256 and size moved with it.
 is a payload and not an ISO, a machine already running the 2026-10-19 image
 takes it with `ingot reinstall discord` — no rebuild. Boot-verify: `discord`
 from the whisker menu opens.
+
+---
+
+# 44. a non-root `startxfce` dies writing the input config — impact 10/10
+
+**How it affects things:** after bug 42's fix the console shell is the wizard
+account, and `startxfce` (or `sudo startxfce`, which bug 42 now re-executes as
+that account) drops the user back at the prompt instead of painting a desktop,
+with only
+
+    /usr/bin/startxfce: line 487: can't create /etc/X11/xorg.conf: Permission denied
+
+to explain it. Seen on a real boot (2026-10-20); the arrow in bug 30's entry
+that said this path was "handled" was reading the code, not a boot.
+
+**What happens, exactly:** the launcher writes its generated input config to
+`/etc/X11/xorg.conf` when it can and falls back to `/tmp/xorg.conf` when it
+cannot — it probes both with `: > "$cand"` and takes the first that succeeds.
+The probe was written
+
+    if mkdir -p "${cand%/*}" 2>/dev/null && { : > "$cand" 2>/dev/null; }; then
+
+and `:` is a POSIX **special builtin**: a non-interactive shell must *exit*
+when a special builtin's redirection fails, and dash and busybox ash both do.
+`/etc/X11` is root's, the session user cannot write there, so the very first
+candidate aborted the whole launcher before the `/tmp` fallback was ever tried.
+The `2>/dev/null` did not even hide the message, because redirections are set up
+left to right — `>` is attempted (and fails) before `2>/dev/null` is applied.
+
+**Root cause:** a writability probe that runs a special builtin with a
+redirection it expects to fail. The design was right — try the requested path,
+fall back to `/tmp`, hand X the file that won — but the one construct used to
+test the candidate kills the shell on exactly the machine the fallback exists
+for.
+
+**Fix (in the tree 2026-10-20):** the probe runs in a subshell,
+`( : > "$cand" ) 2>/dev/null`, so a failed candidate costs one status and the
+loop moves on; the group redirect also swallows the shell's own message. A
+comment at the site records the trap, and `COPPER_XORGCONF_FALLBACK` (default
+`/tmp/xorg.conf`) lets a test keep its fallback out of the shared `/tmp`.
+`tests/startxfce-gate.sh` case 5c points the first candidate at a directory (no
+user can redirect onto one) and asserts the launcher exits 0, writes the
+fallback, reaches `input devices:`, and never prints `can't create`.
+
+**Status:** fix in the tree 2026-10-20 — `sh -n` clean, gate green in the same
+change. Reproduced before the fix and confirmed after it on this box: with
+`COPPER_XORGCONF=/proc/xorg.conf` the launcher used to abort at the error and
+now reports `input config written: /tmp/xorg.conf` and carries on. Boot-verify:
+`startxfce` paints XFCE on a real machine whose `/etc/X11` belongs to root.
+Like bug 25 it stays listed until that boot, because the failure was a real
+boot's permissions, not something the gate can fully reproduce.
 
 ---
 
@@ -1174,7 +1258,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-43 bugs total: 36 fixed, 6 open, 1 that only looked like one.
+44 bugs total: 38 fixed, 5 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -1202,7 +1286,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | farcrowx, dragon | startxfce reuses a dead display when /tmp persists | (boot-verified 2026-10-19) |
-| bug 25 | still open | plymouth never draws a frame — serial console forces the text splash |  |
+| bug 25 | 12hrformat | plymouth never draws a frame — an active serial console forces the text splash | (fix in tree 2026-10-20) |
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16, completed 2026-10-19) |
 | bug 27 | farcrowx | `ingot update` deleted a package it then failed to reinstall | (fix in tree 2026-10-20, gate-tested) |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
@@ -1221,3 +1305,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 41 | 12hrformat | fastfetch shows the Ubuntu logo — the image's os-release is base-files', and the owner's config was never in the image | (fix in tree 2026-10-19) |
 | bug 42 | 12hrformat | `sudo startxfce` leaves a root desktop — the launcher had no inverse of init's drop | (fix in tree 2026-10-19) |
 | bug 43 | 12hrformat | Discord installs and opens nothing — its Chromium sandbox needs a root-owned setuid `chrome-sandbox`, and the app is unpacked into the user's own home | (payload republished 2026-10-19) |
+| bug 44 | 12hrformat | a non-root `startxfce` died writing the input config — `: >` is a special builtin, and a failed redirect exits a POSIX shell before the `/tmp` fallback | (fix in tree 2026-10-20) |
