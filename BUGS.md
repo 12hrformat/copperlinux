@@ -456,11 +456,26 @@ formatted; every later boot was correct.
 **Why it should be impossible:** `disk_in_use()` refuses any disk named by a
 line in `/proc/mounts`, and `/dev/nvme0n1 ... /mnt/upper ext4 ...` should have
 matched it. Either that read saw something else, or the page ran against a view
-of the system without the mount. Needs one boot that prints the wizard's
-`/proc/mounts` next to its offered list.
+of the system without the mount. The original plan was to need one boot that
+prints the wizard's `/proc/mounts` next to its offered list.
 
-**Status:** open. Caught by the human, not a test — `tests/persist.sh`'s
-fixture never mounts the disk it offers, so the gate cannot see this.
+**Fix in tree (2026-10-19), without waiting for that boot.** The marker already
+knew the answer: `/init` writes `upper=<disk>` on the same page as `media=`, and
+the wizard was reading only `media=`. `read_boot_marker()` now reads both and
+`is_upper_disk()` refuses that disk outright — a check on the marker cannot miss
+a mounted layer, because the marker is written *after* the mount succeeded. That
+is the authority now; `/proc/mounts` stays as the second line. Whether the
+`/proc/mounts` read is also broken is still unproven, so the bug is not closed.
+
+The automatic-take change made this urgent rather than cosmetic: had the page
+auto-formatted a single candidate while this was open, the mounted upper could
+have been formatted with no `ERASE` and no conversation at all. `tests/persist.sh`
+now covers it — case 7 writes `upper=/dev/sdy` and asserts the disk is not
+offered and nothing is formatted.
+
+**Status:** open (fix in tree 2026-10-19, needs a boot to confirm). Caught by the
+human, not a test — the fixture never mounted the disk it offered, so the old
+gate could not see it.
 
 ---
 
@@ -1090,7 +1105,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
 | bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
 | bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` (pointer boot-verified 2026-10-18; keyboard still silent, PID 1 now names each device) | (fix in tree 2026-10-18) |
-| bug 35 | still open | the wizard offers the persistence disk while it is mounted |  |
+| bug 35 | still open | the wizard offers the persistence disk while it is mounted | (fix in tree 2026-10-19) |
 | bug 36 | dragon | a home is seeded once and never repaired — busybox `cp -a -n` skips an existing directory, so a missing config file could never come back | (fix in tree 2026-10-19; needs a boot) |
 | bug 37 | no fix needed | GNU tar's "Directory renamed before its status could be extracted" on `ingot install` — cosmetic, the payloads are intact | (explained 2026-10-19) |
 | bug 38 | still open | Discord is not in its payload — the first run downloads it silently; diagnosed and reproduced on the artifact | (diagnosed 2026-10-19) |

@@ -21,8 +21,10 @@ A Copper ISO is a `grub-mkrescue` image. It boots like this:
 1. GRUB loads `vmlinuz` + `initrd.img` (the unpacked live system).
 2. `/init` (a busybox ash script) mounts proc/sys/dev, scans the bus for a
    `iso9660` medium that carries `/boot/grub/grub.cfg` (that's us), mounts
-   it read-only, then stacks a **writable tmpfs overlay** on top and
-   `switch_root`s into the merged tree.
+   it read-only, then stacks a **writable overlay** on top and `switch_root`s
+   into the merged tree. The writable layer is a tmpfs unless a disk carrying
+   the label `COPPER` is attached — that disk is claimed instead, and that is
+   what makes a session survive a reboot.
 3. `copper-init` (our PID 1) mounts the basics, applies `/etc/hostname`,
    brings the network up, runs the OOBE wizard once (marker:
    `/etc/copper-firstboot.done`), then keeps a `copper-sh` login shell
@@ -115,7 +117,9 @@ Two things in the build exist purely to catch trouble early:
 1. Download the `copper-iso` artifact from the build, save as `copper.iso`.
 2. VMware Workstation / Player → **New Virtual Machine** → *Custom*.
 3. Guest OS: **Linux → Ubuntu 64-bit** (just a generic x86_64 baseline).
-4. Memory 2 GB, disk 20 GB (not used yet — persistence is later).
+4. Memory 2 GB, disk 20 GB. The wizard takes a spare disk automatically and
+   reboots into it, so the session is kept — add it as **NVMe** (a SCSI disk is
+   invisible: the kernel has no VMware SCSI host driver).
 5. VM Settings → Network Adapter: leave it on **NAT** (that has a DHCP server
    behind it). Bridged works too if your network hands out leases.
 6. VM Settings → CD/DVD → *Use ISO image* → `copper.iso`. Set to boot
@@ -139,4 +143,4 @@ press Enter when prompted, it's waiting for input.
   path — `grub.cfg`, the initramfs `init` and the overlay are all still
   unrun. That's the next thing to try, and `ping 1.1.1.1` in the shell is
   the test.
-- WiFi, Bluetooth, persistence and a desktop are still to do.
+- WiFi, Bluetooth and a desktop are still to do.
