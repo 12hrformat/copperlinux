@@ -694,7 +694,10 @@ Status: **built, gated, and released.** `iso/rootfs-overlay/usr/bin/ingot` is
 the shipped client (POSIX sh, busybox-ash clean), with
 install/remove/update/reinstall/inspect/info/search/list. `dl()` retries with
 resume (`-C -`) and renders a progress bar on a terminal. `tests/ingot-gate.sh`
-(31 assertions) is green in WSL as root and non-root. The live Pages repo
+is green in WSL as root and non-root, and now proves the failure mode bug 27
+described: `update`/`reinstall` install over the old tree and only touch it after
+the new payload is fetched and verified, so a payload that 404s cannot delete the
+working install. The live Pages repo
 (`copper-ingot-repo`) has the index with all five payload packages; payloads
 live on the `payloads-v1` GitHub release and their sha256 digests match the
 pages, verified offline.
