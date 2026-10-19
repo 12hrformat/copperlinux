@@ -15,11 +15,13 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/reboot.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -908,48 +910,84 @@ static void screen_done(const char *name) {
 /* ------------------------------------------------------------------ */
 
 /* Copper runs from the ISO, so out of the box every change is gone at the next
-   reboot. This page is where that changes: it offers the spare disks, formats
-   whichever one is picked, and labels it COPPER. /init reads that label on the
-   next boot and mounts the disk as the overlay's writable layer, and from then
-   on the session is saved.
+   reboot. This page is where that changes: it takes a spare disk, formats it
+   and labels it COPPER. /init reads that label on the next boot and mounts the
+   disk as the overlay's writable layer, and from then on the session is saved.
 
-   Two things keep this from being dangerous. It only runs on a real Copper
-   boot -- /init drops the marker below while it sets the machine up, and
-   without it this returns immediately, so a test bench that happens to own a
-   spare disk is never offered a format. And a disk is only ever wiped after it
-   was printed in the list and the user typed ERASE at it. */
+   Everything here exists to make sure the disk that gets wiped is the intended
+   one, and only ever that one:
+
+   - It only runs on a real Copper boot. /init drops the marker below while it
+     sets the machine up, and without it this returns immediately, so a test
+     bench that happens to own a spare disk is never offered a format.
+   - The disk /init is using right now -- the writable layer on a boot that is
+     already persistent -- is read out of that same marker and never offered,
+     whatever /proc/mounts may say about it.
+   - Nothing mounted, and nothing the medium is made of, is ever a candidate.
+   - One empty disk is taken without a question: that is the ordinary first
+     boot (a fresh VM with one blank spare), and there is nothing on an empty
+     disk to lose. The moment the choice stops being obvious -- two candidates,
+     or one that already holds a filesystem -- the list comes back and the disk
+     is only wiped after the user types ERASE at it. */
 #define PERSIST_MARKER "/var/lib/copper/live-boot"
 #define PERSIST_MAX_DISKS 16
 #define PERSIST_NAME 32
 
-/* The whole disk the marker says this machine booted from, without /dev/.
-   Empty when the marker did not name one. */
+/* Overrides for the automatic path, both for the test bench rather than for a
+   normal boot: the countdown before an automatic format, and the reboot that
+   follows it (a test must never reboot the machine it runs on). */
+#define PERSIST_SECONDS_ENV "COPPER_PERSIST_SECONDS"
+#define PERSIST_NOREBOOT_ENV "COPPER_PERSIST_NO_REBOOT"
+
+/* What the marker says: the whole disk this machine booted from, and the disk
+   /init mounted as the writable layer. Both without /dev/, both empty when the
+   marker did not name one (upper=ram on a RAM-only boot). */
 static char boot_media_disk[PERSIST_NAME];
+static char boot_upper_disk[PERSIST_NAME];
 
 static void read_boot_marker(void) {
     boot_media_disk[0] = '\0';
+    boot_upper_disk[0] = '\0';
     FILE *f = fopen(PERSIST_MARKER, "r");
     if (!f) return;
     char line[256];
     while (fgets(line, sizeof line, f)) {
         char *nl = strpbrk(line, "\r\n");
         if (nl) *nl = '\0';
-        if (strncmp(line, "media=", 6) != 0) continue;
-        const char *d = line + 6;
-        if (strncmp(d, "/dev/", 5) == 0) d += 5;
-        snprintf(boot_media_disk, sizeof boot_media_disk, "%s", d);
+        const char *v = NULL;
+        char *dst = NULL;
+        if (strncmp(line, "media=", 6) == 0) { v = line + 6; dst = boot_media_disk; }
+        else if (strncmp(line, "upper=", 6) == 0) { v = line + 6; dst = boot_upper_disk; }
+        if (!v) continue;
+        if (strncmp(v, "/dev/", 5) == 0) v += 5;
+        if (strcmp(v, "ram") == 0) dst[0] = '\0';
+        else snprintf(dst, PERSIST_NAME, "%s", v);
     }
     fclose(f);
 }
 
-/* Is `disk` (a whole-disk name like "sdb") the medium this system booted from?
-   Named either as the whole disk or as one of its partitions. */
+/* Does `dev` (a /dev name without the prefix, possibly a partition) name the
+   whole disk `disk`? "sdb" and "sdb1" both belong to "sdb"; a name that merely
+   begins the same way -- "sdyx" when the disk is "sdy" -- does not. */
+static int dev_is_part_of(const char *dev, const char *disk) {
+    size_t dl = strlen(disk);
+    if (dl == 0 || dev[0] == '\0') return 0;
+    if (strncmp(dev, disk, dl) != 0) return 0;
+    char nxt = dev[dl];
+    return nxt == '\0' || (nxt >= '0' && nxt <= '9') || nxt == 'p';
+}
+
+/* Is `disk` (a whole-disk name like "sdb") the medium this system booted from? */
 static int is_boot_medium(const char *disk) {
-    if (!boot_media_disk[0]) return 0;
-    size_t dl = strlen(disk), ml = strlen(boot_media_disk);
-    if (dl == ml) return strcmp(disk, boot_media_disk) == 0;
-    /* the boot device is a partition of this disk, e.g. sdb1 of sdb */
-    return ml > dl && strncmp(boot_media_disk, disk, dl) == 0;
+    return boot_media_disk[0] && dev_is_part_of(boot_media_disk, disk);
+}
+
+/* Is this the disk /init already attached as the writable layer? Wiping that
+   one would throw away the very files the disk exists to keep. The marker is
+   the authority here, not /proc/mounts: this is the check that a mounted
+   overlay upper cannot slip past. */
+static int is_upper_disk(const char *disk) {
+    return boot_upper_disk[0] && dev_is_part_of(boot_upper_disk, disk);
 }
 
 /* A whole-disk name /sys/block could hold that a person might attach: sd*,
@@ -968,7 +1006,6 @@ static int disk_in_use(const char *disk) {
     FILE *f = fopen("/proc/mounts", "r");
     if (!f) return 1;                    /* cannot prove it is free: refuse */
     char line[512];
-    size_t dl = strlen(disk);
     int used = 0;
     while (fgets(line, sizeof line, f)) {
         char *sp = strchr(line, ' ');
@@ -976,15 +1013,34 @@ static int disk_in_use(const char *disk) {
         *sp = '\0';
         const char *dev = line;
         if (strncmp(dev, "/dev/", 5) == 0) dev += 5;
-        if (strncmp(dev, disk, dl) != 0) continue;
-        char nxt = dev[dl];
-        if (nxt == '\0' || (nxt >= '0' && nxt <= '9') || nxt == 'p') {
+        if (dev_is_part_of(dev, disk)) {
             used = 1;
             break;
         }
     }
     fclose(f);
     return used;
+}
+
+/* Does the disk already carry a filesystem? blkid prints nothing at all for
+   one that does not. The decision is made on the output rather than the exit
+   status: "nothing found" is a non-zero exit, and so is a probe that could not
+   run at all -- only the output says a filesystem is actually there.
+
+   Searched the same way mkfs.ext4 is, and for the same reason -- the wizard's
+   PATH is whatever copper-init handed down, and this is also what lets the
+   test bench put a stub in front of it. */
+static int disk_has_fs(const char *disk) {
+    char dev[PERSIST_NAME + 8];
+    snprintf(dev, sizeof dev, "/dev/%s", disk);
+    char out[256];
+    run_capture(out, sizeof out,
+                "if command -v blkid >/dev/null 2>&1; then blkid %s; "
+                "elif [ -x /sbin/blkid ]; then /sbin/blkid %s; "
+                "elif [ -x /usr/sbin/blkid ]; then /usr/sbin/blkid %s; "
+                "elif [ -x /bin/busybox ]; then /bin/busybox blkid %s; "
+                "fi", dev, dev, dev, dev);
+    return strstr(out, "TYPE=") != NULL || strstr(out, "UUID=") != NULL;
 }
 
 static int list_spare_disks(char disks[][PERSIST_NAME]) {
@@ -996,6 +1052,7 @@ static int list_spare_disks(char disks[][PERSIST_NAME]) {
         if (de->d_name[0] == '.') continue;
         if (!is_disk_name(de->d_name)) continue;
         if (is_boot_medium(de->d_name)) continue;
+        if (is_upper_disk(de->d_name)) continue;
         if (disk_in_use(de->d_name)) continue;
         snprintf(disks[n], PERSIST_NAME, "%.*s", PERSIST_NAME - 1, de->d_name);
         n++;
@@ -1025,6 +1082,110 @@ static void disk_size_str(const char *disk, char *out, size_t cap) {
         snprintf(out, cap, "%.0f MB", (double)b / 1000000.0);
 }
 
+/* Wait up to `secs` seconds for a keypress, so a countdown can be stopped.
+   1 means a key is already waiting (the caller reads the line itself), 0 means
+   the time ran out. */
+static int wait_key(int secs) {
+    struct pollfd p;
+    p.fd = STDIN_FILENO;
+    p.events = POLLIN;
+    p.revents = 0;
+    return poll(&p, 1, secs * 1000) > 0;
+}
+
+/* How long the automatic format waits before it goes ahead. Five seconds is
+   enough to see which disk was named and to stop it. The override exists for
+   the test bench, which cannot sit through a countdown for every case. */
+static int persist_seconds(void) {
+    const char *s = getenv(PERSIST_SECONDS_ENV);
+    if (!s || !*s) return 5;
+    int n = atoi(s);
+    if (n < 0) n = 0;
+    if (n > 60) n = 60;
+    return n;
+}
+
+/* Format `dev` as the COPPER disk. Returns 0 on success. Shared by the
+   automatic and the picked path so the two cannot drift apart. */
+static int format_persistence_disk(const char *dev) {
+    printf("\nFormatting /dev/%s ...\n", dev);
+    fflush(stdout);
+    /* mkfs.ext4 is a glibc binary from e2fsprogs (see iso/build.sh). Search for
+       it rather than trusting PATH: the wizard's PATH is whatever copper-init
+       handed down, and the tool has moved between /sbin and /usr/sbin before.
+       -F overrides mkfs's "this looks like a whole disk" refusal, which is
+       exactly what a disk with no partitions is. */
+    char why[1024] = "";
+    if (run_capture(why, sizeof why,
+                    "if command -v mkfs.ext4 >/dev/null 2>&1; then "
+                    "mkfs.ext4 -q -F -L COPPER /dev/%s; "
+                    "elif [ -x /sbin/mkfs.ext4 ]; then "
+                    "/sbin/mkfs.ext4 -q -F -L COPPER /dev/%s; "
+                    "elif [ -x /usr/sbin/mkfs.ext4 ]; then "
+                    "/usr/sbin/mkfs.ext4 -q -F -L COPPER /dev/%s; "
+                    "else echo 'mkfs.ext4 is not in this image'; exit 127; fi",
+                    dev, dev, dev) != 0) {
+        printf("Could not format /dev/%s.\n", dev);
+        if (why[0]) printf("  %s\n", why);
+        printf("Persistence stays off; this session is unaffected.\n");
+        return -1;
+    }
+    /* mkfs writes the superblock and returns; get it on the platter before
+       telling someone their files are safe. */
+    run_quiet("/bin/busybox sync");
+    return 0;
+}
+
+/* The disk that was just formatted is empty -- and on the next boot it becomes
+   the writable layer, which means the account, the desktop answer and the
+   done-marker this session wrote live in RAM and would go with it. The wizard
+   would then introduce itself and ask every question a second time. Copying
+   the handful of files it wrote across now means the next boot comes up as the
+   finished machine instead of starting over.
+
+   Best effort on purpose: if anything in here fails the next boot is merely
+   the old behaviour (the wizard runs again), so it is reported and never
+   treated as a disk problem. */
+static void carry_firstboot_answers(const char *dev) {
+    const char *mnt = "/mnt/copper-persist";
+    run_quiet("/bin/busybox mkdir -p %s", mnt);
+    if (run_quiet("/bin/busybox mount -t ext4 /dev/%s %s", dev, mnt) != 0) {
+        printf("(could not reopen /dev/%s to carry your answers across)\n", dev);
+        return;
+    }
+    run_quiet("/bin/busybox mkdir -p %s/etc %s/home", mnt, mnt);
+    /* -a keeps owners and modes: /etc/shadow must not land world-readable. A
+       file the wizard never wrote (a run that never reached the timezone) is
+       skipped by cp rather than failing the copy of the others. */
+    run_quiet("/bin/busybox cp -a /etc/passwd /etc/shadow /etc/group "
+              "/etc/hostname /etc/hosts /etc/localtime /etc/timezone "
+              "/etc/copper-firstboot.done /etc/copper-desktop %s/etc/", mnt);
+    run_quiet("/bin/busybox cp -a /home/. %s/home/", mnt);
+    run_quiet("/bin/busybox sync");
+    if (run_quiet("/bin/busybox umount %s", mnt) == 0)
+        printf("Your answers are on it, so the next boot does not ask again.\n");
+    else
+        printf("(could not unmount /dev/%s cleanly; a reboot clears it up)\n", dev);
+}
+
+/* Reboot so the disk is in use now rather than "from the next boot", which is
+   what makes this arrive finished instead of handing over a chore.
+   reboot(2) does not unmount anything, so the sync above matters: mkfs and the
+   copied answers have to be on the platter first. The override is for the test
+   bench, which must never reboot the machine running the tests. */
+static void reboot_into_persistence(void) {
+    if (getenv(PERSIST_NOREBOOT_ENV)) {
+        printf("Reboot to turn persistence on — after that your files are kept.\n");
+        return;
+    }
+    printf("Rebooting now — your files are kept from this point on.\n");
+    fflush(stdout);
+    run_quiet("/bin/busybox sync");
+    reboot(RB_AUTOBOOT);
+    /* Only reached if the kernel refused the request. */
+    printf("Could not reboot automatically — reboot when you are ready.\n");
+}
+
 /* Returns 1 if the page was shown, 0 if it was skipped because this is not a
    live Copper boot. main() uses that to decide whether to hold the screen. */
 static int offer_persistence(void) {
@@ -1042,6 +1203,40 @@ static int offer_persistence(void) {
         printf("  VMware: the VM's settings) and the next fresh boot will offer it.\n");
         return 1;
     }
+
+    /* One empty disk is an ordinary first boot -- a fresh machine with a spare
+       disk attached -- and there is nothing on it to lose, so it is taken
+       without a question. Two of them, or one that already holds files, is a
+       choice only the person in front of the machine can make safely. */
+    if (n == 1 && !disk_has_fs(disks[0])) {
+        char sz[32];
+        disk_size_str(disks[0], sz, sizeof sz);
+        int secs = persist_seconds();
+        printf("  Copper is running live, so nothing is saved when you reboot. One\n");
+        printf("  empty disk is attached, so Copper formats it and keeps your files\n");
+        printf("  on it from now on.\n");
+        printf("\n");
+        printf("      %-12s %s\n", disks[0], sz);
+        printf("\n");
+        printf("  Formatting /dev/%s in %d seconds — press Enter to skip.\n",
+               disks[0], secs);
+        fflush(stdout);
+        if (wait_key(secs)) {
+            char skip[8];
+            read_line(skip, sizeof skip);
+            printf("\nSkipped — this session stays in RAM.\n");
+            return 1;
+        }
+        printf("\n");
+        if (format_persistence_disk(disks[0]) != 0) return 1;
+        printf("\nDone. /dev/%s is labeled COPPER.\n", disks[0]);
+        carry_firstboot_answers(disks[0]);
+        reboot_into_persistence();
+        return 1;
+    }
+
+    /* More than one candidate, or one that already has files on it: list them
+       and make the disk be named and the erasure confirmed. */
     printf("  Copper is running live, so nothing is saved when you reboot. Pick a\n");
     printf("  disk below and it is wiped, formatted and then keeps your files from\n");
     printf("  the next boot on. Press Enter alone to leave everything as it is.\n");
@@ -1080,33 +1275,12 @@ static int offer_persistence(void) {
         return 1;
     }
 
-    printf("\nFormatting /dev/%s ...\n", dev);
-    fflush(stdout);
-    /* mkfs.ext4 is a glibc binary from e2fsprogs (see iso/build.sh). Search for
-       it rather than trusting PATH: the wizard's PATH is whatever copper-init
-       handed down, and the tool has moved between /sbin and /usr/sbin before.
-       -F overrides mkfs's "this looks like a whole disk" refusal, which is
-       exactly what a disk with no partitions is. */
-    char why[1024] = "";
-    if (run_capture(why, sizeof why,
-                    "if command -v mkfs.ext4 >/dev/null 2>&1; then "
-                    "mkfs.ext4 -q -F -L COPPER /dev/%s; "
-                    "elif [ -x /sbin/mkfs.ext4 ]; then "
-                    "/sbin/mkfs.ext4 -q -F -L COPPER /dev/%s; "
-                    "elif [ -x /usr/sbin/mkfs.ext4 ]; then "
-                    "/usr/sbin/mkfs.ext4 -q -F -L COPPER /dev/%s; "
-                    "else echo 'mkfs.ext4 is not in this image'; exit 127; fi",
-                    dev, dev, dev) != 0) {
-        printf("Could not format /dev/%s.\n", dev);
-        if (why[0]) printf("  %s\n", why);
-        printf("Persistence stays off; this session is unaffected.\n");
-        return 1;
-    }
-    /* mkfs writes the superblock and returns; get it on the platter before
-       telling someone their files are safe. */
-    run_quiet("/bin/busybox sync");
+    if (format_persistence_disk(dev) != 0) return 1;
     printf("\nDone. /dev/%s is labeled COPPER.\n", dev);
-    printf("Reboot to turn persistence on — after that your files are kept.\n");
+    /* The same as the automatic path: the disk starts empty, so the answers
+       have to go across or the next boot asks for them all over again. */
+    carry_firstboot_answers(dev);
+    reboot_into_persistence();
     return 1;
 }
 

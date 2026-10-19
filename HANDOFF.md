@@ -397,22 +397,41 @@ disk.
   it and falls back to the tmpfs when there is none, so the ISO still boots
   anywhere. Label-first is the safety: we only ever claim a disk we labelled
   ourselves.
-- **The wizard picks the disk.** Last page of `copper-firstboot`: lists the
-  spare whole disks, the user picks one and types `ERASE`, then it runs
-  `mkfs.ext4 -q -F -L COPPER`. The medium it booted from and anything mounted
-  are never offered, and the page only runs on a real Copper boot (`/init`
-  leaves `/var/lib/copper/live-boot`).
+- **The wizard takes the disk, and only asks when asking matters.** Last page of
+  `copper-firstboot`. With exactly one spare whole disk that is empty (`blkid`
+  finds no filesystem) it is automatic: it prints the disk, counts down 5
+  seconds with `press Enter to skip`, then runs `mkfs.ext4 -q -F -L COPPER`.
+  Anything else — two candidates, or one that already has files on it — falls
+  back to the list, where the disk must be named and `ERASE` typed. The medium
+  it booted from, anything mounted, and the disk the marker names as `upper=`
+  are never candidates, and the page only runs on a real Copper boot (`/init`
+  leaves `/var/lib/copper/live-boot`). The `upper=` check is the belt for bug
+  35, where the disk `/init` had already attached still reached the list.
+- **It finishes the job itself.** After formatting, the wizard copies the few
+  files it wrote (`/etc/passwd`, `shadow`, `group`, hostname/hosts, timezone,
+  the done-marker, the desktop answer, `/home`) onto the fresh disk, then
+  reboots. So the disk carries the account *and* the done-marker: the next boot
+  comes up as a finished machine instead of asking every question a second time.
+  Both steps are best effort — if the copy fails the next boot is just the old
+  behaviour (wizard runs again).
 - **It activates on the next boot, not mid-session.** Hot-swapping the upper
-  under a live overlay is the kind of fragile shit we don't ship. Turn it on at
-  boot, reboot once, and every boot after is persistent.
+  under a live overlay is the kind of fragile shit we don't ship. The wizard's
+  own reboot is how the disk becomes live; every boot after is persistent.
+  `COPPER_PERSIST_SECONDS` shortens the countdown and `COPPER_PERSIST_NO_REBOOT`
+  suppresses the reboot — both for the test bench, which must not be rebooted
+  by a test run, and neither is set on a real boot.
 - **Two build facts it rests on:** busybox's `mke2fs` applet only makes ext2 and
   overlayfs refuses that as an upper, so the real `mkfs.ext4` (e2fsprogs, gui
   stage) is mandatory and the gui stage now fails the build without it; and PID
   1 remounts a fresh tmpfs over `/run`, so the marker lives on the overlay
   (`/var/lib/copper/live-boot`), never in `/run`. See BUGS.md config facts.
 - **Tested where it can be:** `tests/persist.sh` drives the real wizard against
-  a stub `mkfs.ext4` in a mount namespace — nothing real is formatted — and runs
-  in CI via `tests/branch-gate.sh`.
+  stub `mkfs.ext4` and stub `blkid` in a mount namespace — nothing real is
+  formatted, and the machine is never rebooted (`COPPER_PERSIST_NO_REBOOT`) —
+  and runs in CI via `tests/branch-gate.sh`. It covers the automatic take, the
+  countdown being stoppable, a disk that already has files going back to the
+  list, two disks listing, a hand-typed unoffered disk being refused, and the
+  marker's `upper=` disk never being offered.
 
 **Boot-verified 2026-10-19.** CI run 131's ISO on a VMware guest with a spare
 NVMe disk (SCSI would not have worked — no VMware SCSI host driver in the
@@ -423,8 +442,16 @@ in that session came back after a further reboot. The two-boot desktop case
 came along on the same boots: `startxfce` started a fresh X server rather than
 reusing the stale `/tmp` socket — bug 24's test, also closed.
 
+**Automatic take + self-reboot (2026-10-19, needs a boot).** The wizard used to
+list the disks and make the first boot pick one and type `ERASE` — too much of a
+setup screen for what is meant to be a finished machine. It now takes a single
+empty spare disk on its own and reboots into it, carrying the wizard's answers
+across so the next boot does not ask again. In the tree and covered by
+`tests/persist.sh`; not yet seen on a real boot.
+
 Two findings from that boot, logged in BUGS.md: the wizard re-offered the very
-disk /init had mounted (bug 35 — the pick was skipped, nothing formatted), and
+disk /init had mounted (bug 35 — the pick was skipped, nothing formatted; the
+marker's `upper=` is now a second, stronger check that cannot miss it), and
 `sudo reboot` printed systemd errors and did nothing (bug 18's first real-boot
 evidence).
 
@@ -755,8 +782,10 @@ the CD drive with **Connected at power on** ticked.
 **Give the guest a spare disk for the G6 persistence test.** ✅ Done
 2026-10-19 — but add it as **NVMe**, not SCSI: the kernel has no VMware SCSI
 host driver, and a SCSI disk is invisible to the guest (config fact in
-BUGS.md). Pick it, type `ERASE`, then reboot: the session came back with its
-files and `/` was the disk, not RAM. That was the boot that closed bug 20.
+BUGS.md). The wizard now takes it on its own (one empty disk, five-second
+countdown, then it reboots into the disk), so there is nothing to pick and
+nothing to type: the session came back with its files and `/` was the disk, not
+RAM. That was the boot that closed bug 20.
 
 Then **Add… → Serial Port**, "This end is connected to" → **Output to file** →
 a `.txt` path (VMware insists on `.txt` and will warn the file doesn't exist;
