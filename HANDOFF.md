@@ -85,6 +85,19 @@ are what has actually been run. Every one of these is detailed in `BUGS.md`
 - **`ingot` takes more than one name**: `sudo ingot install curl git firefox`,
   and the same for `remove`, `reinstall` and `update`. Every name is
   attempted, and the exit status is nonzero if any of them failed.
+- **Discord opens.** The app is Chromium under a shell bootstrapper, and
+  Chromium refuses to start unless its `chrome-sandbox` helper is root-owned
+  and setuid — which the app, unpacked into the user's own
+  `$XDG_CONFIG_HOME`, can never be. The payload is republished with the flag
+  its trial found (`--no-sandbox`, at the vendor launcher's two execs), so a
+  machine already on the 2026-10-19 image takes the fix with
+  `ingot reinstall discord` and no rebuild. (#43)
+- **The package set grew by 16** (pages 72 → 88): `atril`, `galculator`,
+  `mpv`, `feh`, `thunar-archive-plugin` (which now declares
+  `depends: ["xarchiver"]`), `mc`, `sqlite3`, `screen`, `openssh-client`,
+  `sshpass`, `iperf3`, and the toys `cowsay`, `lolcat`, `fortune-mod`,
+  `cmatrix`, `toilet`. All 16 payloads are on the release and every page was
+  checked against its asset by `tools/audit.py`.
 
 **The box boots, gets on the network, and runs the first-boot wizard.** A
 VMware guest, 2 GB, NAT, booting the ISO, produced this:
