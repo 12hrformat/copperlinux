@@ -15,10 +15,13 @@
 # "image": the gui stage installs xfce4, which pulls thunar, and build.sh names
 # xfce4-terminal explicitly. Everything with "ingot" here is a payload in
 # copper-ingot-repo (payloads-v1) carrying its own dependency closure.
-firefox            /usr/bin/firefox            ingot
-mousepad           /usr/bin/mousepad           ingot
-ristretto          /usr/bin/ristretto          ingot
-xfce4-taskmanager  /usr/bin/xfce4-taskmanager  ingot
-xarchiver          /usr/bin/xarchiver          ingot
-thunar             /usr/bin/thunar             image
-xfce4-terminal     /usr/bin/xfce4-terminal     image
+firefox             /usr/bin/firefox             ingot
+mousepad            /usr/bin/mousepad            ingot
+ristretto           /usr/bin/ristretto           ingot
+xfce4-taskmanager   /usr/bin/xfce4-taskmanager   ingot
+xfce4-screenshooter /usr/bin/xfce4-screenshooter ingot
+xfce4-notifyd       /usr/lib/x86_64-linux-gnu/xfce4/notifyd/xfce4-notifyd ingot
+tumbler             /usr/lib/x86_64-linux-gnu/tumbler-1/tumblerd ingot
+xarchiver           /usr/bin/xarchiver           ingot
+thunar              /usr/bin/thunar              image
+xfce4-terminal      /usr/bin/xfce4-terminal      image

@@ -232,6 +232,27 @@ fails the build if any is wrong. Verified by the gates
 artifact -- a real boot of a fixed ISO has **not** been run yet. `sudo`'s
 `wheel` model is unchanged.
 
+**Why the busybox half of this is not guesswork.** The applet's own source
+settles what "no `-f`" does, and it is the signal path. In busybox 1.36.1
+(`init/halt.c`, the version `build_busybox` fetches) `halt_main()` ends with
+`rc = 1;` and, when `-f` was not given, either
+`rc = kill(1, signals[which])` with
+`signals[] = { SIGUSR1, SIGUSR2, SIGTERM }` for halt / poweroff / reboot, or the
+`FEATURE_CALL_TELINIT` branch that `execlp()`s `/sbin/telinit`. It is the
+**signal** branch that is compiled in here: `FEATURE_CALL_TELINIT` is `default
+y` *but* `depends on (HALT || POWEROFF || REBOOT) && !INIT`, `INIT` is `default
+y`, and `build_busybox` runs `make defconfig` without touching either symbol.
+So `reboot` (no `-f`) sends PID 1 **SIGTERM** -- exactly what `power_how()`
+maps to `RB_AUTOBOOT` -- and it never execs the
+`/usr/sbin/telinit -> systemctl` this bug is about. The chain is
+link → applet → `kill(1, SIGTERM)` → `power_how()` → `reboot(2)`, and the CI
+run that gate-checks the disc reads both link sets back off it
+(`iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the
+disc`, run 39166175403). What is still missing is the same as before: a real
+boot of an ISO built **after** 2026-10-18 09:50Z. An ISO built earlier still
+answers with systemctl's message -- that is the 2026-10-19 report -- and
+`readlink /usr/sbin/reboot` is the one command that tells the two apart.
+
 ---
 
 # 30. Hyprland comes up with no keyboard and no pointer — impact 10/10 [ASSIGNED TO 12HRFORMAT]
@@ -440,6 +461,110 @@ of the system without the mount. Needs one boot that prints the wizard's
 
 **Status:** open. Caught by the human, not a test — `tests/persist.sh`'s
 fixture never mounts the disk it offers, so the gate cannot see this.
+
+---
+
+# 36. a home is seeded once and never repaired — the Hyprland config loads half — impact 7/10
+
+**How it affects things:** Hyprland starts, but from a config that only half
+loads. The failing `require()` is the environment block — the thing that sets
+the desktop's variables — so the compositor comes up with defaults its authors
+never wrote, and the person running it has no reason to suspect the config
+rather than the compositor. It is also permanent: once a home has a config, no
+later image can add anything to it.
+
+**What happens:** `~/.config/hypr/hyprland.lua` is there, so the launcher
+concludes the user has a config and never seeds again -- but
+`~/.config/hypr/conf/environments/default.lua` is not, and
+`conf/functions.lua:26` is `require("conf." .. variant_name .. "." .. variant_file)`.
+That file is one of ML4W's **intentional zero-byte Lua include stubs**, the ones
+bug 26 had to exempt from the rootfs stage's empty-file gate: empty is valid Lua
+and `require()` loads it. A home seeded by a build whose gate still dropped them
+is missing exactly those files.
+
+**Root cause, two of them on top of each other:**
+
+1. The decision to seed was "does `~/.config/hypr/hyprland.lua` exist?", and a
+   home seeded by an older image answers *yes*. So the seeding branch never ran
+   again and the missing stub could never come back.
+2. It could not have come back even if it had run:
+   `cp -a -n "$SKEL"/. "$HOME"/` -- busybox's `cp` reads `-n` as "skip an
+   existing **anything**". Given a `~/.config` that already exists it skips the
+   whole directory, copies nothing below it, and reports success. Reproduced in
+   the WSL Kali busybox 1.38.0: with `dst/sub` present and `src/sub/b` new,
+   `busybox cp -a -n src/. dst/` copies nothing into `dst/sub`; GNU `cp -a -n`
+   copies `b`. The image builds 1.36.1, and that `-n` behaviour is not
+   version-specific.
+
+**Status:** fixed in the tree 2026-10-19. `starthyprland.sh` no longer uses
+`cp` for this: `seed_config()` walks the shipped tree, makes the directories
+that are missing, and copies only the files and symlinks that are absent -- a
+file that is already there is never rewritten, so a user's edits survive. It
+runs for a bare home as before, **and as a repair pass on every start** for a
+home that already has a config, printing
+`repaired the session config: added N missing file(s)` only when it changed
+something. `tests/starthyprland-gate.sh` cases 23-25 lock the contract: a
+partial home is repaired without touching the file that was there, a whole home
+is left alone, and a fresh seed still carries zero-byte stubs and exec bits.
+Boot-verify: the repair line on the first start of a home seeded before this,
+and the session log no longer naming a missing module.
+
+---
+
+# 37. `ingot install` prints a GNU tar warning that reads like a failure — impact 1/10 (cosmetic)
+
+**How it affects things:** the install looks like it is failing. It is not:
+tar exits 0, every file lands, and `ingot` records the package. But a user who
+sees `tar: usr/share/icons/Humanity/emblems/32: Directory renamed before its
+status could be extracted` on a live boot reasonably stops and asks -- which is
+what happened (2026-10-19).
+
+**What happens:** the message is **GNU tar's**, not busybox's
+(`grep -a "renamed before" /usr/bin/tar` matches; `/usr/bin/busybox` has no such
+string). The payloads ship no `tar`, so the one that runs is the image's, from
+the `Priority: required` closure. GNU tar emits that line when it has to move a
+directory aside to replace it, which means it needs something **in the live
+tree** to collide with.
+
+**What was ruled out:** extracting the payload into an empty tree and over
+itself, with GNU tar 1.35 and with busybox 1.38, exits 0 with no stderr; the
+payload has no duplicate paths. Four candidate collisions were staged against
+it (an existing directory, a mode-0700 directory, a symlink where the archive
+has a directory, a nested file, a read-only directory) and none of them
+reproduces it. So it is the live tree's own `Humanity` installation (the ISO's
+icon theme) meeting the payload's copy, and only on the machine.
+
+**Status:** benign, no fix needed. If it ever matters, one live
+`ingot install` with the tar stderr captured to a file pins the exact entry.
+
+**Found while looking, and worth knowing:** the payload carries 17
+`@N`-suffixed names that are not part of the icon theme's real layout, e.g.
+`usr/share/icons/Humanity/emblems@2 -> emblems` sitting next to the real
+`emblems/` directory (and the same set under `Humanity-Dark`). They look like a
+conflict-rename left behind by whatever merges a payload's closure into one
+tree. Harmless -- a stray symlink pointing at the real directory -- but the next
+payload build should stop producing them.
+
+---
+
+# 38. Discord hangs on a real boot — impact 5/10
+
+**How it affects things:** `discord` (1.0.161, packaged from the vendor `.deb`,
+page `network/discord`) is offered by `startxfce` like every other component and
+its payload publishes and verifies. On a real boot it hangs instead of starting.
+
+**What is known:** nothing diagnostic yet. No console text, no `ps`, no exit
+code -- the report is "discord hangs", and the machine is a live ISO where the
+window either never appears or never finishes coming up.
+
+**Where to look first** (untested, in order): Electron's setuid sandbox wants a
+root-owned `chrome-sandbox` with mode 4755, and without it Electron refuses or
+stalls; there is no logind, so no `XDG_SESSION_TYPE`/seat it can borrow; and a
+small `/dev/shm` -- the live image's is tmpfs -- is a classic Electron stall.
+The first boot that reproduces it should capture `discord`'s own stderr, the
+output of `ps -o pid,ppid,stat,comm`, and `ls -l /dev/shm` next to it.
+
+**Status:** open. Not diagnosed; needs one live reproduction.
 
 ---
 
@@ -804,7 +929,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-35 bugs total: 29 fixed, 6 open.
+38 bugs total: 29 fixed, 8 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -843,3 +968,6 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
 | bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` (pointer boot-verified 2026-10-18; keyboard still silent, PID 1 now names each device) | (fix in tree 2026-10-18) |
 | bug 35 | still open | the wizard offers the persistence disk while it is mounted |  |
+| bug 36 | dragon | a home is seeded once and never repaired — busybox `cp -a -n` skips an existing directory, so a missing config file could never come back | (fix in tree 2026-10-19; needs a boot) |
+| bug 37 | no fix needed | GNU tar's "Directory renamed before its status could be extracted" on `ingot install` — cosmetic, the payloads are intact | (explained 2026-10-19) |
+| bug 38 | still open | Discord hangs on a real boot |  |

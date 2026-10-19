@@ -211,7 +211,8 @@ QEMU; gate kept green by CI.
 
 `startxfce` offers optional apps from `copper-ingot-repo` before starting the
 session. **Packaged:** firefox, mousepad, ristretto, xfce4-taskmanager,
-xarchiver. **Baked into the image:** XFCE itself, thunar, xfce4-terminal. The
+xfce4-screenshooter, xfce4-notifyd, tumbler, xarchiver. **Baked into the image:**
+XFCE itself, thunar, xfce4-terminal. The
 offered list lives in `iso/rootfs-overlay/etc/copper/xfce-apps`. Default is to
 ask first and install what's missing; on no, or if an install fails, the
 desktop starts anyway — a component that won't install is a warning, not a
@@ -265,6 +266,17 @@ no config, **22** no runtime, **23** died on the way up, **24** usage, **25** a
 missing component and no terminal to ask on — and `tests/starthyprland-gate.sh`
 asserts every one against a stubbed compositor, alongside the prep ordering and
 the environment the compositor is handed.
+
+Seeding is **additive and repeatable**, and that took a second pass to get right
+(bug 36). It used to be `cp -a -n "$SKEL"/. "$HOME"/`, and only when
+`~/.config/hypr/hyprland.lua` was missing — which meant a home seeded by an
+image whose empty-file gate had dropped ML4W's zero-byte Lua `require()` stubs
+stayed broken forever: the `hyprland.lua` that was there kept the seeding branch
+from running, and busybox's `cp -n` skips an existing **directory** outright, so
+even a re-run would have copied nothing. `seed_config()` instead walks the
+shipped tree, makes the directories that are missing, and copies only the files
+and symlinks that are absent — never overwriting a file that is there — and it
+runs as a repair pass on every start, saying nothing unless it added something.
 
 When the user has no session config yet, the launcher asks — on a terminal —
 whether to install it from ingot: `would you like your hyprland config files?

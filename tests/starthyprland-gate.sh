@@ -510,7 +510,8 @@ hasnt "  never invokes the installer" "ingot-stub: install" "$out"
 has "  still seeds the shipped config" "session config seeded" "$out"
 
 echo
-echo "=== case 19: the interactive question (needs a pty) ==="# The only case that must be answered by a person: run_sut sends stdin from
+echo "=== case 19: the interactive question (needs a pty) ==="
+# The only case that must be answered by a person: run_sut sends stdin from
 # /dev/null, so the question only exists under a terminal. `script` supplies
 # one; where it is absent (the Windows box this tree is kept on) the case is
 # skipped rather than failed, the same shape as the python3-gated seat case.
@@ -575,6 +576,76 @@ out=$(run_sut "$TMP/Hyprland" 80); rc=$?
 SKEL=; SUT_INPUT_SYS=; SUT_UDEV_DATA=
 eq "  exit code is 0" 0 "$rc"
 has "  says there are no records" "no libudev records under" "$out"
+
+echo
+echo "=== case 23: a partial home is repaired, and the user's files are kept ==="
+# The home a bug-26-era image left behind: hyprland.lua is there, so the seeding
+# branch never runs again, but the zero-byte Lua stub the config require()s was
+# dropped by that build's empty-file gate. The old seeding could not have fixed
+# it even if it had run -- busybox's `cp -a -n` skips an existing directory
+# outright -- so this is the shape the repair pass exists for. Two things have
+# to be true at once: the missing file appears, and the file that was already
+# there is not rewritten.
+setup_cfg_case
+mkdir -p "$TMP/skel/.config/hypr/conf/environments"
+: > "$TMP/skel/.config/hypr/conf/environments/default.lua"
+mkdir -p "$TMP/home/.config/hypr"
+printf -- '-- the user edited this\n' > "$TMP/home/.config/hypr/hyprland.lua"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says it repaired the config" "repaired the session config: added 1 missing file(s)" "$out"
+hasnt "  does not re-seed over a config that exists" "seeding the session config" "$out"
+hasnt "  does not offer the config install again" "installing the hyprland config files" "$out"
+eq "  the user's hyprland.lua is untouched" "-- the user edited this" \
+   "$(cat "$TMP/home/.config/hypr/hyprland.lua" 2>/dev/null)"
+if [ -f "$TMP/home/.config/hypr/conf/environments/default.lua" ]; then
+    ok "  the missing stub was put back"
+else
+    bad "  the missing stub was put back" "no conf/environments/default.lua in the home"
+fi
+
+echo
+echo "=== case 24: a home that is already whole is left alone ==="
+setup_cfg_case
+mkdir -p "$TMP/home/.config/hypr"
+printf -- '-- cfg\n' > "$TMP/home/.config/hypr/hyprland.lua"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+hasnt "  says nothing about repairing" "repaired the session config" "$out"
+hasnt "  does not re-seed" "seeding the session config" "$out"
+eq "  the config is byte-for-byte what it was" "-- cfg" \
+   "$(cat "$TMP/home/.config/hypr/hyprland.lua" 2>/dev/null)"
+
+echo
+echo "=== case 25: a fresh seed carries the empty stubs and the exec bits ==="
+# Bug 26 in one case: the tree ships zero-byte Lua include stubs whose presence
+# and emptiness are both load-bearing (empty is valid Lua), and scripts whose +x
+# bit is restored at build time. A seed that drops either gives a config that
+# partly loads or a session with no bar.
+setup_cfg_case
+mkdir -p "$TMP/skel/.config/hypr/conf/environments" "$TMP/skel/.config/ml4w/scripts"
+: > "$TMP/skel/.config/hypr/conf/environments/default.lua"
+printf '#!/bin/sh\ntrue\n' > "$TMP/skel/.config/ml4w/scripts/ml4w-autostart"
+chmod 0755 "$TMP/skel/.config/ml4w/scripts/ml4w-autostart"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  seeds the shipped config" "session config seeded" "$out"
+if [ -f "$TMP/home/.config/hypr/conf/environments/default.lua" ] &&
+   [ ! -s "$TMP/home/.config/hypr/conf/environments/default.lua" ]; then
+    ok "  the zero-byte Lua stub arrived, and still empty"
+else
+    bad "  the zero-byte Lua stub arrived, and still empty" \
+        "$(ls -l "$TMP/home/.config/hypr/conf/environments/" 2>/dev/null | tr '\n' '|')"
+fi
+if [ -x "$TMP/home/.config/ml4w/scripts/ml4w-autostart" ]; then
+    ok "  the script arrived executable"
+else
+    bad "  the script arrived executable" \
+        "$(ls -l "$TMP/home/.config/ml4w/scripts/" 2>/dev/null | tr '\n' '|')"
+fi
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
