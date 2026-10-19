@@ -317,6 +317,53 @@ has "  the non-root server is told not to switch VT" "-novtswitch" "$args"
 has "  the server still gets the display" ":0" "$args"
 
 echo
+echo "=== case 5c: an unwritable input-config path does not kill the launcher ==="
+# Bug 44. `: > file` runs the `:` special builtin, and POSIX makes a
+# non-interactive shell *exit* when a special builtin's redirection fails. So
+# the launcher died on the first candidate -- /etc/X11/xorg.conf, which is
+# root's and not writable by the session user `sudo startxfce` drops to -- and
+# never reached its /tmp fallback. On the real boot that was
+#
+#     /usr/bin/startxfce: line 487: can't create /etc/X11/xorg.conf: Permission denied
+#
+# and straight back to the prompt. The first candidate here is a directory,
+# which no user can redirect onto, so it exercises the same path without
+# needing to be non-root. COPPER_XORGCONF_FALLBACK keeps the fallback out of
+# the shared /tmp so an unrelated file there cannot fail the case.
+reset
+mkdir -p "$TMP/adir"
+cat > "$TMP/Xorg" <<EOF
+#!/bin/sh
+sleep 1
+python3 - <<'PY'
+import socket, time
+s = socket.socket(socket.AF_UNIX)
+s.bind("$TMP/.X11-unix/X0")
+s.listen(1)
+time.sleep(60)
+PY
+EOF
+chmod +x "$TMP/Xorg"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
+out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
+      COPPER_XLOG="$TMP/xorg.log" COPPER_SESSIONLOG="$TMP/session.log" \
+      COPPER_XPROBE="$PROBE" \
+      COPPER_XORGCONF="$TMP/adir" COPPER_XORGCONF_FALLBACK="$TMP/xorg.conf" \
+      XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
+pkill -f "$TMP/Xorg" 2>/dev/null
+# The abort was exit 1 with the input step never reached; both are asserted,
+# because a launcher that survived but wrote nothing would still be broken.
+eq "  exit code is 0, not the shell's" 0 "$rc"
+hasnt "  the failed candidate did not print a shell error" "can't create" "$out"
+has "  it fell back to the second path" "input config written: $TMP/xorg.conf" "$out"
+has "  it carried on past the write" "input devices:" "$out"
+if [ -s "$TMP/xorg.conf" ]; then
+    ok "  the fallback config was actually written"
+else
+    bad "  the fallback config was actually written" "no $TMP/xorg.conf"
+fi
+
+echo
 echo "=== case 6: a live X server on the display is reused, not replaced ==="
 # Starting a second server on a live display is how a client ends up talking to
 # whichever of the two won the race. A real listening socket is used, because
