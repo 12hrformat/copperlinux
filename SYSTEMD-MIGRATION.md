@@ -167,13 +167,48 @@ with three possible causes.
   does not would still slip through), and the reason the gate also rejects a key
   in the wrong section rather than trusting the version. A host with no
   `systemd-analyze` says `skip` out loud instead of claiming a pass.
-- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants ten
+- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants eleven
   defects — misplaced key, nonexistent directive, bare glob, no repoint, unwired
   unit, removed `--console`, busybox power links, 0777 units, leaked build tool,
-  and a `tree_hash` blinded to symlinks — and every one is caught. That suite is
+  a `tree_hash` blinded to symlinks, and a `systemd)` dispatch line without its
+  toolchain — and every one is caught. That suite is
   what found three real bugs during development, including a `readelf | sed |
   head` pipeline that aborts under `set -o pipefail` and would have killed a
   real build.
+
+**What the first real CI run found (and the gate did not):**
+
+The push was green locally and red on the runner, twice, and both were real:
+
+- **`build`: `iso/build.sh: line 638: CC: unbound variable`.** The `systemd)`
+  arm of the dispatch case listed `build_rootfs; build_gui; …; build_copper`
+  and omitted `build_musl` — which is the stage that exports `$CC`, `$CFLAGS`
+  and the musl `PATH`. Every other compiling stage lists it (`copper)`,
+  `initramfs)`, `iso)`) because `build_copper` needs it; `full()` never showed
+  the omission because it calls `build_musl` first. CI runs
+  `bash iso/build.sh systemd` as its own invocation, so `build_copper` reached
+  `$CC … copper-sh` with the variable unset and `set -u` ended the build. The
+  fix is the missing prerequisite on the dispatch line, plus `require_toolchain`
+  in `build_copper` so a future omission is a sentence naming the cause instead
+  of a crash naming a shell variable. The gate could not see this because it
+  calls `build_systemd` alone against an already-built tree; it now also reads
+  the dispatch arm (section 6), and the sabotage suite plants the omission.
+- **`checks`: the unit-parse and sabotage checks failed on systemd 255.** The
+  parse filter was a deny-list ("drop 'Command … is not executable', drop a
+  missing man page"), which is host-version dependent: on 255 the same units
+  emit lines that do not match it, so units failed for messages about the
+  *host*, not the unit. It is an allow-list now — only an unknown key, a key in
+  the wrong section, or a missing `ExecStart` can fail a unit, and those come
+  from the unit's own text. Separately, the sabotage expectations were fixed
+  strings, and systemd changed its wording between 255
+  (`Unknown key name 'X' in section 'Service'`) and 256+ (`Unknown key 'X'`), so
+  the suite reported "missed" for defects the gate *had* caught (rc=1). The
+  expectations are regexes now. A suite that goes red on the runner's distro
+  rather than on the code is its own bug.
+
+Both are recorded here rather than in the commit alone because they are the
+argument for the two new checks: a gate that is green only on the machine it was
+written on is not a gate.
 
 **NOT verified — this is the honest gap:**
 

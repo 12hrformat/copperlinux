@@ -622,8 +622,28 @@ init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
 # ---------------------------------------------------------------
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
+
+# build_musl is what exports $CC, $CFLAGS and the musl PATH -- and it is not
+# obvious from inside build_copper that it needs any of that, because in the
+# default `full()` path build_musl has always run first. A stage that reaches
+# build_copper without it does not get a compiler that is merely missing: it
+# gets `set -u` aborting on `line 638: CC: unbound variable`, a message about a
+# shell variable that says nothing about the one-line cause. That happened for
+# real when the `systemd` stage was added without build_musl in its dispatch
+# line, and CI is what found it. This guard turns the same mistake into a
+# sentence that names the missing stage.
+require_toolchain() {
+  if [ -z "${CC:-}" ] || [ -z "${CFLAGS:-}" ]; then
+    echo "build: no toolchain in this shell (CC/CFLAGS unset)." >&2
+    echo "       This stage compiles Copper's own binaries, so it must run" >&2
+    echo "       build_musl first -- add it to the stage's dispatch line." >&2
+    exit 1
+  fi
+}
+
 build_copper() {
 local SRC="$ROOT/../src"
+  require_toolchain
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
      && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
@@ -2781,7 +2801,15 @@ case "$STAGE" in
   hypr)       build_rootfs; build_gui; build_hypr ;;
   plymouth)   build_rootfs; build_gui; build_hypr; build_plymouth ;;
   sudo)       build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo ;;
-  systemd)    build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_copper; build_systemd ;;
+  # build_musl and build_busybox lead every stage that compiles or links
+  # Copper's own binaries, because build_musl is what exports $CC/$CFLAGS/PATH.
+  # This line did not, and CI proved the cost: `bash iso/build.sh systemd` on a
+  # runner reaches build_copper with CC unset, and `set -u` kills the build at
+  # `$CC $CFLAGS ... copper-sh` with "line 638: CC: unbound variable". The
+  # default `all`/`full` path never showed it because full() runs build_musl
+  # first; the opt-in stage has to say so itself. It is why this stage is
+  # spelled like initramfs/iso and not like sudo.
+  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_copper; build_systemd ;;
   initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs ;;
   iso)        build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
