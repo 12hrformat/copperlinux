@@ -76,23 +76,30 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     for u in "$UD"/*.service "$UD"/*.target; do
         [ -e "$u" ] || continue
         out=$(systemd-analyze verify "$u" 2>&1 || true)
-        # Keep only messages about THIS unit: systemd-analyze also reports on
-        # every dependency it pulls in (the host's own units) -- host packaging,
-        # not Copper's. Then drop two host artifacts that name our unit but are
-        # still about the host: "Command X is not executable", which is the
-        # HOST failing to find a path that only exists in the image (the
-        # stage's chrooted check is the one that tests this properly), and a
-        # Documentations=man: page the host does not carry.
+        # Which of systemd-analyze's lines are a complaint about THIS unit?
         #
-        # What survives is a real complaint about the unit -- an unknown key, a
-        # key in the wrong section, a missing ExecStart. That is how this gate
-        # found StartLimitIntervalSec sitting in [Service] (it belongs in
-        # [Unit]) and SocketMode=, which is not a directive at all.
+        # The filter used to be a deny-list (drop "Command X is not
+        # executable", a missing man page, and the host's own noise) and keep
+        # "about this unit" via grep -F "$base". That is host-version
+        # dependent, and CI proved it: on ubuntu-24.04's systemd 255 the same
+        # units produce lines that do NOT match the deny-list, so two units
+        # reported FAIL for messages that were really about the HOST -- units
+        # this image does not ship (systemd-udev-settle.service is Ubuntu's,
+        # the seatd/udhcpc ExecStart paths only exist inside the image).
+        # A gate whose verdict changes with the runner's systemd version is a
+        # gate that goes red for green code, so it is an allow-list now.
+        #
+        # What is allowed to fail a unit, and only this: a key systemd does not
+        # know, a key in the wrong section, or a missing/empty ExecStart. Those
+        # are answered by the unit's own text and cannot be an artifact of what
+        # the host happens to have installed. Everything else -- "not
+        # executable", "not found", a missing man page, a dependency unit the
+        # host does not carry -- is the build host talking about itself, and
+        # the stage's own chrooted check (section 2/3) is what tests those.
         base=${u##*/}
         left=$(printf '%s\n' "$out" \
+            | grep -E "Unknown (key|lvalue|section)|Failed to parse|Empty (ExecStart|section)|not a valid" \
             | grep -F "$base" \
-            | grep -vE "^$base: Command .* is not executable" \
-            | grep -vE "Can't show |failed with exit status|\(man\)" \
             | grep -c . || true)
         if [ "$left" = 0 ]; then
             ok "unit parses: $base"
@@ -343,6 +350,47 @@ if [ "$before" != "$after" ]; then
 else
     bad "tree_hash sees the init swap" \
         "a symlink-only change left the tree hash identical; build_iso would ship a stale flavour"
+fi
+
+# ------------------------------------- 6. the stage's dispatch line is right --
+# CI runs `bash iso/build.sh systemd` as its own invocation. build_copper needs
+# the toolchain build_musl exports ($CC/$CFLAGS), and section 2 cannot see that,
+# because it calls build_systemd alone against an already-populated tree. So the
+# dependency is checked where it actually lives: the dispatch case in build.sh.
+#
+# This is the check that would have caught the real failure this gate missed.
+# On ubuntu-24.04 the systemd step died at `line 638: CC: unbound variable`
+# after "==> copper built-ins", because `systemd)` did not list build_musl and
+# the runner has no CC of its own. Every other compiling stage lists it; the
+# diff that added `systemd)` left it out. Reading the case arm here means the
+# gate fails on the same line CI fails on, without a runner.
+line=$(grep -E '^[[:space:]]*systemd\)' "$BUILD" || true)
+if [ -z "$line" ]; then
+    bad "systemd stage is dispatched in build.sh" "no 'systemd)' case arm found"
+else
+    missing=""
+    for dep in build_musl build_busybox build_rootfs build_copper; do
+        case "$line" in
+            *"$dep"*) ;;
+            *) missing="$missing $dep" ;;
+        esac
+    done
+    if [ -z "$missing" ]; then
+        ok "systemd stage runs its prerequisites (build_musl, busybox, rootfs, copper)"
+    else
+        bad "systemd stage runs its prerequisites" \
+            "the 'systemd)' dispatch line is missing:$missing"
+    fi
+fi
+
+# require_toolchain is what turns a future omission into a sentence instead of
+# an unbound-variable crash, so its presence is part of the contract too.
+if grep -q '^require_toolchain()' "$BUILD" \
+   && grep -q 'require_toolchain' <(sed -n '/^build_copper()/,/^}/p' "$BUILD"); then
+    ok "build_copper fails loudly when the toolchain is absent"
+else
+    bad "build_copper fails loudly when the toolchain is absent" \
+        "no require_toolchain guard in build_copper (a missing build_musl would crash on CC)"
 fi
 
 echo

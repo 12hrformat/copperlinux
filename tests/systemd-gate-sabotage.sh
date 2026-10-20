@@ -68,7 +68,11 @@ run_case() {
         fails=$((fails + 1)); rm -rf "$T"; return
     fi
     out=$(bash "$T/repo/tests/systemd-gate.sh" 2>&1); rc=$?
-    if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qF "$expect"; then
+    # $expect is a REGEX, not a fixed string: systemd-analyze's wording moves
+    # between releases (255: "Unknown key name 'X'"; 256+: "Unknown key 'X'"),
+    # and a fixed-string expectation makes the SUITE fail when the GATE is
+    # right. See case 1 for the run that proved it.
+    if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qE "$expect"; then
         echo "  ok    gate rejects: $label"
     else
         echo "  FAIL  gate MISSED: $label (rc=$rc, expected to see: $expect)"
@@ -98,7 +102,13 @@ s = s.replace('[Service]\n', '[Service]\nStartLimitIntervalSec=0\n', 1)
 open(p, 'w', encoding='utf-8').write(s)
 PY
 out=$(bash "$T/repo/tests/systemd-gate.sh" 2>&1); rc=$?
-if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qF "Unknown key 'StartLimitIntervalSec'"; then
+# The expectation is a REGEX and deliberately does not pin systemd's wording:
+# 255 says "Unknown key name 'X' in section 'Service'", 256+ dropped the word
+# "name" ("Unknown key 'X' ..."). A fixed string made this case MISS on the CI
+# runner while the gate had in fact gone red for the right reason -- the suite
+# reporting a hole that was really its own spelling. Match the key name and let
+# "Unknown key" be a prefix.
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qE "Unknown key( name)? 'StartLimitIntervalSec'"; then
     echo "  ok    gate rejects: StartLimitIntervalSec genuinely in [Service]"
 else
     echo "  FAIL  gate MISSED: StartLimitIntervalSec in [Service] (rc=$rc)"
@@ -111,7 +121,7 @@ run_case "SocketMode= (not a directive)" "$U/copper-seatd.service" \
     'RuntimeDirectory=seatd' \
     'RuntimeDirectory=seatd
 SocketMode=0660' \
-    "Unknown key 'SocketMode'"
+    "Unknown key( name)? 'SocketMode'"
 
 # 3. The bare-glob trap that killed the first version of the stage: a bare
 #    `install ... *.network` with no matching file. This only fails the build
@@ -171,6 +181,15 @@ run_case "tree_hash blind to the init swap" "$B" \
     '      find . -type l -printf '"'"'link %p -> %l\n'"'"' | LC_ALL=C sort' \
     '      :' \
     "tree_hash sees the init swap"
+
+# 11. The dispatch line drops build_musl -- the exact defect CI found on a real
+#     runner ("line 638: CC: unbound variable"), which section 2 cannot see
+#     because it calls build_systemd alone. Planted by removing the toolchain
+#     prerequisite from the `systemd)` arm and leaving everything else intact.
+run_case "systemd stage loses its toolchain prerequisite" "$B" \
+    'systemd)    build_musl; build_busybox; build_rootfs' \
+    'systemd)    build_rootfs' \
+    "systemd stage runs its prerequisites"
 
 echo
 if [ "$fails" -eq 0 ]; then
