@@ -2242,6 +2242,39 @@ WRAP
   fi
   echo "  iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the disc"
 
+  # The boot command line, read back off the disc (bug 25, and bug 7 with it).
+  # grub.cfg is copied from the tree, so what is really being checked is that
+  # the file the build ships is the one that carries the splash: with a serial
+  # console beside the screen, plymouthd refuses to create a renderer at all
+  # and the animation never paints a frame. And tty0 has to be the LAST
+  # console= or /dev/console is the serial port and the screen goes quiet.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /boot/grub/grub.cfg "$ex/grub.cfg" >/dev/null 2>&1 || true
+  if [ ! -f "$ex/grub.cfg" ]; then
+    echo "iso: no /boot/grub/grub.cfg in the ISO -- nothing would boot" >&2
+    exit 1
+  fi
+  local cl badsw=""
+  cl=$(sed -n '/^    linux .*quiet splash/p' "$ex/grub.cfg" | head -n1)
+  for sw in splash plymouth.ignore-udev plymouth.ignore-serial-consoles; do
+    case " $cl " in
+      *" $sw "*) ;;
+      *) badsw="$badsw $sw" ;;
+    esac
+  done
+  if [ -z "$cl" ] || [ -n "$badsw" ]; then
+    echo "iso: the splash entry's kernel command line is wrong (missing:$badsw):" >&2
+    echo "iso:   $cl" >&2
+    exit 1
+  fi
+  if [ "$(printf '%s\n' "$cl" | grep -o 'console=[^ ]*' | tail -n1)" != "console=tty0" ]; then
+    echo "iso: the last console= on the splash entry is not tty0:" >&2
+    echo "iso:   $cl" >&2
+    echo "iso: /dev/console is the LAST one; the screen would go quiet (bug 7)" >&2
+    exit 1
+  fi
+  echo "  iso: splash switches and tty0-last console order on the disc's grub.cfg"
+
   # The Hyprland skeleton, read back off the disc -- bug 26's second half, in
   # one check. The session config is Lua whose include stubs are DELIBERATELY
   # empty: a stub exists to be require()d and holds nothing. The one tree-wide

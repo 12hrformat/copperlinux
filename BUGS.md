@@ -61,8 +61,9 @@ deliberate (see the config facts below: the last `console=` owns
 `IGNORE_SERIAL_CONSOLES` path in `ply-device-manager.c` all match.
 
 **Fix written (2026-10-20):** tell Plymouth the serial console is not the
-display, through the kernel argument it already reads for its other switch.
-`iso/boot/grub.cfg`'s normal entry now ends
+display, through the kernel argument it already reads for its other switch, and
+through the daemon's own option as well. `iso/boot/grub.cfg`'s normal entry now
+ends
 
     ... quiet splash plymouth.ignore-udev plymouth.ignore-serial-consoles \
         console=ttyS0,115200 console=tty0
@@ -73,24 +74,52 @@ same way `plymouth.ignore-udev` maps to its flag in `main.c`, and it changes
 only what Plymouth treats as the display — the two `console=` entries are
 untouched and the serial log still fills.
 
-**Why the kernel argument and not the `plymouthd` flags.** The earlier plan
-named `--graphical-boot`/`--ignore-serial-consoles`, but the noble
-`plymouthd(8)` man page (`plymouth 24.004.60-1ubuntu7.2`) documents neither,
-and an option the daemon rejects would kill the splash outright rather than
-mis-draw it. The kernel argument is the mechanism this build already relies on
-for `ignore-udev`, is confirmed by upstream's own console-detection bug reports
-(the exact `console=ttyS0 console=tty0` case), and cannot break the daemon if it
-is ever unrecognised — it is simply ignored.
+The same switch is also passed as an argument from `splash_spawn()` in
+`iso/src-init/copper-init.c`, on both the attach and the non-attach path, so
+the fix does not depend on a command line a booting user can edit.
+
+**About the `plymouthd` flags — the earlier "not documented" reading was
+wrong, and it was worth checking.** The noble `plymouthd(8)` man page does not
+list them, which is what the first pass went on; `plymouthd --help` does.
+Unpacked from the real `.deb` in the staged version
+(`plymouth 24.004.60-1ubuntu7.2`, the same one `iso/build.sh` stages), the
+option list is:
+
+    --mode=<string>                   Mode is one of: boot, shutdown
+    --attach-to-session               Redirect console messages from screen to log
+    --ignore-serial-consoles          Ignore serial consoles
+    --graphical-boot                  Use graphical splashes even if the kernel
+                                      console is not a VT
+
+and `plymouth.ignore-serial-consoles` is in the daemon's kernel-switch string
+table beside `plymouth.ignore-udev`, so both spellings that are now in the tree
+are the real ones. The "an option it rejects would kill the splash" worry is
+right, though, and it is why the flag was tested rather than assumed: passing a
+bogus option makes `plymouthd` print that entire list and stop before it starts,
+while `--ignore-serial-consoles` is accepted and the daemon walks straight on to
+its next check. That difference — usage dump versus proceeding — is the whole
+evidence, and it comes from the packaged binary, not from upstream's git tree.
+
+`--graphical-boot` exists too and is deliberately not used: forcing the
+graphical splash papers over the cause instead of removing it.
+
+**A gate reads the disc, so a regression fails the build.** `build_iso()` now
+extracts `/boot/grub/grub.cfg` back off the finished ISO and fails unless the
+splash entry carries `splash`, `plymouth.ignore-udev` and
+`plymouth.ignore-serial-consoles` *and* `tty0` is still the last `console=`
+(bug 7, which the same line governs). This still cannot prove a frame was
+drawn, but it does prove the switches reached the disc, which is the half a
+build is allowed to know.
 
 **Why this entry stays in the list even though the fix is written.** Unlike
 bug 27, this one cannot be closed by a script test: it is a boot-time renderer
 decision, and the only proof is a booted ISO drawing frames. It stays here until
 a boot says so.
 
-**Still open because:** the fix is not booted yet. Verification is a QEMU boot
-of a remastered ISO (or `-kernel`/`-initrd` with the same `-append`),
-confirming the non-blank sample count jumps towards a full frame and changes
-from frame to frame.
+**Still open because:** the fix is written and gated, but it is not booted yet.
+Verification is a QEMU boot of a remastered ISO (or `-kernel`/`-initrd` with the
+same `-append`), confirming the non-blank sample count jumps towards a full
+frame and changes from frame to frame.
 
 Until a new ISO lands, the splash can be forced by hand at the GRUB menu: edit
 the entry and append `plymouth.ignore-serial-consoles` before booting.

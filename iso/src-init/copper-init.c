@@ -1062,11 +1062,16 @@ static void on_power_signal(int sig) {
    Three things have to line up, and each is checked rather than assumed:
 
      - the kernel command line asks for it. grub.cfg passes "splash", and
-       "plymouth.ignore-udev" beside it. The second is not optional: this
-       image runs no udev, and without that switch plymouthd enumerates its
-       devices through udev, finds nothing, and never draws a frame. With it,
-       plymouthd takes its own fallback path and drives DRM or the
-       framebuffer directly.
+       "plymouth.ignore-udev" and "plymouth.ignore-serial-consoles" beside it.
+       The second is not optional: this image runs no udev, and without that
+       switch plymouthd enumerates its devices through udev, finds nothing, and
+       never draws a frame. With it, plymouthd takes its own fallback path and
+       drives DRM or the framebuffer directly. The third is not optional
+       either: the command line carries a serial console as well as the screen,
+       and plymouthd reads any console= that is not the default VT as a serial
+       console -- serial_consoles_detected is set and no renderer is ever
+       created, so nothing is drawn at all (bug 25). splash_spawn() passes that
+       one as an argument too, so it does not depend on the command line alone.
 
      - the pieces are in the image. Both the daemon and the control client are
        checked for, because a splash that cannot be quit is worse than none:
@@ -1121,7 +1126,22 @@ static int plymouth_cmd(const char *cmd) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
-/* Fork the daemon. attach selects the console-redirecting form. */
+/* Fork the daemon. attach selects the console-redirecting form.
+
+   --ignore-serial-consoles is the switch grub.cfg passes, passed again here:
+   this image gives the kernel a serial console for the log beside the screen,
+   and plymouthd reads a second active console as "the display is not here" --
+   it forces its built-in text splash and creates no renderer at all (bug 25).
+   Passing it as an argument too keeps the fix from depending on a command line
+   a booting user can edit.
+
+   It is worth passing because it is an option this plymouthd really has, not
+   one assumed from plymouth's git tree: `plymouthd --help` from the packaged
+   build (plymouth 24.004.60-1ubuntu7.2, the one this image stages) lists
+   `--ignore-serial-consoles`, and a bogus option makes the same daemon print
+   that whole list instead of starting. An option it did not know would leave
+   the console on a usage dump and kill the splash outright, which is why this
+   was checked against the .deb before being written here. */
 static pid_t splash_spawn(int attach) {
     pid_t pid = fork();
 
@@ -1130,11 +1150,12 @@ static pid_t splash_spawn(int attach) {
     if (attach)
         execl("/usr/sbin/plymouthd", "plymouthd",
               "--mode=boot", "--pid-file=/run/plymouth/pid",
-              "--attach-to-session", "--no-daemon", (char *)NULL);
+              "--attach-to-session", "--no-daemon",
+              "--ignore-serial-consoles", (char *)NULL);
     else
         execl("/usr/sbin/plymouthd", "plymouthd",
               "--mode=boot", "--pid-file=/run/plymouth/pid",
-              "--no-daemon", (char *)NULL);
+              "--no-daemon", "--ignore-serial-consoles", (char *)NULL);
     _exit(127);
 }
 
