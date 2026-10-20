@@ -14,7 +14,12 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | hypr | plymouth | sudo | initramfs | iso
+# Stages: kernel | base | tools | copper | rootfs | gui | hypr | plymouth |
+#         sudo | systemd | initramfs | iso
+#
+# systemd is opt-in and deliberately NOT part of `all`: see build_systemd. A
+# normal build is the busysbox-init image the gates and the ISO expect; the
+# systemd stage is the migration, run on purpose.
 #
 # Stages share iso/work/, so CI can run them one step at a time and each
 # step skips straight past whatever is already built.
@@ -85,7 +90,6 @@ lint_scripts() {
   done
   echo "scripts: live/init, the udhcpc lease script, ingot, startxfce and starthyprland parse clean"
 }
-
 lint_scripts
 
 # ---- stage caching -----------------------------------------------------
@@ -128,9 +132,25 @@ stamp_set() {      # stamp_set <stamp> <input>...
 # itself rather than any one file in it. Run from inside the tree so the
 # hashed paths are relative — absolute ones carry the checkout directory and
 # would make the stamp differ between runners for no reason.
+#
+# `-type f` alone is wrong here, and the systemd stage is what exposed it. The
+# swap to PID 1 is a SYMLINK (/sbin/init -> /lib/systemd/systemd) and so are
+# the power commands, and find with `-type f` cannot see either: two trees that
+# differ only in what init points at hash the same. The first version of this
+# guard was therefore one symlink-only change away from skipping the rebuild
+# and shipping the previous flavour's ISO under a stamp that said it was
+# current — a stale artifact with a green light. Symlinks are hashed as
+# name -> target; regular files by content; every other type (a device node
+# under /dev, a fifo) by path and type, which is all that distinguishes them.
+# Directory entries need no line of their own: a directory's existence is
+# implied by the paths under it, and an EMPTY directory is not something the
+# ISO's behaviour depends on in any way this hash is meant to catch.
 tree_hash() {      # tree_hash <dir>
-  ( cd "$1" && find . -type f -exec sha256sum {} + | LC_ALL=C sort ) \
-    | sha256sum | cut -d' ' -f1
+  ( cd "$1" && {
+      find . -type f -exec sha256sum {} + | LC_ALL=C sort
+      find . -type l -printf 'link %p -> %l\n' | LC_ALL=C sort
+      find . \! -type f \! -type l \! -type d -printf 'other %p %y\n' | LC_ALL=C sort
+    } ) | sha256sum | cut -d' ' -f1
 }
 
 fetch() {                   # fetch url -> prints tarball path (stdout only)
@@ -578,6 +598,25 @@ power_links() {          # power_links <staged-root>
     ln -sf /bin/busybox "$root/usr/sbin/$cmd"
   done
   ln -sf /sbin/shutdown "$root/usr/sbin/shutdown"
+}
+
+# Which init is staged in this tree? "busybox" (copper-init, the shipped
+# default) or "systemd" (the migration, opt-in via the systemd stage).
+#
+# The answer is read off sbin/init rather than remembered in a variable,
+# because the staged tree outlives any one build.sh run: a cached $TGT from
+# actions/cache could hold either. Every gate that cares asks this question,
+# so there is one definition of "which init is this" and not four.
+#
+# readlink, not -e: sbin/init is an absolute symlink and -e would follow it
+# onto the build host, where neither target exists. The bug that stopped /init
+# handing over was this exact trap, one file over (see build_copper).
+init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
+  case "$(readlink "$1/sbin/init" 2>/dev/null)" in
+    /usr/bin/copper-init)  echo busybox ;;
+    /lib/systemd/systemd)  echo systemd ;;
+    *)                     echo unknown ;;
+  esac
 }
 
 # ---------------------------------------------------------------
@@ -2044,6 +2083,387 @@ build_sudo() {
 }
 
 # ---------------------------------------------------------------
+# 6i. systemd as PID 1 -- the migration, opt-in
+# ---------------------------------------------------------------
+# This is the first real step of SYSTEMD-MIGRATION.md, and it is deliberately
+# a stage that has to be asked for (`bash iso/build.sh systemd`) rather than
+# something `full` runs. The migration document says a half-finished swap is
+# an unbootable ISO rather than a degraded one, and that is exactly right: the
+# image on the other side of this stage has never been booted. Keeping it out
+# of the default path means the shippable ISO is never the half-finished one,
+# and means this stage can be iterated on without the busybox image paying for
+# it.
+#
+# What it does NOT do, and why:
+#
+#   - it does not touch iso/live/init. /init builds the overlay out of the
+#     persistent disk, mounts it and switch_roots into it; systemd has to
+#     start INSIDE that merged tree, not instead of the tree. So switch_root
+#     still execs /sbin/init, and this stage re-points that one symlink. An
+#     `init=/lib/systemd/systemd` kernel argument (which the migration
+#     document originally suggested) would skip the overlay entirely and boot
+#     the read-only squashfs: same rootfs, no persistence, and /etc from the
+#     medium. That is why the swap is a symlink and not a kernel argument.
+#
+#   - it does not delete copper-init. It keeps running as a service
+#     (copper-console.service, `copper-init --console`), because the wizard
+#     and the session shell need a controlling terminal and the account drop
+#     that file already does correctly. Under systemd only the PID-1 half of
+#     it -- mounts, power signals, hostname, DHCP, seatd, the udev seeder --
+#     is retired, because units do those now.
+#
+#   - it does not enable logind. The seat still comes from seatd, which is
+#     what starthyprland looks for and what HANDOFF.md documents. Moving the
+#     seat to logind is a later step; doing both at once would mean a Hyprland
+#     failure with two possible causes.
+build_systemd() {
+  # The unit files ARE the inputs this stage is stamped on: touch one and the
+  # stage must re-run. Listed with a helper rather than bare globs so a
+  # missing pattern (there is no *.network file today) does not hand
+  # stamped_skip the literal string "…*.network", which would hash a filename
+  # that does not exist and silently change what "already staged" means.
+  local sdin=("$SELF" "$ROOT/systemd"/*.service "$ROOT/systemd"/*.target)
+  for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network; do
+    [ -e "$p" ] && sdin+=("$p")
+  done
+  if [ -e "$TGT/lib/systemd/systemd" ] \
+     && [ "$(init_flavour "$TGT")" = systemd ] \
+     && stamped_skip "$WORK/systemd.stamp" "${sdin[@]}"; then
+    echo "systemd: already staged, skipping"; return
+  fi
+  echo "==> systemd as PID 1 (migration, opt-in)"
+  local DS="$DL/systemd" STAGE="$WORK/systemd-root" deb p ndeb
+
+  # The gui/hypr closures call themselves Ubuntu in /etc/os-release; the
+  # systemd stage inherits that tree, so re-assert Copper's identity as the
+  # other stages do before anything reads it.
+  copper_identity
+
+  mkdir -p "$DS/partial"; rm -f "$DS"/*.deb
+  apt-get update -qq
+
+  # systemd and udev are named here; everything else is their dependency
+  # closure, and --download-only resolves it. The empty dpkg status is the
+  # same device the gui and hypr stages use: apt is told nothing is installed,
+  # so it fetches the packages AND their dependencies rather than assuming the
+  # build host's own copy. --no-install-recommends keeps the closure to what
+  # systemd actually links, not the distro's opinion of a complete system.
+  #
+  # systemd-sysv is what carries /sbin/{reboot,poweroff,halt,shutdown} and the
+  # systemctl links. It is named explicitly rather than pulled in as a
+  # dependency, because in the busybox image the power_links() calls go out of
+  # their way to undo exactly those links, and this stage wants them back.
+  local status="$WORK/systemd-status"
+  : > "$status"
+  apt-get \
+    -o Dir::State::status="$status" \
+    -o Dir::Cache::archives="$DS" \
+    -o APT::Sandbox::User=root \
+    --download-only --no-install-recommends -y install systemd udev systemd-sysv
+
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  for deb in "$DS"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  # `ls ... | wc -l` reads well and is a pipefail landmine: if the glob matches
+  # nothing, ls exits non-zero and `set -e` kills the stage with no message
+  # about why. Count in the shell instead, where an empty list is just zero.
+  local ndeb=0
+  for deb in "$DS"/*.deb; do [ -e "$deb" ] && ndeb=$((ndeb + 1)); done
+  echo "  $ndeb packages unpacked ($(du -sh "$STAGE" | cut -f1))"
+  if [ "$ndeb" -eq 0 ]; then
+    echo "systemd: apt-get downloaded no packages; check the mirrors and the host's apt sources" >&2
+    exit 1
+  fi
+
+  # -n: a library the gui closure already staged wins. It was chosen by the
+  # desktop's own dependency resolver and may well be newer than the copy
+  # systemd would bring; overwriting it to satisfy the init would be trading a
+  # working desktop for a boot detail.
+  cp -a -n "$STAGE"/. "$TGT"/
+
+  # systemd needs the glibc loader at the path the kernel hard-codes, the same
+  # way every other glibc ELF in this image does. build_gui creates it; this
+  # stage can run against a tree that was never through build_gui (or through
+  # a cached one that predates the line), and without it PID 1 is ENOENT and
+  # the machine does not boot at all. Cheap to re-assert.
+  if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
+    if [ -L "$TGT/lib64" ]; then rm -f "$TGT/lib64"; fi
+    mkdir -p "$TGT/lib64"
+    cp -L "$TGT/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+         "$TGT/lib64/ld-linux-x86-64.so.2"
+  fi
+
+  # Packages ship files that are empty by nature, and the rootfs stage asserts
+  # on every later build over this tree that nothing in the image is zero
+  # bytes. Prune exactly what the packages brought, matched against the
+  # staging tree (same discipline as build_gui).
+  if [ -d "$STAGE" ]; then
+    find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/systemd-empties"
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      rm -f "$TGT/$rel"
+    done < "$WORK/systemd-empties"
+    echo "  $(wc -l < "$WORK/systemd-empties") empty package files pruned"
+  fi
+
+  # ---- the Copper units ---------------------------------------------------
+  # Everything Copper-specific lives in units we write, not in units the
+  # packages ship: the wizard, the console, seatd, the DHCP client. They are
+  # installed and wired up by hand rather than by `systemctl enable`, because
+  # enabling means running systemctl against a staged tree -- which means a
+  # chroot, a running dbus, and a systemd that is not called into that way
+  # from a build. `systemctl enable` creates ordinary symlinks; making the
+  # same symlinks is the same operation without the ceremony.
+  mkdir -p "$TGT/etc/systemd/system/multi-user.target.wants" \
+           "$TGT/etc/systemd/system/sysinit.target.wants" \
+           "$TGT/etc/systemd/system/copper.target.wants" \
+           "$TGT/etc/systemd/network"
+  # install -m 0644, not cp: a Windows checkout hands git these files as 0777
+  # (see .gitattributes), and a world-writable unit is one systemd reads with
+  # a warning and a reviewer reads with suspicion. The mode is set here rather
+  # than trusted from the source tree.
+  #
+  # Each install is guarded rather than globbed bare. A bare glob that matches
+  # nothing expands to the literal pattern, and `install -m 0644 *.network`
+  # with no .network files fails the whole stage with "cannot stat
+  # '...*.network'" -- which is exactly what happened the first time this ran:
+  # iso/systemd/ ships no .network files, and the stage died before it
+  # installed anything. The guard is also what lets a future .network file be
+  # added to the directory and just work.
+  install -m 0644 "$ROOT/systemd"/*.service "$TGT/etc/systemd/system/"
+  install -m 0644 "$ROOT/systemd"/*.target  "$TGT/etc/systemd/system/"
+  for f in "$ROOT/systemd"/*.conf; do
+    [ -e "$f" ] || continue
+    install -m 0644 "$f" "$TGT/etc/systemd/"
+  done
+  for f in "$ROOT/systemd"/*.network; do
+    [ -e "$f" ] || continue
+    install -m 0644 "$f" "$TGT/etc/systemd/network/"
+  done
+
+  local u
+  for u in copper-firstboot.service copper-console.service; do
+    ln -sf "/etc/systemd/system/$u" \
+           "$TGT/etc/systemd/system/copper.target.wants/$u"
+  done
+  ln -sf /etc/systemd/system/copper.target \
+         "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"
+  for u in copper-seatd.service copper-network.service; do
+    ln -sf "/etc/systemd/system/$u" \
+           "$TGT/etc/systemd/system/copper.target.wants/$u"
+  done
+  ln -sf /etc/systemd/system/systemd-udevd.service \
+         "$TGT/etc/systemd/system/sysinit.target.wants/systemd-udevd.service"
+
+  # The netconf is read by systemd-udevd's built-in naming scheme. Copper
+  # names its NICs the kernel's way (eth0, not ens33), because the DHCP client
+  # and the console's own documentation both talk about eth0.
+  ln -sf /dev/null "$TGT/etc/systemd/network/99-default.link"
+
+  # ---- PID 1 and the power commands ---------------------------------------
+  # The swap itself. One symlink, and everything about boot ordering follows
+  # from it.
+  ln -sf /lib/systemd/systemd "$TGT/sbin/init"
+
+  # Healthy D-Bus and udev state at first boot. systemd normally gets these
+  # from the packages' tmpfiles data at install time; nothing here unpacks a
+  # package's postinst, so make the directories the machine assumes exist.
+  mkdir -p "$TGT/run/dbus" "$TGT/run/systemd/system" "$TGT/run/systemd/ask-password" \
+           "$TGT/var/lib/systemd" "$TGT/etc/systemd/system/getty.target.wants"
+
+  # The power commands are systemd's now. After build_copper's power_links()
+  # pointed them at busybox, and after the Isle of Man of links the GUI closure
+  # dropped in /usr/sbin, put them where a systemd machine expects: /usr/sbin
+  # wins PATH, so both directories have to agree.
+  #
+  # /usr/sbin/shutdown is the one with a history: build_copper installs our own
+  # wrapper there and busybox ships no shutdown applet. systemd-sysv does ship
+  # one, and on a systemd machine it is the right one to ship -- /usr/bin/
+  # systemctl and a D-Bus that answers. Remove the wrapper's link first so a
+  # dangling link to a file we are about to delete is not what is left.
+  rm -f "$TGT/usr/sbin/shutdown"
+  for cmd in reboot poweroff halt shutdown; do
+    ln -sf /usr/bin/systemctl "$TGT/usr/sbin/$cmd"
+    ln -sf /usr/bin/systemctl "$TGT/sbin/$cmd"
+  done
+
+  # ---- gates --------------------------------------------------------------
+  if [ ! -x "$TGT/lib/systemd/systemd" ]; then
+    echo "systemd: /lib/systemd/systemd did not arrive from the packages" >&2
+    exit 1
+  fi
+  if [ "$(init_flavour "$TGT")" != systemd ]; then
+    echo "systemd: sbin/init does not point at /lib/systemd/systemd" >&2
+    exit 1
+  fi
+  # PID 1 is a glibc ELF with an absolute interpreter, and the kernel resolves
+  # it before the first instruction runs. Prove the loader is where the ELF
+  # says to look, in the tree, without running anything.
+  #
+  # `readelf | sed | head` is the obvious way to read the interpreter out and it
+  # is wrong here: build.sh runs under `set -o pipefail`, readelf can print more
+  # than one line matching the pattern, head exits after the first and closes
+  # the pipe, and the resulting SIGPIPE on sed makes the whole pipeline
+  # non-zero -- which aborts the stage under `set -e`. That was not theoretical:
+  # it killed this stage the first time the gate ran it with build.sh's own
+  # shell flags, with `local interp` as the last line of the trace. sed alone,
+  # with no head and a pattern anchored so it cannot escape, has no pipe to
+  # break and no early exit to signal.
+  local interp=""
+  interp=$(readelf -l "$TGT/lib/systemd/systemd" 2>/dev/null \
+           | sed -n 's/.*interpreter: \(.*\)\]$/\1/p' | sed -n '1p' || true)
+  if [ -n "$interp" ] && [ ! -e "$TGT$interp" ]; then
+    echo "systemd: $interp (PID 1's interpreter) is missing from the staged rootfs" >&2
+    exit 1
+  fi
+  # The units are the migration. A unit that failed to install is a service
+  # that silently never starts, which on a booted machine looks exactly like
+  # the feature not existing.
+  local want uf
+  for uf in copper.target copper-firstboot.service copper-console.service \
+            copper-seatd.service copper-network.service; do
+    if [ ! -f "$TGT/etc/systemd/system/$uf" ]; then
+      echo "systemd: unit $uf did not install" >&2
+      exit 1
+    fi
+  done
+  for want in copper.target.wants/copper-firstboot.service \
+              copper.target.wants/copper-console.service \
+              copper.target.wants/copper-seatd.service \
+              copper.target.wants/copper-network.service \
+              multi-user.target.wants/copper.target; do
+    if [ ! -L "$TGT/etc/systemd/system/$want" ]; then
+      echo "systemd: $want is not a symlink; the unit would not start" >&2
+      exit 1
+    fi
+  done
+  # The mode too, not just the presence. A unit that installed 0777 is a unit
+  # systemd reads with a warning, and the source tree is 777 on Windows, so
+  # this is the check that catches a cp that should have been install -m.
+  for uf in "$TGT/etc/systemd/system"/copper*.service \
+            "$TGT/etc/systemd/system/copper.target"; do
+    if [ "$(stat -c '%a' "$uf" 2>/dev/null)" != 644 ]; then
+      echo "systemd: $(basename "$uf") installed as mode $(stat -c '%a' "$uf" 2>/dev/null), expected 644" >&2
+      exit 1
+    fi
+  done
+  # copper-init still has to exist: the console service runs the --console half
+  # of it. A migration that deleted it here would leave the machine with no
+  # wizard and no shell.
+  if [ ! -x "$TGT/usr/bin/copper-init" ]; then
+    echo "systemd: /usr/bin/copper-init is missing; copper-console.service needs it" >&2
+    exit 1
+  fi
+
+  # systemd-analyze is the parser that will read these units on the booted
+  # machine, so let it read them. It must run INSIDE a chroot into $TGT: run
+  # from the build host it resolves ExecStart against the HOST, which has none
+  # of Copper's binaries, and it reports every unit as "Command /usr/bin/
+  # copper-init is not executable: No such file or directory" -- a failure
+  # that looks exactly like a real one and is not. Chrooted, that same check
+  # becomes the real thing: it proves each command the units name is present
+  # and executable in the tree that will boot.
+  #
+  # The host's systemd-analyze is a convenience, not the image's systemd: a
+  # newer host accepts a directive the image's 255 does not, so the units stay
+  # on directives that predate 255. And two classes of message are about the
+  # host rather than the units, filtered here rather than tolerated by eye:
+  #
+  #   - "Can't show udhcpc(1)" and man(1)'s exit status: Documentations=
+  #     names man pages that exist in the image, not on the build host.
+  #   - messages about /usr/lib/systemd/system/*: the base units pulled in as
+  #     dependencies, some of which want libseccomp the build host lacks.
+  #
+  # Anything else about a Copper unit fails the build.
+  #
+  # systemd-analyze is a build-time tool, not part of the image (nothing here
+  # installs it), so it is copied into the staged tree for the check and every
+  # file that copy added is removed again. The two things this has to get right:
+  #
+  #   - the tool needs its own shared libraries, and the staged tree has a
+  #     different libc from the build host (this is a musl-base image with a
+  #     glibc userland bolted on; the host is neither). libm.so.6 in particular
+  #     is not in the image until systemd's own closure puts it there, and the
+  #     FIRST version of this check copied the binary alone and died with
+  #     "libm.so.6: cannot open shared object file" -- a hard build failure
+  #     caused entirely by the check. So: copy the tool with its ldd closure.
+  #
+  #   - the tree must come back exactly as it was. The added paths are recorded
+  #     as they are created and removed at the end, on both the success and the
+  #     failure path, so a rejection here does not leave the build host's libc
+  #     in the ISO either.
+  #
+  # If the tool still cannot run inside the chroot, the check SKIPS with a
+  # note. It is a convenience over the gates above it (which already prove the
+  # units installed, are wired and are mode 644); it must never be the reason a
+  # build fails.
+  if command -v systemd-analyze >/dev/null 2>&1; then
+    local sa="/usr/bin/systemd-analyze" added="$WORK/systemd-added" f lib
+    : > "$added"
+    mkdir -p "$TGT/usr/bin"
+    if [ ! -e "$TGT$sa" ]; then
+      cp -L "$(command -v systemd-analyze)" "$TGT$sa"
+      chmod 0755 "$TGT$sa"
+      printf '%s\n' "$sa" >> "$added"
+    fi
+    # Its library closure, at the paths ldd names. Anything already in the tree
+    # is left alone and not recorded, so nothing the image needs is removed.
+    while IFS= read -r lib; do
+      [ -n "$lib" ] || continue
+      if [ ! -e "$TGT$lib" ] && [ -e "$lib" ]; then
+        mkdir -p "$TGT$(dirname "$lib")"
+        cp -L "$lib" "$TGT$lib" 2>/dev/null && printf '%s\n' "$lib" >> "$added"
+      fi
+    done < <(ldd "$(command -v systemd-analyze)" 2>/dev/null \
+             | grep -oE '/[^ ]+\.so[^ ]*' | sort -u)
+
+    local ul out left canrun=1
+    if ! chroot "$TGT" "$sa" --version >/dev/null 2>&1; then
+      canrun=0
+      echo "  (systemd-analyze does not run in the staged tree; unit verify skipped)"
+    fi
+    if [ "$canrun" = 1 ]; then
+      for ul in copper-console.service copper-firstboot.service \
+                copper-network.service copper-seatd.service; do
+        out=$(chroot "$TGT" "$sa" verify "/etc/systemd/system/$ul" 2>&1 || true)
+        # A message counts only if it is ABOUT one of our units. systemd-analyze
+        # pulls in every dependency (the base system units) and reports their
+        # problems too, and those are the build host's packaging, not ours. So
+        # the filter is a whitelist: keep lines that name this unit's own file,
+        # then drop the two classes that name it but are still about the host --
+        # Documentations=man:... that the build host has no man page for, and
+        # the same line's man(1) exit status. Anything else naming our unit is
+        # a real problem and fails the build. A blacklist of known noise would
+        # be one new kind of host noise away from hiding a real error; this is
+        # narrow instead.
+        left=$(printf '%s\n' "$out" \
+          | grep -F "$ul" \
+          | grep -vE "Can't show |failed with exit status|\(man\)" \
+          | grep -c . || true)
+        if [ "$left" != 0 ]; then
+          echo "systemd: systemd-analyze rejected $ul:" >&2
+          printf '%s\n' "$out" | sed 's/^/     /' >&2
+          while IFS= read -r f; do [ -n "$f" ] && rm -f "$TGT$f"; done < "$added"
+          exit 1
+        fi
+      done
+      echo "  units verified by systemd-analyze (chrooted; ExecStart resolves)"
+    fi
+    # Remove exactly what was added, deepest path first so directories empty out.
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      rm -f "$TGT$f"
+    done < "$added"
+    rm -f "$added"
+  fi
+
+  echo "  systemd staged as PID 1 ($(du -sh "$TGT/lib/systemd" | cut -f1));"
+  echo "  copper-init kept as copper-console.service"
+  stamp_set "$WORK/systemd.stamp" "${sdin[@]}"
+}
+
+# ---------------------------------------------------------------
 # 7. live initramfs (busybox + our /init, drivers built into kernel)
 # ---------------------------------------------------------------
 build_initramfs() {
@@ -2219,28 +2639,60 @@ WRAP
   # the ISO CI built from it still shipped systemd-sysv's copies in /usr/sbin
   # -- found by inspecting that artifact, so the same inspection is what this
   # gate automates. Same readback discipline as sudo's mode above.
+  #
+  # Which links are CORRECT depends on which init the disc carries, so read
+  # sbin/init off the disc first (an absolute symlink, so readlink, not -e --
+  # see init_flavour) and check the power commands against that answer. On the
+  # busybox image they must be busybox applets; on a systemd image they must be
+  # systemctl, because a busybox halt signals PID 1 the way copper-init reads
+  # it and systemd does not read it that way at all.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /sbin "$ex/sbin" >/dev/null 2>&1 || true
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /usr/sbin "$ex/usr-sbin" >/dev/null 2>&1 || true
-  local pbad="" pt
-  for cmd in reboot poweroff halt; do
-    for d in "$ex/sbin" "$ex/usr-sbin"; do
-      pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
-      [ "$pt" = "/bin/busybox" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
-    done
-  done
-  pt=$(readlink "$ex/usr-sbin/shutdown" 2>/dev/null || echo missing)
-  [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad usr-sbin/shutdown -> $pt"
-  if [ ! -f "$ex/sbin/shutdown" ] || [ -L "$ex/sbin/shutdown" ]; then
-    pbad="$pbad sbin/shutdown (not the wrapper file)"
-  fi
-  if [ -n "$pbad" ]; then
-    echo "iso: power commands in the ISO are wrong:$pbad" >&2
-    echo "iso: /usr/sbin is searched before /sbin, so 'sudo reboot' would not reboot" >&2
+  local pbad="" pt flavour
+  case "$(readlink "$ex/sbin/init" 2>/dev/null)" in
+    /usr/bin/copper-init) flavour=busybox ;;
+    /lib/systemd/systemd) flavour=systemd ;;
+    *)                    flavour=unknown ;;
+  esac
+  if [ "$flavour" = unknown ]; then
+    echo "iso: /sbin/init in the ISO points nowhere recognisable:" >&2
+    echo "iso: $(readlink "$ex/sbin/init" 2>/dev/null || echo 'not a symlink')" >&2
     exit 1
   fi
-  echo "  iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the disc"
+  if [ "$flavour" = systemd ]; then
+    for cmd in reboot poweroff halt shutdown; do
+      for d in "$ex/sbin" "$ex/usr-sbin"; do
+        pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
+        [ "$pt" = "/usr/bin/systemctl" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
+      done
+    done
+    if [ -n "$pbad" ]; then
+      echo "iso: the ISO boots systemd but its power commands are wrong:$pbad" >&2
+      echo "iso: systemd expects /usr/bin/systemctl there, not a busybox applet" >&2
+      exit 1
+    fi
+    echo "  iso: systemd is PID 1 and the power commands point at systemctl, on the disc"
+  else
+    for cmd in reboot poweroff halt; do
+      for d in "$ex/sbin" "$ex/usr-sbin"; do
+        pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
+        [ "$pt" = "/bin/busybox" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
+      done
+    done
+    pt=$(readlink "$ex/usr-sbin/shutdown" 2>/dev/null || echo missing)
+    [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad usr-sbin/shutdown -> $pt"
+    if [ ! -f "$ex/sbin/shutdown" ] || [ -L "$ex/sbin/shutdown" ]; then
+      pbad="$pbad sbin/shutdown (not the wrapper file)"
+    fi
+    if [ -n "$pbad" ]; then
+      echo "iso: power commands in the ISO are wrong:$pbad" >&2
+      echo "iso: /usr/sbin is searched before /sbin, so 'sudo reboot' would not reboot" >&2
+      exit 1
+    fi
+    echo "  iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the disc"
+  fi
 
   # The boot command line, read back off the disc (bug 25, and bug 7 with it).
   # grub.cfg is copied from the tree, so what is really being checked is that
@@ -2329,10 +2781,11 @@ case "$STAGE" in
   hypr)       build_rootfs; build_gui; build_hypr ;;
   plymouth)   build_rootfs; build_gui; build_hypr; build_plymouth ;;
   sudo)       build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo ;;
+  systemd)    build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_copper; build_systemd ;;
   initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs ;;
   iso)        build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|hypr|plymouth|sudo|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|hypr|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
 esac
 
 echo "==> done"

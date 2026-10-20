@@ -1,0 +1,67 @@
+# Copper Linux — the console: the wizard's shell, on tty1.
+#
+# This is copper-init running as a service instead of as PID 1, and it is the
+# deliberate centre of phase 1. The migration document's smallest honest step
+# is not "delete the init": it is "stop the init being PID 1". copper-init
+# --console keeps the three things that are genuinely hard and already right
+# here --
+#
+#   - the account drop: the shell runs as the wizard's user, not root, or
+#     Firefox refuses to start in the session it opens;
+#   - the controlling terminal: the shell gets a session and tty1 as its
+#     controlling tty, so /dev/tty works for everything it starts;
+#   - the respawn loop: logging out and back in gives the same shell, and a
+#     session that dies does not take the machine with it.
+#
+# -- and leaves everything a real PID 1 does (mounts, power signals, hostname,
+# DHCP, seatd, the udev seeder, reaping) to systemd and the units in this
+# directory. Read console_main() in iso/src-init/copper-init.c for the exact
+# split.
+#
+# Type=simple and Restart=always: the loop inside --console respawns the
+# SHELL, and systemd respawns --console itself if the process ever exits.
+# That is two layers of the same idea, and they are not redundant: the inner
+# loop keeps the same process (and the same session) across a logout, the
+# outer restart is what happens if the process is what died.
+#
+# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
+[Unit]
+Description=Copper console (login shell on tty1)
+# The wizard has to have finished before there is anything to log in AS, and
+# the seat has to exist before the user can start Hyprland -- but that is
+# ORDERING, and ordering is what After= is for. It is deliberately Wants=, not
+# Requires=, for both: a failed wizard (a disk that could not be formatted, a
+# seatd that would not start) must not take the console with it. On a machine
+# where this unit is the only way in, `Requires=` turns any one of those
+# failures into a black tty with no login and no diagnosis -- the exact
+# "unbootable, not degraded" outcome SYSTEMD-MIGRATION.md warns about.
+Wants=copper-firstboot.service
+After=copper-firstboot.service copper-seatd.service copper-network.service
+# systemd ships getty@tty1.service as the tty1 owner by default. Two things
+# writing the same tty is the two-shells bug in unit form, so this unit claims
+# the console and getty is not wanted from here.
+Conflicts=getty@tty1.service
+Before=getty.target
+# A console that cannot start is a machine with no way in, so the restart
+# burst limit is switched off here, in [Unit] where systemd 255 reads it.
+# (It moved from [Service] to [Unit] in systemd 230; the 255 in the image
+# takes it here only, and a misplaced key is silently ignored -- which for
+# this key means the unit fails after five fast restarts and the tty goes
+# dark.)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/copper-init --console
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=no
+# Do not thrash, but always come back.
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=copper.target

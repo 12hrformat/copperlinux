@@ -248,6 +248,18 @@ not tell those two apart. Both do now:
 
 Closing this needs one more boot, whose log now names the fate of every device.
 
+**Where the systemd image changes the shape of this (2026-10-20).** The seeder
+above is a stand-in for udev's `input_id` builtin, and on the phase-1 systemd
+image that builtin is real: `systemd-udevd` runs from `sysinit.target`, and
+`copper-init`'s `seed_udev_input_db()` is skipped under `--console` (see
+SYSTEMD-MIGRATION.md). So the migrated image should classify input devices the
+same way every distro does, and this bug's premise — "this image has no udev, so
+nobody ever wrote the tags" — does not hold there. That is not a fix and not a
+claim: the systemd image has never been booted, so nothing about it is proven,
+and the busybox image still needs the boot described above. It is recorded here
+so that whoever boots the systemd image knows bug 34 is one of the things that
+boot is answering.
+
 **That boot ran (2026-10-20).** Its log shows the seeder working end to end —
 `input: wrote 4 libudev record(s), 4 naming a device type`, and per device
 `input1 "AT Translated Set 2 keyboard" -> KEY KEYBOARD`. The keyboard's record

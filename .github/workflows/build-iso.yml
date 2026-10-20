@@ -57,7 +57,8 @@ jobs:
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
                    tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
-                   tests/starthyprland-gate.sh tests/plymouth-gate.sh; do
+                   tests/starthyprland-gate.sh tests/plymouth-gate.sh \
+                   tests/systemd-gate.sh tests/systemd-gate-sabotage.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -197,6 +198,35 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: copper-iso
+          path: iso/out/copper.iso
+          retention-days: 14
+
+      # ---- the systemd flavour, built AFTER the default ISO ----------------
+      # This is what makes CI answer "is the migration real" rather than just
+      # "does the default image still build". `build_systemd` swaps PID 1 in
+      # the SAME staged rootfs, so the order is load-bearing: if this ran
+      # before "Make the ISO" the default artifact would silently become a
+      # systemd machine, which is exactly the half-done swap SYSTEMD-MIGRATION.md
+      # warns about. Default ISO first and uploaded, then the swap, then a
+      # second ISO -- so the two artifacts are never ambiguous.
+      #
+      # The stage downloads systemd/udev/systemd-sysv from the runner's own
+      # noble mirrors with the empty-dpkg-status device, so a failure here is a
+      # real failure of the stage, not a missing toolchain.
+      - name: Migrate the staged rootfs to systemd PID 1 (opt-in flavour)
+        run: sudo bash iso/build.sh systemd
+
+      # Rebuild the ISO from the now-systemd tree. Same stages as "Make the
+      # ISO", stamp-checked, so this is just the packaging plus the init-aware
+      # read-back gate (which expects systemctl links, not busybox applets,
+      # when /sbin/init points at /lib/systemd/systemd).
+      - name: Make the systemd ISO
+        run: sudo bash iso/build.sh iso
+
+      - name: Upload copper-systemd.iso
+        uses: actions/upload-artifact@v4
+        with:
+          name: copper-iso-systemd
           path: iso/out/copper.iso
           retention-days: 14
 

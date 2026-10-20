@@ -1,8 +1,24 @@
-# Systemd as PID 1 — migration proposal for Copper Linux
+# Systemd as PID 1 — migration
 
-Status: **proposal / not started.** v0.9 runs busybox init. This document
-exists so the swap can be decided and scoped on a fixed question rather than
-as a surprise on a hot build.
+Status: **phase 1 in the tree, opt-in, NOT yet booted.** v0.9 still ships
+busybox init; the default image is unchanged, its gates are green, and this
+work is wired into the same gate set as everything else
+(`tests/systemd-gate.sh` + `tests/systemd-gate-sabotage.sh`, run by
+`tests/branch-gate.sh` and listed in CI). What exists now is the swap itself,
+behind a stage you have to ask for:
+
+```
+sudo bash iso/build.sh systemd      # systemd as PID 1
+sudo bash iso/build.sh              # busybox init, the shippable image
+```
+
+Phase 1 is deliberately **not** part of `all`/`full`. The line above this
+document's estimate is the reason: a half-done swap is an **unbootable ISO**,
+not a degraded one. Keeping it out of the default path means the image anyone
+ships is never the half-finished one.
+
+What is verified, and what is not, is at the end of this file. Read that before
+trusting anything here.
 
 ## Why this is a big deal
 
@@ -10,7 +26,7 @@ Going from busybox -> systemd is not "copying a package in." It changes:
 
 - PID 1 and all boot ordering
 - Network: udhcpc becomes systemd-networkd, lease files relocate
-- Seat/DRM: separate seatd  -> logind
+- Seat/DRM: separate seatd -> logind
 - First boot: replaces two C daemons with service units + journal-first logging
 - Service assumptions: everything Copper runs (`plymouth`, `inges`, `myscript`
   hooks) needs unit files
@@ -18,63 +34,166 @@ Going from busybox -> systemd is not "copying a package in." It changes:
   an already full 700MB-ish ISO
 
 Time estimate: 3 focused weeks of work, plus a week of boot-debugging on real
-hardware. A half-done swap is an **unbootable ISO**, not a degraded one.
+hardware.
 
-## Recommendation
+## Recommendation (unchanged)
 
-Ship v0.9 on busybox, plan this as a v1.5 project. Hyprland's `seatd` path
-works fine as-is in our (tested) boot, and the real blockers are library
-version issues, not the init system. So no urgent justifier for this change.
+Ship v0.9 on busybox; treat the swap as a v1.5 project. Hyprland's `seatd` path
+works fine as-is, and the real blockers are library-version issues, not the
+init system. Phase 1 below is groundwork that can be done without committing to
+the timeline — and without risking the launch image.
 
-If product direction genuinely needs systemd features, do the migration as a
-separate named sprint at a time when nobody is panicking to launch.
+## What phase 1 actually does
 
-## What actually has to change (by layer)
+### The swap is a symlink, not a kernel argument
 
-### 0. Choose the base
+This document used to say `Replace the init in the initramfs:
+init=/lib/systemd/systemd`, and **that is wrong** — corrected here.
 
-- Base image becomes 100% glibc: every existing tool becomes its glibc
-  equivalent. Ours currently mixes (musl static init + glibc userspace).
-  Decision: do not port musl-mode systemd; lean on glibc throughout:
-  `build_gnu` already brings a base of Gnu packages, no change there.
-- Dpkg is not on the path; keep `apt-get download` there as the fetch tool.
+`iso/live/init` runs first, and it has to. It mounts proc/sys/devtmpfs, finds
+the medium, builds the overlay out of the persistent disk and `switch_root`s
+into it. An `init=` argument skips that entire script, so the machine would boot
+the read-only squashfs directly: no overlay, no persistence, and `/etc` from the
+medium. Same rootfs, different machine.
 
-### 1. PID 1 swap
+`/init` ends with `exec /sbin/init`. So the swap is one symlink:
 
-- Build stage installs: `systemd systemd-sysv systemd-boot eos...`
-  Most crucially `systemd` package itself + `udev` + `modprobe` chain.
-- Replace the init in the initramfs: `init=/lib/systemd/systemd`.
-- The first-boot contract in `iso/src-init/copper-init.c` collapses into `systemd`?:
-  - `start_seatd()` -> unit + `logind` (seatd probably retired)
-  - `start_dbus()` -> becomes `dbus.service`
-  - `start_wpa_supplicant()` -> `wpa_supplicant.service`
-  - udhcpc lease -> `systemd-networkd` + ack unit.
+```
+/sbin/init -> /lib/systemd/systemd        (was -> /usr/bin/copper-init)
+```
 
-  Copper specific single-binary (`copper-firstboot`) becomes a oneshot unit:
-  `ConditionPathExists=!/etc/copper-firstboot.done`.
+and everything about boot ordering follows from it. `build_systemd` makes that
+link, and `init_flavour()` in `iso/build.sh` reads it back so every gate that
+cares asks "which init is this"? rather than assuming.
 
-- `build_initramfs` becomes dracut/generator-style.
+### copper-init is not deleted; it stops being PID 1
 
-### 2. Login backend
+`iso/src-init/copper-init.c` gained a **`--console`** mode (`console_main()`),
+which is the tty1 half of that file and nothing else:
 
-- `loginctl` surfaces the XFCE user; Hyprland session via `hypridle`).
-- `XDG_RUNTIME_DIR` comes from `pam_systemd` rather than our manual `mkdir`.
-- `dbusb-dispatch` is more options under new add-on process.
+| copper-init did, as PID 1 | who does it under systemd |
+| --- | --- |
+| mount /proc /sys /dev /run | already done by `/init` before the switch_root |
+| power signals (SIGTERM/SIGUSR1/2, SIGPWR, SIGINT) | systemd; a SIGTERM on a service must mean *stop* |
+| `apply_hostname()` | `/etc/hostname` + systemd |
+| DHCP | `copper-network.service` |
+| `start_seatd()` | `copper-seatd.service` |
+| dbus / polkit spawn | the packages' own units |
+| `seed_udev_input_db()` (bug 34) | real `systemd-udevd` — the seeder is skipped |
+| reap children | systemd reaps |
+| **first-boot wizard** | still copper-init, via `copper-firstboot.service` |
+| **session account drop + shell on tty1** | still copper-init, `--console` |
 
-### 3. Session handoff (Hyprland)
+The three things kept are the three that are genuinely hard and already right:
+the account drop (or Firefox refuses to start — the same reason
+`tests/init-session.c` exists), the controlling terminal, and the respawn loop.
+Re-implementing those in unit + `agetty` terms is not possible here anyway: the
+image is built `--without-pam`, so there is no PAM stack for autologin to use.
 
-- Right now starthyprland relies on seatd from init.
-- Move to: `logind` (user seat), `dbus`, `polkit` policy, then `start-hyprland`.
-- Guest-mode and pam config gets addressed via systemd PAM accounts.
-- `hyprland-guiutils` can be hosted as an `apply-updates.service`.
+`g_console_only` is the flag that turns off the PID-1 half; it is set only by
+`--console`, so the busybox path is behaviourally unchanged.
 
-### 4. What actually tears the bad thing out
+### The units (`iso/systemd/`)
 
-- Every `read -r answer / case` terminal questions becomes units behind
-  `systemctl status`.
-- The quiet / noisy boot ordering comes from sync vs async kexec semantics
-  rather than `sleep`/busy loop.
-- Logging via `journalctl` instead of dmesg.
+All Copper-owned, so nothing here patches a package's own units:
+
+| unit | what it is | replaces |
+| --- | --- | --- |
+| `copper.target` | groups Copper's services, says why the ordering is what it is | — |
+| `copper-firstboot.service` | the wizard, `ConditionPathExists=!/etc/copper-firstboot.done` | the `stat()` in `main()` |
+| `copper-console.service` | `copper-init --console` on tty1 | the session loop in `main()` |
+| `copper-seatd.service` | `seatd -g _seatd` | `start_seatd()` |
+| `copper-network.service` | `busybox udhcpc -i eth0 -b` | `start_dhcp()` |
+| `copper-network.conf` | why the file exists (bug 34's premise) | — |
+| `99-default.link -> /dev/null` | keep kernel NIC names (eth0, not ens33) | — |
+
+`getty@tty1` is `Conflicts=`'d and `Before=getty.target`: two things writing the
+same tty is the two-shells bug in unit form.
+
+**Ordering is `After=`, never `Requires=`.** The wizard must run before the
+console and the seat before the user can start Hyprland, and that is ordering —
+so the units spell it `After=` and pull each other in with `Wants=`. The first
+cut used `Requires=`, which is a hard dependency in both directions and turns any
+single failure into the "unbootable, not degraded" outcome this document opens
+with: a seatd that would not start cancelled the wizard (no account, no
+persistence offered) and a wizard that could not format a disk cancelled
+`copper-console.service` — on a machine where that unit is the only way in. A
+black tty with no login is not a smaller failure than a missing seat; it is a
+larger one. `Wants=` + `After=` keeps the order and drops the coupling.
+
+There are no `Documentation=file:` lines for the same reason a build gate exists:
+the path they pointed at (`/usr/share/doc/copper/SYSTEMD-MIGRATION.md`) is not
+installed into the image, and a unit that documents itself with a file nobody
+can open is worse than one that does not. `man:` entries remain, because a real
+distro has those man pages; the build-time verify treats a missing `man:` as host
+noise (see the stage, below).
+
+**No `systemd-networkd`, no `logind`** in this phase, on purpose. Moving the
+network stack and the seat at the same time as PID 1 would mean a dark screen
+with three possible causes.
+
+### The stage (`build_systemd` in `iso/build.sh`)
+
+- `apt-get download` closure for `systemd udev systemd-sysv`, unpacked with
+  `dpkg-deb -x` and copied in with `cp -a -n` — the same empty-dpkg-status
+  pattern the `gui` and `hypr` stages use. Existing files win (`-n`): a library
+  the desktop closure already staged was chosen by the desktop's resolver.
+- installs and wires the units by hand rather than `systemctl enable` (which
+  wants a chroot, a running dbus, and a systemd being called into from a build).
+  Enabling is just symlinks.
+- re-asserts the glibc loader at `/lib64/ld-linux-x86-64.so.2`, then proves with
+  `readelf` that PID 1's interpreter exists in the tree.
+- repoints `/sbin/init` and the power commands (`/sbin` **and** `/usr/sbin`) at
+  systemd's own, after `build_copper`'s `power_links()` pointed them at busybox.
+- verifies the units with `systemd-analyze`, **chrooted** into the staged tree,
+  so `ExecStart` resolves the way it will at boot.
+
+## What is verified, and what is not
+
+**Verified here, mechanically:**
+
+- `bash iso/build.sh` and `sh -n` on touched scripts parse.
+- `tests/init-session.sh` passes: the `--console` split did not change the
+  session-account logic, the udev seeder, or the power-signal mapping.
+- `tests/systemd-gate.sh` (new) runs the **real** `build_systemd()` under
+  build.sh's own `set -euo pipefail`, against a mock staged rootfs, with
+  apt/dpkg stubbed; checks the swap, the wiring, the modes, the power links, and
+  that nothing from the build host is left in the tree; and runs the units
+  through the `systemd-analyze` parser.
+- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants nine
+  defects — misplaced key, nonexistent directive, bare glob, no repoint, unwired
+  unit, removed `--console`, busybox power links, 0777 units, leaked build tool —
+  and every one is caught. That suite is what found three real bugs during
+  development, including a `readelf | sed | head` pipeline that aborts under
+  `set -o pipefail` and would have killed a real build.
+
+**NOT verified — this is the honest gap:**
+
+- **It has never been booted.** Not in a VM, not on hardware. Nothing in this
+  repo can boot an ISO in CI, so this is structural verification only.
+- Package closure size is unmeasured (the dev box has no noble mirrors, so the
+  closure could not be downloaded here).
+- Nothing has exercised systemd's actual startup: udevd, unit ordering at boot,
+  the wizard's terminal under `StandardInput=tty`, or the console service's
+  restart behaviour.
+
+**A green `tests/systemd-gate.sh` is not a bootable image.** It says the pieces
+are coherent. The thing that closes this is a VMware boot of the systemd ISO,
+same as bugs 15/18/25/34/35/38/44.
+
+## Remaining work (phase 2+)
+
+- **Boot it.** Nothing below is worth doing before this happens.
+- Network: `udhcpc` -> `systemd-networkd` (+ the lease/resolver files).
+- Seat: `seatd` -> `logind`, which is what makes
+  `XDG_RUNTIME_DIR`/`pam_systemd` real and retires `prepare_session_dirs`.
+- Plymouth: `build_plymouth` deliberately drops plymouth's units, so the splash
+  needs a Copper unit (or an attach-mode decision) under systemd.
+- `wpa_supplicant.service`.
+- First-boot contract: move the wizard's own questions onto journal-first
+  logging (`systemctl status`, `journalctl`) instead of the console dialogue.
+- Image size: measure the real growth and decide.
+- Rollback path: how a machine gets back to the busybox image.
 
 ## risks expected during a migration (the bad case)
 
@@ -86,20 +205,8 @@ separate named sprint at a time when nobody is panicking to launch.
 4. **udev/hwdb entries**: lots of packaging of `/etc/udev/hwdb.bin`.
 5. **Boot failure on VMs**: firstboot gets worse.
 
-## Phasing if someone says "start tomorrow"
-
-- Week 1: new rootfs on systemd stage, only X11/XFCE desktop in VM.
-- Week 2: Hyprland under logind, session units.
-- Week 3: bootsplash/networking overlap (plymouth deferred or kept).
-- Week 4: rollback path + tests.
-
-## Recommendation
-
-v1.5 track, not launch requirement. See HANDOFF.md for the v0.9 decision
-working assumption. Hypland is library-version-limited, not init-limited.
-Keep busybox for first ship; queue this doc as README-seen under
-`docs/systemd-migration.md`.
-
 ---
-`copper-init.c` will remain the sole init driving `start_seatd`, `start_dbus`,
-`firstboot` until a migration is explicitly funded.
+
+Phase 1 is in the tree. `copper-init.c` remains the sole init on the default
+image, and on the systemd image it remains the console: `--console`, one unit,
+`copper-console.service`.

@@ -1,0 +1,19 @@
+# Copper Linux — the target that groups Copper's own services.
+#
+# Why a target of our own instead of hanging everything off multi-user.target:
+# the ordering requirements here are real and they are Copper's, not the
+# distro's. The console must come up after the wizard can talk (the wizard
+# prompts on the same tty), and after the seat exists (Hyprland opens the seat
+# the moment the user types starthyprland). Expressing that as
+# multi-user.target.wants/ symlinks would work but would say nothing about why
+# the order is what it is, and the next person to add a unit would have to
+# rediscover it.
+#
+# multi-user.target wants copper.target; copper.target wants the units that do
+# the work. DefaultDependencies=no is not needed: this target has no ordering
+# of its own beyond what it inherits, and inheriting the normal shutdown
+# ordering is what makes `systemctl isolate` and a clean poweroff behave.
+#
+# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
+[Unit]
+Description=Copper session target (wizard, console, seat, network)

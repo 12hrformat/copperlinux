@@ -32,3 +32,18 @@ init text eol=lf
 # intent local to the one directory where a mis-detected binary would cost the
 # whole boot animation.
 *.png binary
+
+# Unit files are config, and config is text: they must reach the image with LF
+# line endings, which `eol=lf` above already gives them. What git cannot carry
+# is the MODE, and that matters here: unit files are 0644 root:root in the
+# image, and on a Windows checkout git writes the working tree 777 (as it does
+# for every file in this repo). systemd refuses to *read* a world-writable unit
+# without a warning and refuses to run one whose ExecStart is executable-but-
+# not-owned, so the mode is pinned twice: build_systemd chmods what it installs,
+# and this comment exists so nobody "fixes" that chmod away as redundant.
+# (It is not: see the gate in build_systemd, which exists because a unit that
+# installed 0777 looked exactly like a unit that installed correctly.)
+*.service text eol=lf
+*.target text eol=lf
+*.link text eol=lf
+*.network text eol=lf

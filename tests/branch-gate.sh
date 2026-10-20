@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Eleven gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
-# persist.sh and shutdown-gate.sh need root, because they exercise sockets,
-# staged rootfs trees, the hotfix database, a mount namespace and a private
-# /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh,
+# Thirteen gates: smoke.sh always; startxfce-gate.sh, charge.sh,
+# account-gate.sh, persist.sh and shutdown-gate.sh need root, because they
+# exercise sockets, staged rootfs trees, the hotfix database, a mount namespace
+# and a private /sbin; init-session.sh needs root because it calls setuid, and
+# systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
+# into a staged tree to check the units. ingot-gate.sh,
 # starthyprland-gate.sh and plymouth-gate.sh do not -- ingot's install lands in
 # a scratch INGOT_ROOT and its repo is served on localhost, starthyprland's
 # compositor is a stub under a private home, and plymouth-gate.sh only reads
@@ -247,6 +249,40 @@ else
     nfail=$(printf '%s\n' "$out" | grep -c '^  FAIL ' || true)
     record ingot-gate.sh bad "exit $? with $nfail failed assertions"
     printf '%s\n' "$out" | grep -E '^  FAIL |^    summary' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/systemd-gate.sh: the systemd PID-1 swap, structurally ---"
+# Needs root: the stage verifies its units by chrooting into the staged tree,
+# so ExecStart resolves the way it will at boot. It runs the REAL build_systemd
+# against a mock rootfs with apt/dpkg stubbed, so it downloads and execs
+# nothing. Nothing here claims the image boots -- SYSTEMD-MIGRATION.md says so
+# plainly -- but a red gate means the swap is incoherent.
+if [ "$ROOT" -ne 1 ]; then
+    record systemd-gate.sh skipped "needs root to chroot for the unit check"
+elif out=$(bash tests/systemd-gate.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
+    record systemd-gate.sh ok "$n checks (structural -- not a boot)"
+else
+    record systemd-gate.sh bad "a systemd-migration check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/systemd-gate-sabotage.sh: prove that gate can go red ---"
+# The gate above checks a migration nothing here can boot, so its whole value
+# is that it fails when the swap is wrong. This plants nine defects, one at a
+# time, and asserts every one is caught. Needs root, as systemd-gate.sh does.
+if [ "$ROOT" -ne 1 ]; then
+    record systemd-gate-sabotage.sh skipped "needs root to chroot for the unit check"
+elif out=$(bash tests/systemd-gate-sabotage.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
+    record systemd-gate-sabotage.sh ok "$n sabotages, all caught"
+else
+    record systemd-gate-sabotage.sh bad "the gate missed a planted defect"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^BROKEN' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,50 @@
+# Copper Linux — the first-boot wizard.
+#
+# Runs once, on the console the user is looking at, before the login shell
+# service starts. ConditionPathExists=! is the whole "once" mechanism: the
+# wizard writes /etc/copper-firstboot.done as its last act, and this unit is
+# skipped on every boot after that. copper-init used `stat()` on the same file
+# for the same reason; this is that decision in the unit language.
+#
+# Type=oneshot with RemainAfterExit=yes, not Type=simple: the wizard is a
+# question-and-answer session that must finish before the console service
+# starts, and "wanted by copper.target" plus Type=oneshot gives copper.target
+# an ordering point to hang copper-console.service off.
+#
+# The wizard needs a controlling terminal. getpass() reads /dev/tty, and
+# without a session of its own it cannot open that at all -- the password
+# questions come back unusable. The C code used to do the setsid/TIOCSCTTY
+# itself (copper-init.c, the wizard fork); under --console it instead dups the
+# service's stdin, which IS the tty below. StandardInput=tty pins stdin at
+# /dev/tty1 and TTYPath= makes that the controlling tty for the unit.
+#
+# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
+[Unit]
+Description=Copper first-boot wizard
+ConditionPathExists=!/etc/copper-firstboot.done
+# Wants=, not Requires=: the wizard formats a disk and creates the account. It
+# does not need the seat daemon to do either, and startup ordering is already
+# pinned by After=. `Requires=` here would mean a seatd that cannot start also
+# cancels the wizard -- no account created, no persistence offered, and the
+# console with nothing to log in as.
+Wants=copper-seatd.service
+After=copper-seatd.service copper-network.service
+Before=copper-console.service
+# The wizard formats the persistence disk, so it needs the block devices udev
+# has finished discovering, not a half-populated /dev.
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/copper-firstboot
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=no
+
+[Install]
+WantedBy=copper.target
