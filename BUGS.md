@@ -1,4 +1,4 @@
-# BUGS.md
+﻿# BUGS.md
 
 > please note down all the bugs you come across in h1 heading (#) thier name and how they affect things on a scale of 1-10.
 
@@ -256,46 +256,6 @@ gone. What is still unconfirmed is typing **inside a Hyprland session**: that
 boot typed at the text console, which does not go through libinput. The entry
 stays open until a `starthyprland` boot has a working keyboard in the
 compositor.
-
----
-
-# 35. the wizard offers the persistence disk while it is mounted — impact 6/10
-
-**How it affects things:** the "Keeping your files" page is destructive — the
-pick gets `mkfs.ext4 -L COPPER`'d. Offering the disk that is *currently* the
-session's writable upper turns one absent-minded `ERASE` into wiping the
-filesystem the machine is running from.
-
-**What happened (2026-10-19, during bug 20's verification):** boot 1 formatted
-the spare NVMe. On boot 2 `/init` claimed it and mounted it — the live-boot
-marker read `upper=/dev/nvme0n1`, which `iso/live/init` only writes after the
-mount succeeded — and the wizard's last page *still* listed that same
-`nvme0n1` as a spare disk to erase. The pick was skipped and nothing was
-formatted; every later boot was correct.
-
-**Why it should be impossible:** `disk_in_use()` refuses any disk named by a
-line in `/proc/mounts`, and `/dev/nvme0n1 ... /mnt/upper ext4 ...` should have
-matched it. Either that read saw something else, or the page ran against a view
-of the system without the mount. The original plan was to need one boot that
-prints the wizard's `/proc/mounts` next to its offered list.
-
-**Fix in tree (2026-10-19), without waiting for that boot.** The marker already
-knew the answer: `/init` writes `upper=<disk>` on the same page as `media=`, and
-the wizard was reading only `media=`. `read_boot_marker()` now reads both and
-`is_upper_disk()` refuses that disk outright — a check on the marker cannot miss
-a mounted layer, because the marker is written *after* the mount succeeded. That
-is the authority now; `/proc/mounts` stays as the second line. Whether the
-`/proc/mounts` read is also broken is still unproven, so the bug is not closed.
-
-The automatic-take change made this urgent rather than cosmetic: had the page
-auto-formatted a single candidate while this was open, the mounted upper could
-have been formatted with no `ERASE` and no conversation at all. `tests/persist.sh`
-now covers it — case 7 writes `upper=/dev/sdy` and asserts the disk is not
-offered and nothing is formatted.
-
-**Status:** open (fix in tree 2026-10-19, needs a boot to confirm). Caught by the
-human, not a test — the fixture never mounted the disk it offered, so the old
-gate could not see it.
 
 ---
 
@@ -727,6 +687,19 @@ not: a disk with no label does nothing, and the upper stays in RAM. (Built
 2026-10-11, boot-verified 2026-10-19 — on the verification boots the upper
 was a labelled 20 GB disk.)
 
+**The live-boot marker is the authority on what the upper landed on, not
+`/proc/mounts`.** `iso/live/init` writes `/var/lib/copper/live-boot` with
+`media=` and `upper=` only *after* the overlay mounted, so a non-empty `upper=`
+means a disk is carrying the session and cannot miss it. `read_boot_marker()`
+in the wizard strips the `/dev/` prefix and maps a RAM-only boot's `upper=ram`
+to an empty string, so **`boot_upper_disk[0]` alone is the test** for
+"persistence is already on" — an extra `strcmp(..., "ram")` can never fire, and
+any string the wizard prints back from it needs the `/dev/` prefix added again,
+because what it holds is the bare name. Two boot-facing consequences, both of
+which have now bitten: the disk named there is never a candidate to format
+(bug 35), and a boot where it is set is not a boot that needs the "nothing is
+saved" page (bug 35, second half, 2026-10-20).
+
 **`busybox adduser` and `addgroup` write to the real `/etc/passwd` and
 `/etc/group` regardless of `HOME`, `PWD`, or anything else.** Probing them
 inside a WSL shell **modifies WSL**. Back those files up and restore them in
@@ -896,7 +869,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-44 bugs total: 38 fixed, 5 open, 1 that only looked like one.
+44 bugs total: 39 fixed, 4 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -934,7 +907,7 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
 | bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
 | bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` (pointer boot-verified 2026-10-18; keyboard still silent, PID 1 now names each device) | (fix in tree 2026-10-18) |
-| bug 35 | still open | the wizard offers the persistence disk while it is mounted | (fix in tree 2026-10-19) |
+| bug 35 | farcrowx | the wizard offered the persistence disk while it was mounted, and told a persistent boot "nothing is saved" | (boot-verified 2026-10-20) |
 | bug 36 | dragon | a home is seeded once and never repaired — busybox `cp -a -n` skips an existing directory, so a missing config file could never come back | (fix in tree 2026-10-19; needs a boot) |
 | bug 37 | no fix needed | GNU tar's "Directory renamed before its status could be extracted" on `ingot install` — cosmetic, the payloads are intact | (explained 2026-10-19) |
 | bug 38 | still open | Discord is not in its payload — the first run downloads it silently; diagnosed and reproduced on the artifact | (diagnosed 2026-10-19) |
