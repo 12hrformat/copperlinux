@@ -1192,11 +1192,29 @@ static int offer_persistence(void) {
     if (access(PERSIST_MARKER, R_OK) != 0) return 0;
     read_boot_marker();
 
+    printf("\n");
+    printf("Keeping your files\n");
+
+    /* Persistence that is already on is the common case on every boot after the
+       first one, and it used to print the "nothing is saved" text anyway. The
+       marker names the disk it is using, so when upper= is a real disk there is
+       nothing to offer and nothing to format: say what is true and return.
+       read_boot_marker() already reduces the value to a bare disk name and turns
+       a RAM-only boot's "ram" into an empty string, so a non-empty
+       boot_upper_disk is precisely "a disk is carrying this session".
+       Getting this wrong is not cosmetic -- the old line sent people looking for
+       a problem that did not exist, right after the reboot that turned
+       persistence on. */
+    if (boot_upper_disk[0]) {
+        printf("  Already on: your files are kept on /dev/%s and are still here\n",
+               boot_upper_disk);
+        printf("  after a reboot. Nothing to set up.\n");
+        return 1;
+    }
+
     char disks[PERSIST_MAX_DISKS][PERSIST_NAME];
     int n = list_spare_disks(disks);
 
-    printf("\n");
-    printf("Keeping your files\n");
     if (n == 0) {
         printf("  Copper is running live, so nothing is saved when you reboot, and\n");
         printf("  no spare disk is attached that could change that. Add one (on\n");

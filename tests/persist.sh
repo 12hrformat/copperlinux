@@ -281,13 +281,39 @@ rm -rf "$ROOT/sys/block/sdw"
 # this machine's files, so it is never a candidate -- even when it is the only
 # spare-looking disk there is. This is the bug 35 case, where the disk showed up
 # in the list because /proc/mounts alone did not rule it out.
+#
+# With upper= set to a real disk, persistence is *already on*: this is every
+# boot after the first one. The page must say so and stop, and it must not print
+# the "nothing is saved" text -- that line sent people looking for a problem
+# that did not exist, immediately after the reboot that turned persistence on.
 printf 'media=/dev/sdz1\nupper=/dev/sdy\n' > "$ROOT/var/lib/copper/live-boot"
 run_wizard "Press Enter to continue|"
-if printf '%s' "$out" | grep -q 'no spare disk is attached'; then
-    ok "the disk /init had already attached was not offered"
+if printf '%s' "$out" | grep -q 'Already on'; then
+    ok "a boot with persistence already on says so"
 else
-    bad "the wizard offered the disk that is already the writable layer"
+    bad "the wizard did not report that persistence was already on"
     show
+fi
+if printf '%s' "$out" | grep -q 'nothing is saved'; then
+    bad "the wizard claimed nothing is saved while upper= was /dev/sdy"
+    show
+else
+    ok "no 'nothing is saved' text when persistence was already on"
+fi
+# The marker stores upper= as a device path (/dev/sdy here, /dev/nvme0n1 on the
+# owner's machine), so the page must print it back as one. The rest of the wizard
+# says "/dev/%s" everywhere; a bare "sdy" reads like a name it invented.
+if printf '%s' "$out" | grep -q 'kept on /dev/sdy'; then
+    ok "the disk already in use was named as a device path"
+else
+    bad "the page did not name /dev/sdy as the disk already in use"
+    show
+fi
+if printf '%s' "$out" | grep -q 'Disk to keep files on'; then
+    bad "a disk list was shown when persistence needed nothing"
+    show
+else
+    ok "no disk list when there was nothing left to set up"
 fi
 if [ -s "$ROOT/calls/mkfs" ]; then
     bad "the writable layer disk was formatted: $(cat "$ROOT/calls/mkfs")"
