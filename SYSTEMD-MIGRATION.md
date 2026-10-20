@@ -160,12 +160,20 @@ with three possible causes.
   apt/dpkg stubbed; checks the swap, the wiring, the modes, the power links, and
   that nothing from the build host is left in the tree; and runs the units
   through the `systemd-analyze` parser.
-- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants nine
+- The parse half of that gate ran for real, not skipped: `systemd-analyze` 261
+  was present on the dev box and verified all five units. The **image** carries
+  systemd **255** (what noble ships), so the parse check is a *newer* parser
+  accepting the units — the conservative direction (a key 261 accepts and 255
+  does not would still slip through), and the reason the gate also rejects a key
+  in the wrong section rather than trusting the version. A host with no
+  `systemd-analyze` says `skip` out loud instead of claiming a pass.
+- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants ten
   defects — misplaced key, nonexistent directive, bare glob, no repoint, unwired
-  unit, removed `--console`, busybox power links, 0777 units, leaked build tool —
-  and every one is caught. That suite is what found three real bugs during
-  development, including a `readelf | sed | head` pipeline that aborts under
-  `set -o pipefail` and would have killed a real build.
+  unit, removed `--console`, busybox power links, 0777 units, leaked build tool,
+  and a `tree_hash` blinded to symlinks — and every one is caught. That suite is
+  what found three real bugs during development, including a `readelf | sed |
+  head` pipeline that aborts under `set -o pipefail` and would have killed a
+  real build.
 
 **NOT verified — this is the honest gap:**
 
