@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Ten gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
+# Eleven gates: smoke.sh always; startxfce-gate.sh, charge.sh, account-gate.sh,
 # persist.sh and shutdown-gate.sh need root, because they exercise sockets,
 # staged rootfs trees, the hotfix database, a mount namespace and a private
-# /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh and
-# starthyprland-gate.sh do not -- ingot's install lands in a scratch INGOT_ROOT
-# and its repo is served on localhost, and starthyprland's compositor is a stub
-# under a private home -- so both run unprivileged too. xprobe-gate.sh needs a C
+# /sbin; init-session.sh needs root because it calls setuid. ingot-gate.sh,
+# starthyprland-gate.sh and plymouth-gate.sh do not -- ingot's install lands in
+# a scratch INGOT_ROOT and its repo is served on localhost, starthyprland's
+# compositor is a stub under a private home, and plymouth-gate.sh only reads
+# grub.cfg and copper-init.c -- so all three run unprivileged too.
+# xprobe-gate.sh needs a C
 # compiler and python3, which CI and the build VM have, and skips cleanly where
 # neither exists; starthyprland-gate.sh needs python3 for one case and skips the
-# same way. CI runs this same file with sudo, so a green build there means every
+# same way; plymouth-gate.sh checks options against a real plymouthd when the
+# host has one and skips that part when it does not. CI runs this same file with
+# sudo, so a green build there means every
 # gate ran and none were skipped.
 #
 # This file used to carry known-failure classifications: the CI workflow came
@@ -132,6 +136,25 @@ elif out=$(sh tests/starthyprland-gate.sh 2>&1); then
 else
     record starthyprland-gate.sh bad "a Hyprland launcher check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/plymouth-gate.sh: the splash switches and the daemon's argv ---"
+# Unprivileged and self-contained: it reads grub.cfg and copper-init.c, and
+# only checks options against a real plymouthd when the host happens to have
+# one (a skip, not a failure, when it does not).
+if out=$(sh tests/plymouth-gate.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
+    ns=$(printf '%s\n' "$out" | grep -c '^skip' || true)
+    if [ "$ns" -gt 0 ]; then
+        record plymouth-gate.sh ok "$n checks ($ns skipped: no plymouthd/strings here)"
+    else
+        record plymouth-gate.sh ok "$n checks"
+    fi
+else
+    record plymouth-gate.sh bad "a splash check failed"
+    printf '%s\n' "$out" | grep -E '^FAIL' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
