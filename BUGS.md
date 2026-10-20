@@ -60,30 +60,23 @@ deliberate (see the config facts below: the last `console=` owns
 (noble), not assumed: the strings, the flag handling in `main.c`, and the
 `IGNORE_SERIAL_CONSOLES` path in `ply-device-manager.c` all match.
 
-**Fix written (2026-10-20):** tell Plymouth the serial console is not the
-display, through the kernel argument it already reads for its other switch, and
-through the daemon's own option as well. `iso/boot/grub.cfg`'s normal entry now
-ends
+**Fix (in the tree 2026-10-20, needs a boot):** the serial console is told it is
+not the display, on both sides, so neither one alone has to be trusted.
+`iso/boot/grub.cfg` now passes `plymouth.ignore-serial-consoles` on the splash
+entry, and `splash_spawn()` in `iso/src-init/copper-init.c` passes
+`--ignore-serial-consoles` to `plymouthd` as an argument (both the attach and
+the non-attach path), so the fix does not depend on a command line a booting
+user can edit. `--graphical-boot` exists and was deliberately not used:
+forcing the graphical splash would paper over the cause instead of removing it,
+and would change behaviour on hardware where there is no graphical console at
+all.
 
-    ... quiet splash plymouth.ignore-udev plymouth.ignore-serial-consoles \
-        console=ttyS0,115200 console=tty0
-
-next to `plymouth.ignore-udev`, and `iso/build.sh`'s plymouth-stage comment
-records why. It maps to `PLY_DEVICE_MANAGER_FLAGS_IGNORE_SERIAL_CONSOLES` the
-same way `plymouth.ignore-udev` maps to its flag in `main.c`, and it changes
-only what Plymouth treats as the display — the two `console=` entries are
-untouched and the serial log still fills.
-
-The same switch is also passed as an argument from `splash_spawn()` in
-`iso/src-init/copper-init.c`, on both the attach and the non-attach path, so
-the fix does not depend on a command line a booting user can edit.
-
-**About the `plymouthd` flags — the earlier "not documented" reading was
-wrong, and it was worth checking.** The noble `plymouthd(8)` man page does not
-list them, which is what the first pass went on; `plymouthd --help` does.
-Unpacked from the real `.deb` in the staged version
+**About the `plymouthd` flags — the first pass's "not documented" reading was
+wrong, and checking cost one `apt-get download`.** The noble `plymouthd(8)` man
+page does not list them, which is what that pass went on; `plymouthd --help`
+does. Unpacked from the real `.deb` in the staged version
 (`plymouth 24.004.60-1ubuntu7.2`, the same one `iso/build.sh` stages), the
-option list is:
+option list contains
 
     --mode=<string>                   Mode is one of: boot, shutdown
     --attach-to-session               Redirect console messages from screen to log
@@ -92,37 +85,41 @@ option list is:
                                       console is not a VT
 
 and `plymouth.ignore-serial-consoles` is in the daemon's kernel-switch string
-table beside `plymouth.ignore-udev`, so both spellings that are now in the tree
-are the real ones. The "an option it rejects would kill the splash" worry is
-right, though, and it is why the flag was tested rather than assumed: passing a
-bogus option makes `plymouthd` print that entire list and stop before it starts,
+table beside `plymouth.ignore-udev`, so both spellings now in the tree are the
+real ones. The worry that a rejected option would kill the splash outright is
+right, and it is exactly why the flag was tested instead of assumed: a bogus
+option makes `plymouthd` print that whole usage list and stop before it starts,
 while `--ignore-serial-consoles` is accepted and the daemon walks straight on to
-its next check. That difference — usage dump versus proceeding — is the whole
-evidence, and it comes from the packaged binary, not from upstream's git tree.
+its next check. Usage dump versus proceeding is the whole evidence, and it comes
+from the packaged binary, not from upstream's git tree.
 
-`--graphical-boot` exists too and is deliberately not used: forcing the
-graphical splash papers over the cause instead of removing it.
-
-**A gate reads the disc, so a regression fails the build.** `build_iso()` now
-extracts `/boot/grub/grub.cfg` back off the finished ISO and fails unless the
-splash entry carries `splash`, `plymouth.ignore-udev` and
-`plymouth.ignore-serial-consoles` *and* `tty0` is still the last `console=`
-(bug 7, which the same line governs). This still cannot prove a frame was
-drawn, but it does prove the switches reached the disc, which is the half a
-build is allowed to know.
+**Two gates, because the two halves fail differently.** `build_iso()` extracts
+`/boot/grub/grub.cfg` back **off the finished ISO** and fails the build unless
+the splash entry carries `splash`, `plymouth.ignore-udev` and
+`plymouth.ignore-serial-consoles` *and* `tty0` is still the **last** `console=`
+(bug 7, which the same line governs) — a boot cannot be automated in CI, but the
+bytes on the disc can be read. `tests/plymouth-gate.sh` (new) checks the half a
+diff can get wrong silently: it pulls the `execl("/usr/sbin/plymouthd", ...)`
+argument lists out of `copper-init.c`, asserts the option set is exactly what is
+expected, asserts `--ignore-serial-consoles` is on **all** call forms, and, when
+a real `plymouthd` is on the host, checks every option against its `--help` and
+both kernel switches against its string table (no daemon on the host is a skip,
+not a failure). The gate passes with `fail=1` when the flag is dropped from
+either call form, when the kernel switch is removed, or when the console order
+is swapped back, so it can actually fail.
 
 **Why this entry stays in the list even though the fix is written.** Unlike
 bug 27, this one cannot be closed by a script test: it is a boot-time renderer
-decision, and the only proof is a booted ISO drawing frames. It stays here until
-a boot says so.
+decision, and the only proof is a booted ISO drawing frames — the gates prove
+the switches reached the disc and the daemon accepts them, not that a frame was
+drawn. It stays here until a boot says so.
 
-**Still open because:** the fix is written and gated, but it is not booted yet.
-Verification is a QEMU boot of a remastered ISO (or `-kernel`/`-initrd` with the
-same `-append`), confirming the non-blank sample count jumps towards a full
-frame and changes from frame to frame.
-
-Until a new ISO lands, the splash can be forced by hand at the GRUB menu: edit
-the entry and append `plymouth.ignore-serial-consoles` before booting.
+**Still open because:** the code is in the tree and gated, but no boot has run
+it. Verification is a QEMU boot of a remastered ISO (or `-kernel`/`-initrd`
+with the same `-append`), confirming the non-blank sample count jumps towards a
+full frame and changes from frame to frame. Until that boot happens, the
+splash can still be forced by hand at the GRUB menu by appending
+`plymouth.ignore-serial-consoles` (or `plymouth.graphical`) to the entry.
 
 ---
 
@@ -614,3 +611,413 @@ Like bug 25 it stays listed until that boot, because the failure was a real
 boot's permissions, not something the gate can fully reproduce.
 
 | bug 44 | 12hrformat | a non-root `startxfce` died writing the input config — `: >` is a special builtin, and a failed redirect exits a POSIX shell before the `/tmp` fallback | (fix in tree 2026-10-20) |
+Fixed bugs were removed from the list above per the rules. The lessons they
+cost are preserved below so they don't have to be learned twice. Their full
+records — number, name, who fixed them — are in the tracker at the bottom.
+
+**The desktop as a real user (bugs 19/22/23, boot-verified 2026-10-11).**
+Three separate things had to be true before XFCE painted *and* Firefox ran:
+
+- **The session must not be root.** `spawn_tty`'s child drops to the wizard
+  user before it runs the shell (PID 1 stays root; `sudo` is the way back up).
+  Without it Firefox hit its "running as root in a regular user's session"
+  refusal — the browser was never the bug.
+- **The ISO cannot rewrite the modes it copies.** `grub-mkrescue` invokes
+  xorriso with `-r` (rationalised Rock Ridge), which forces uid/gid 0 and
+  **flattens file modes** — that is what silently ate `sudo`'s setuid bit.
+  Wrapping `xorriso` to rewrite `-r` into `-R`, plus explicit ownership/mode
+  pins for `/usr/bin/sudo`, `/etc/shadow` and `/tmp`, is what keeps them.
+- **A non-root X server must not try to grab a VT.** Xorg calls `setsid()`
+  first and `VT_ACTIVATE` needs `CAP_SYS_TTY_CONFIG`, so a user-owned Xorg dies
+  in `xf86OpenConsole()`. The guard is `if (!xf86Info.ShareVTs)`, so the flag
+  that actually skips the grab is **`-sharevts`** — `-novtswitch` is a
+  different flag and does not skip it. `-keeptty` keeps the controlling
+  terminal the login shell already owns.
+
+**The VMware display (bug 21, boot-verified 2026-10-11).** The
+`*ERROR* vmwgfx seems to be running on an unsupported hypervisor` seen under
+QEMU was QEMU failing VMware's own vendor check, not a driver problem: `vmwgfx`
+is the right driver and it drives the panel on real VMware, where XFCE paints
+and Firefox runs. QEMU can prove a driver *probes*; only the hypervisor the
+driver was written for can prove it *paints*. VirtualBox's `vboxvideo` is still
+untestable here — QEMU has no such display device.
+
+**Why the kconfig assertions exist (a win, kept on purpose):**
+`require_kernel_config` was inverted to *demand* every display driver rather
+than request it. The first run of the new kernel stopped the build with
+`FAIL: kconfig dropped: DRM_VMWARE`. **`DRM_VMWARE` is not a symbol** — the
+real one is `DRM_VMWGFX`. `scripts/config` accepted the wrong name without
+complain, `olddefconfig` dropped it without a word, and the build would have
+gone green with no VMware driver in the image. The check caught a real typo
+in one minute. That is the whole reason the assertions exist.
+
+## Traps that will cost you a day
+
+**Backgrounded test stubs inherit your desktop, and will use it.** WSLg runs
+a real X server on `:0` and exports `DISPLAY=:0` and
+`WAYLAND_DISPLAY=wayland-0`. A backgrounded process that inherits those makes
+WSLg start a notification daemon, which is a popup on the desktop of whoever
+is running the test — it cost two interruptions and a `pkill` before it was
+identified. Any test that backgrounds something must unset `DISPLAY`,
+`WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, `XDG_SESSION_DESKTOP`,
+`XDG_CURRENT_DESKTOP`, `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`
+first, and should use its own scratch directory so it never touches the real
+`/tmp/.X11-unix`.
+
+**A `trap` does not fire when the tool call is killed outright.** An
+interrupted run left a live instance behind, which then collided with the
+next run on the same scratch directory; both were found blocked for eight
+minutes with no children. One scratch directory per run (`mktemp -d`), a lock
+so a second copy refuses rather than races, and a cleanup step you can run by
+hand.
+
+**Two tests sharing one scratch directory will corrupt each other.** Each
+case deletes and recreates the directory, so two copies are always racing on
+whatever the other is halfway through.
+
+**Never write an inline `wsl ... bash -c "..."` with pipes, `||`, `$(...)`
+or `$?`.** PowerShell parses them first and mangles them — `||` is not a
+statement separator, `head` and `wc` are not PowerShell commands, and
+`> /tmp/file` redirects to `C:\tmp\file`, which does not exist. **Write a
+`.sh` file and invoke it.** Every one of these cost a round trip, and the
+failures look like bugs in the script rather than in the shell that ate it.
+
+**`nohup … &` inside `wsl` is not detached.** `wsl` tears the session down
+when the calling command returns and takes the child with it. An `apt-get
+install` launched that way wrote no log at all and installed nothing, while
+appearing to have started. Run long jobs as a background task from the harness
+instead, and verify by asking `pkg-config` whether the library arrived — not
+by whether `apt-get` returned 0.
+
+**`bzImage` is compressed, so `strings` on it lies.** It reports every
+display driver absent, including ones known to be present. The only
+trustworthy evidence about which driver bound is the **guest's own dmesg**. An
+earlier probe was discarded for this reason.
+
+**The kernel's framebuffer message is `fb0`, not `/dev/fb0`.** A grep for the
+path reports a working framebuffer as missing.
+
+**`make O=… defconfig` fails on a dirty source tree and leaves a stub
+`.config` behind.** The message is *"The source tree is not clean, please run
+'make mrproper'"*, and the leftover file is a few hundred bytes. Anything that
+reads symbols out of it will confidently report nonsense. `mrproper` first,
+and check the config is over 1000 lines.
+
+**pkg-config module names are not library file names.** `x11` not `libX11`,
+`epoxy` not `libepoxy`, `xfont2` not `libXfont2`, `pciaccess` not
+`libpciaccess`. Look them up with `pkg-config --list-all` instead of guessing;
+guessing stopped three builds on libraries that were already installed.
+
+**meson options must be read from the project's own `meson_options.txt`.**
+xorg-server 21.x is meson, not autotools, and the option sets differ —
+`-Dfbdev` and `-Dllvm` do not exist, and it is `systemd_logind` with an
+underscore.
+
+**`CC=…` is an environment variable, not a `meson setup` argument.** Passed
+as a trailing flag, meson reads it as a source directory and reports
+`ERROR: Neither source directory 'CC=gcc-13' … contain a build file
+meson.build`, which points at the project rather than at the misplaced flag.
+
+**This network cannot download 4.9 MB in five minutes.** `curl --max-time
+300` failed partway. Use `-C -` to resume, and gate on `tar tf` rather than
+on the transfer appearing to succeed — a truncated tarball extracts halfway
+and then reports a build error against the source.
+
+**Any change to a cache-key file forces the heavy stages to re-run.** The CI
+cache key hashes `iso/build.sh`, `iso/live/init`, `iso/boot/grub.cfg`,
+`iso/rootfs-overlay/**`, `iso/src-init/**`, `iso/firstboot/**`, `src/**` and
+`iso/sudo/**`. `restore-keys` still restores the previous `iso/work/` on an
+unrelated key, so the key is only a hint — what actually keeps a restored tree
+honest is the per-stage stamp. A stage whose inputs moved re-runs even on a
+cache hit (the kernel is the expensive one, ~7 min cold), and a warm
+source/object tree makes the re-run cheap. Batch changes; don't dribble.
+
+**A stage's skip-check and its stamp must name the identical file list — and
+every file the stage installs must be in it.** `stamped_skip` and `stamp_set`
+both hash `cat "$@"`, so if their argument lists differ by even one file the
+stamp can never match and the stage re-runs on every build.
+`build_copper` had exactly that: `stamp_set` hashed three hotfix scripts that
+`stamped_skip` did not, so the stage silently never skipped. That mismatch also
+hid a second gap — the stage installs `iso/startxfce.sh`
+(`install -m 0755 "$ROOT/startxfce.sh" "$TGT/usr/bin/startxfce"`) but *neither*
+list hashed it, so the only reason a launcher edit ever reached the ISO was the
+always-rerun accident. Both lists now carry `startxfce.sh` and all three hotfix
+scripts. When a stamp looks like it is not skipping, diff the two lists first.
+
+**A cached musl toolchain is only usable at the path it was built at.**
+`musl-gcc` is a wrapper that names its specs file and its crt/lib objects by
+**absolute** path, and `$SYS` is `iso/work/sys` under the workspace, whose
+directory is named after the repository. Renaming or transferring the repo
+moves `/home/runner/work/<name>/<name>`, so a restored `musl-gcc` still exists
+and still points at the old path, and cannot link anything: coreutils'
+`configure` then dies with *"C compiler cannot create executables"*, which
+blames coreutils rather than the cache. `build_musl` now compiles a one-line
+program with the cached toolchain and rebuilds it when that fails, instead of
+trusting that the file exists. This was a real red build.
+
+**`xfce4` does not depend on a terminal emulator, and
+`--no-install-recommends` does not pull one.** The gui stage names
+`xfce4-terminal` explicitly. Without it the image has no `*.desktop` carrying
+`Categories=…;TerminalEmulator;`, so clicking "Terminal" runs
+`exo-open --launch TerminalEmulator`, finds no helper, and pops the "choose an
+application" dialog — "nothing is chosen for terminal". The defaults live in
+`iso/rootfs-overlay/etc/xdg/xfce4/helpers.rc` (`TerminalEmulator=xfce4-terminal`,
+`WebBrowser=firefox`). exo reads the system-wide file after the user's own
+`~/.config/xfce4/helpers.rc`; the system file is the one that works here
+because first-boot's skel copy takes only top-level regular files, never a
+nested `~/.config/...`.
+
+**The kernel command line's last `console=` is `/dev/console`.** The single
+most counter-intuitive thing in the whole boot; it produces a fake hang and
+cost the most time. Correct order is `console=ttyS0,115200 console=tty0` —
+register both, screen last.
+
+**`console=ttyS0,115200` on a VM with no serial port is not a no-op.** It
+takes `/dev/console` away from `tty0`. Add the serial port *and* put `tty0`
+last.
+
+**An active serial console hides Plymouth's graphical splash.** Plymouth reads
+`/sys/class/tty/console/active`; when `console=ttyS0,115200 console=tty0`
+names two consoles it concludes a serial console is in charge, forces its text
+"details" splash and never creates a DRM/framebuffer renderer — so the theme is
+never loaded and no frame is ever drawn. The way out is to say the serial
+console is a log and not the display: `plymouth.ignore-serial-consoles` on the
+kernel command line, and/or `--ignore-serial-consoles` as a `plymouthd`
+argument (both spelled that way in the packaged build, checked). See bug 25,
+fixed in the tree 2026-10-20 in `iso/boot/grub.cfg` and `splash_spawn()`.
+
+**The live image has no `/dev/pts` unless the initramfs mounts devpts.** Two
+things break silently: `sudo` dies with `unable to allocate pty`, and nothing
+that needs a real PTY works (the XFCE terminal opens and cannot give its
+shell a pty — vte's openpty fails on a missing `/dev/pts`). Fixed in
+`iso/live/init` (2026-10-10) and owner-confirmed, but nothing in the CI build
+catches pty-regressions because the build never boots.
+
+**The writable layer is RAM unless a disk is labelled `COPPER`.** A
+firefox-class install needs ~570 MB in the writable layer at once; on a 2 GB VM
+the 50% tmpfs cap fits it, but that layer is throwaway. The upper moves to a
+disk only when it carries the ext4 label `COPPER` — the label the wizard writes
+on its last page — and `iso/live/init` falls back to the tmpfs when there is
+none. You'll think "just attach a bigger disk and it fixes itself" — it does
+not: a disk with no label does nothing, and the upper stays in RAM. (Built
+2026-10-11, boot-verified 2026-10-19 — on the verification boots the upper
+was a labelled 20 GB disk.)
+
+**`busybox adduser` and `addgroup` write to the real `/etc/passwd` and
+`/etc/group` regardless of `HOME`, `PWD`, or anything else.** Probing them
+inside a WSL shell **modifies WSL**. Back those files up and restore them in
+a `trap`, or you will leave junk accounts behind. This happened twice here and
+was cleaned up both times.
+
+**Harness / VM facts:**
+
+- copper-sh rejects `2>&1` and `&`: the tokenizer splits them and `parse_line`
+  errors with `only one '>' per command`. Plain commands, at most one of
+  `< > >>`.
+- QEMU's monitor `sendkey` has **no `greater` key** and rejects uppercase
+  names (`shift-D` → `invalid parameter: D`). A typed `>` silently never
+  arrives — this bought a full debug round of "the serial output is empty".
+- The shell runs on tty1; serial carries only init's chatter. Read the guest
+  by screendump + tesseract (installed in the WSL box) instead of redirecting
+  to `/dev/ttyS0`; `diag2-xfce.sh` is the working pattern.
+- **A green CI run does not mean the artifact is correct.** Run
+  `36220249701` was fully green and shipped an ISO built from the previous
+  commit's `init`. Always take the artifact apart: mount it, `gzip -dc` the
+  initrd, decode the cpio, read `/init` back out. Windows shows 8.3 names
+  because the image has Rock Ridge and **no Joliet** — `COPPER_I` is
+  `copper-init`, and that is cosmetic, not a bug.
+
+## Config facts worth not rediscovering
+
+Each of these cost a wrong turn once. All were checked against real sources.
+
+- **busybox's `make defconfig` is not a stock config.** busybox patches kconfig
+  with `const char conf_defname[] = "/dev/null"`
+  (`scripts/kconfig/confdata.c:25`), so "defconfig" means *the Kconfig
+  defaults*. There is no `configs/defconfig` in 1.36.1. Per-applet symbols
+  live in `//config:config SYMBOL` comments inside the `.c` files and in the
+  directory `Config.src` files.
+- `CONFIG_STATIC` is `default n`, so it must be set explicitly — and **after**
+  `make defconfig`, because reassigning a symbol defconfig already answered is
+  silently dropped (first assignment wins). That's what `set_bb_config` is
+  for.
+- **6.12 has no `CONFIG_ETHERNET`.** The driver menu is unconditional under
+  `NET`/`NETDEVICES`. Those are the real gates.
+- In 6.12, `config INET` moved to `net/Kconfig` and `net/ipv4/Makefile`
+  builds `tcp.o`/`udp.o` in `obj-y` unconditionally under `INET`. So
+  `CONFIG_INET=y` (which `x86_64_defconfig` sets) is enough for IPv4.
+- `BLK_DEV_NVME` lives in `drivers/nvme/host/Kconfig` in 6.12. It's
+  `tristate` with **no default**, so the explicit `--enable` in `build.sh`
+  turns it on.
+- `CONFIG_OVERLAY_FS` is also `tristate` with no default. The entire live-root
+  design rests on `build.sh` passing `--enable OVERLAY_FS`.
+- vmxnet3's Kconfig path isn't
+  `drivers/net/ethernet/vmware/Kconfig` in 6.12 and the symbol name couldn't
+  be pinned down. `build.sh` passes **both** `--enable VMXNET3` and
+  `--enable VMWARE_VMXNET3`; kconfig drops whichever doesn't exist.
+  Deliberately not asserted.
+- **In busybox 1.36.1 udhcpc's source is `networking/udhcp/dhcpc.c`,** not
+  `networking/udhcp.c` — the client was split into a directory. `ip` is split
+  too: address parsing is in `networking/libiproute/`.
+- The environment udhcpc exports comes from the DHCP **option** names. The
+  consequence that matters: **`$subnet` is the netmask as a dotted quad**, and
+  `$mask` is the same mask as a decimal uint32. Neither is a prefix length.
+- busybox `ip` *does* accept a dotted mask after the slash: `get_prefix_1`
+  (`networking/libiproute/utils.c`) falls back to parsing it as a netmask. We
+  convert to a prefix length ourselves rather than depending on that.
+- `udhcpc -b` does not exit — after its retries it forks into the background
+  and keeps trying forever. So init can fire it and move on; no `-n` needed.
+- udhcpc does **not** put `PATH` in the lease script's environment, so init
+  has to set it before the exec.
+- busybox installs udhcpc at `/sbin/udhcpc`, `ip`/`ifconfig`/`route` in
+  `/sbin`, `ping` in `/bin`, `wget`/`nslookup` in `/usr/bin`, `switch_root` in
+  `/sbin`. It does **not** install a lease script, which is why we ship one.
+- `wget`'s `https://` can take **two very different paths** depending on what
+  is on the machine, and which one runs decides whether a download succeeds:
+  **(a) the openssl helper** (`FEATURE_WGET_OPENSSL`, `default y`): busybox
+  forks `openssl s_client` and feeds it the sockets — this path verifies
+  certs (unless `--no-check-certificate`) and works against github.com
+  releases; **(b) busybox's internal TLS** (`FEATURE_WGET_HTTPS`, `default
+  y`): used only when the openssl exec fails or wasn't configured — it prints
+  `note: TLS certificate validation not implemented` every time, does **not**
+  verify certificates, and on a faithful 1.36.1 build it hangs against
+  `release-assets.githubusercontent.com` (the GitHub release redirect) while
+  fetching Pages and github.com itself fine. **The ISO ships `openssl` +
+  `ca-certificates` now** (gui stage, since 2026-10-10), so a normal image
+  takes path (a). If you ever see that note on the machine, the openssl exec
+  failed or was dropped, i.e. path (b) — and payload downloads from GitHub
+  releases will never complete.
+- **busybox's `mke2fs` applet cannot make an overlay upper.** busybox 1.36.1
+  creates ext2 only — no `-t`, no journal — and it sets `s_feature_compat` from
+  `EXT2_FEATURE_COMPAT_SUPP` (`util-linux/mkfs_ext2.c` ~516,
+  `include/bb_e2fs_defs.h:526`), which in this version is **0**. So the
+  `EXT2_FEATURE_COMPAT_EXT_ATTR` bit (0x0008) is never set, an ext2 with no
+  xattr support is exactly what overlayfs refuses as an upper, and "just use
+  the busybox applet" silently produces a disk that cannot hold the writable
+  layer. Persistence uses the real `mkfs.ext4` from `e2fsprogs` (gui stage),
+  and the gui stage fails the build if it is missing. Read from the 1.36.1
+  source, not assumed.
+- **busybox `blkid` has no `-s` or `-o`.** It is `blkid [DEVICE]...` and prints
+  one tagged line per device: `/dev/sdb: LABEL="COPPER" UUID="..." TYPE="ext4"`
+  (the `TYPE=` only because `FEATURE_BLKID_TYPE` defaults on). `/init` matches
+  the `LABEL="COPPER"` substring instead of asking for a single field. `findfs
+  LABEL=COPPER` exists too, but a per-device `blkid` keeps the boot log honest
+  about what was probed and skipped.
+- **PID 1 mounts a fresh tmpfs over `/run`, burying anything the initramfs left
+  there.** `mount_if_needed("tmpfs", "/run", "tmpfs")` in `copper-init.c` calls
+  `mount()` unconditionally and only tolerates `EBUSY` — and a second tmpfs over
+  an existing one is a stack, not an error. So markers for later boot stages go
+  on the overlay (the wizard's is `/var/lib/copper/live-boot`), never in `/run`.
+- **musl ships no kernel UAPI headers.** There is no `linux/`, no `asm/`, no
+  `asm-generic/`. Building `libnl` or `wpa_supplicant` static against musl
+  therefore fails in `linux/netlink.h` → `asm/types.h` → not found, and adding
+  only `asm-generic` just moves the error one file along. The `wifi` stage makes
+  a shim directory of symlinks into the host's `linux-libc-dev` (Debian/Ubuntu
+  put `asm/` under the multiarch triple) and passes it with **`-idirafter`**,
+  which is what puts the kernel headers *after* musl's own on the search path
+  instead of in front of them.
+- **`wpa_supplicant`'s kconfig does not find libnl on its own.** `CONFIG_LIBNL32=y`
+  is resolved through pkg-config, so `PKG_CONFIG_PATH` has to point at the
+  prefix libnl was installed into (`$WP/lib/pkgconfig`), and the sources also
+  want `-I$WP/include/libnl3`. Miss it and the error is
+  `Package 'libnl-3.0' not found`, which reads like libnl is absent when only
+  the path is.
+- **`CONFIG_TLS` defaults to `openssl`.** A static musl build then fails at
+  `openssl/opensslv.h`. wpa_supplicant carries its own implementation:
+  `CONFIG_TLS=internal` with `CONFIG_INTERNAL_LIBTOMMATH=y` (its bundled bignum)
+  removes the OpenSSL dependency entirely, which is what the image ships.
+- **A managed wireless interface reports `ARPHRD_ETHER` (1), exactly like a
+  wired NIC.** `/sys/class/net/<if>/type` cannot tell them apart — so the old
+  `first_nonloop_iface()` type test would have handed an unassociated `wlan0` to
+  `udhcpc`. cfg80211 gives each wireless interface a `wireless` subdirectory
+  under its sysfs entry; that directory's presence is the test
+  (`is_wireless()` in `copper-init.c`).
+- **`BRCMFMAC_PCI` does not exist.** The Broadcom PCIe symbol is
+  `BRCMFMAC_PCIE`; requesting the other one is silently dropped, the same trap
+  as `DRM_VMWGFX`. Every symbol now asserted =y for wireless was run through
+  this kernel's `olddefconfig` first, so the assert list contains only names
+  that survived.
+- **Ubuntu's `linux-firmware` is zstd-compressed, every file, as `<name>.zst`.**
+  A kernel without `CONFIG_FW_LOADER_COMPRESS_ZSTD` requests `<name>`, finds
+  nothing, and fails the load with `-ENOENT`. The driver is present, the blob is
+  visible in the image, and the radio still comes up dead — which points at the
+  driver, the interface or the supplicant, and not at a kconfig symbol. The
+  `wifi` stage keeps the compressed names it was shipped with (decompressing on
+  the build host would only inflate the ISO) and asserts the option is `=y`.
+- **`linux-firmware` is a metapackage on noble, not the files.** The `.deb` apt
+  downloads is a 1.8 kB stub that carries no firmware; the blobs arrive as split
+  subpackages (`linux-firmware-intel-wireless`, `linux-firmware-realtek`, and
+  friends). Unpacking only the package named `linux-firmware` leaves the staging
+  tree empty, and the glob that looks right — `linux-firmware_*.deb` — does not
+  match the split names, so the build stops at its own "did not unpack" check
+  with the download sitting right there. Every `.deb` apt fetched is unpacked.
+- **`regulatory.db` is not in `linux-firmware`.** It is its own package,
+  `wireless-regdb`, which recommends nothing and is recommended by nothing, so
+  asking apt for `linux-firmware` alone gives a radio that loads firmware and
+  then has no regdomain. Both are downloaded. It is also the one staged file
+  that is *not* compressed — a small detail that makes a `.zst`-only sweep look
+  complete while skipping it.
+
+**Copper's kernel has no VMware SCSI host driver.** The build asserts
+`BLK_DEV_NVME`, `BLK_DEV_SD`, `ATA_PIIX` and (via defconfig) `SATA_AHCI`, but
+nothing enables `SCSI_MPTSPI`, `SCSI_MPTSAS`, `SCSI_SYM53C8XX` or
+`VMWARE_PVSCSI` — and `MODULES` is disabled, so none can arrive later. A
+VMware disk attached as **SCSI (LSI Logic / LSI SAS / PVSCSI) is invisible to
+the guest**: the wizard lists nothing and /init finds nothing. Add disks as
+**NVMe** (first choice — build-gated) or SATA. Found the hard way during
+bug 20's verification (2026-10-19).
+
+---
+
+# bug tracker
+
+Every bug we ever hit and who killed it. No name = still open.
+44 bugs total: 37 fixed, 6 open, 1 that only looked like one.
+(One open bug, 25, has its fix in the tree and only lacks a boot; the count
+follows the tracker rows, not the tree.)
+
+| bug number | fixed by | what was the bug | commit |
+| --- | --- | --- | --- |
+| bug 1 | farcrowx | overlay dirs were created before the tmpfs hid them | (3ae61c1) |
+| bug 2 | farcrowx | CI shipped the previous commit's init — green run, stale ISO | (d9b1ce1) |
+| bug 3 | farcrowx | $0 is relative after the script cd's, and the stamps ate it | (307d6b9) |
+| bug 4 | farcrowx | rescue check -x followed an absolute symlink into the initramfs | (b7facc7) |
+| bug 5 | farcrowx | build gate -e followed the symlink into the build host | (0cf3fd9) |
+| bug 6 | farcrowx | stale files survived in the cached staging trees | (0cf3fd9) |
+| bug 7 | farcrowx | last console= is /dev/console — serial stole the screen | (971b6e5) |
+| bug 8 | farcrowx | serial log got 0 bytes under quiet | (9750dac) |
+| bug 9 | farcrowx | DHCP discovered into sit0, eth0 never came up | (2601222) |
+| bug 10 | 12hrformat | copper charge/rollback — four defects, each making it dead | (ab6c17f, b811a15) |
+| bug 11 | 12hrformat | GdkPixbuf loaders absent → XFCE crash loop | (6ebc11a) |
+| bug 12 | 12hrformat | icons still failed: mime database + SVG loaders | (12e7c86, 0770d98) |
+| bug 13 | 12hrformat | VMware mouse dead — launcher picked the wrong device | (7df142c, cc1ad9b) |
+| bug 14 | 12hrformat | no /dev/pts — sudo and the terminal died | (9d2705c) |
+| bug 15 | still open | firefox install dies of ENOSPC | (2026-10-10) |
+| bug 16 | 12hrformat | payload downloads hung — busybox internal TLS | (99515d1) |
+| bug 17 | 12hrformat | startxfce false-started on a dead server / missing XFCE | (1bf9a4f) |
+| bug 18 | still open | `sudo shutdown` / `sudo reboot` do nothing |  |
+| bug 19 | 12hrformat | the desktop session runs as root — firefox refused to start | (711fcb9) |
+| bug 20 | 12hrformat | persistence isn't built — the writable layer is RAM | (boot-verified 2026-10-19) |
+| bug 21 | 12hrformat | VMware framebuffer unproven — real VMware boot paints XFCE | (boot-verified 2026-10-11) |
+| bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
+| bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
+| bug 24 | farcrowx, dragon | startxfce reuses a dead display when /tmp persists | (boot-verified 2026-10-19) |
+| bug 25 | fix in tree 2026-10-20, needs a boot | plymouth never draws a frame — serial console forces the text splash |  |
+| bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16, completed 2026-10-19) |
+| bug 27 | farcrowx | `ingot update` deleted a package it then failed to reinstall | (fix in tree 2026-10-20, gate-tested) |
+| bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
+| bug 29 | 12hrformat, farcrowx | `sudo reboot` / `sudo shutdown` do nothing under busybox init | (2026-10-17, completed 2026-10-18) |
+| bug 30 | 12hrformat | Hyprland had no keyboard or pointer — libinput wants udev records nothing wrote | (2026-10-17) |
+| bug 31 | 12hrformat | Ctrl-Alt-Del did nothing — PID 1 ignored SIGINT | (2026-10-17) |
+| bug 32 | 12hrformat | the libudev-record fix wrote nothing — seeder never made its own directory | (2026-10-18) |
+| bug 33 | farcrowx | the power path fails silently — `shutdown` ate unknown args, PID 1 `_exit`ed on a failed reboot(2) | (2026-10-18) |
+| bug 34 | still open | the libudev records name no device type — libinput drops every device whose only tag is `ID_INPUT` (pointer boot-verified 2026-10-18; keyboard still silent, PID 1 now names each device) | (fix in tree 2026-10-18) |
+| bug 35 | still open | the wizard offers the persistence disk while it is mounted | (fix in tree 2026-10-19) |
+| bug 36 | dragon | a home is seeded once and never repaired — busybox `cp -a -n` skips an existing directory, so a missing config file could never come back | (fix in tree 2026-10-19; needs a boot) |
+| bug 37 | no fix needed | GNU tar's "Directory renamed before its status could be extracted" on `ingot install` — cosmetic, the payloads are intact | (explained 2026-10-19) |
+| bug 38 | still open | Discord is not in its payload — the first run downloads it silently; diagnosed and reproduced on the artifact | (diagnosed 2026-10-19) |
+| bug 39 | dragon | the published `index.json` was missing its closing brace — the generator wrote the entries and stopped | (fix in tree 2026-10-19) |
+| bug 40 | dragon | the rootfs empty-file sweep deleted the Hyprland skel's Lua stubs — bug 26 exempted the gate, not the sweep | (fix in tree 2026-10-19) |
+| bug 41 | 12hrformat | fastfetch shows the Ubuntu logo — the image's os-release is base-files', and the owner's config was never in the image | (fix in tree 2026-10-19) |
+| bug 42 | 12hrformat | `sudo startxfce` leaves a root desktop — the launcher had no inverse of init's drop | (fix in tree 2026-10-19) |
+| bug 43 | 12hrformat | Discord installs and opens nothing — its Chromium sandbox needs a root-owned setuid `chrome-sandbox`, and the app is unpacked into the user's own home | (payload republished 2026-10-19) |
