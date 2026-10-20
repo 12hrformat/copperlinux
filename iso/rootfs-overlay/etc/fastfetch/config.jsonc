@@ -1,108 +1,98 @@
-// Copper's default fastfetch config. It is the owner's own config file,
-// pointing at Copper's logo, and it is what `fastfetch` with no arguments
-// reads -- /etc/fastfetch/ is the last of the search paths, after the user's
-// ~/.config/fastfetch/, so anyone can still override it.
-//
-// The logo is a TEXT file (/usr/share/copper/fastfetch-logo.txt: half blocks
-// and colors) rather than the copper.png sitting next to it, because that PNG
-// cannot be drawn here. fastfetch renders image logos through kitty, iTerm,
-// sixel or libchafa, and xfce4-terminal offers none of them -- measured on the
-// payload's own fastfetch build, an image logo in this terminal prints as
-// nothing useful at best. The same picture is therefore rendered at build time
-// (chafa) into what a terminal can actually print, and the PNG stays in
-// /usr/share/copper/ for terminals that can.
+
 {
+    "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+
+    // Copper Linux — default Fastfetch configuration
+    // Logo generated from Copper's own artwork for terminal compatibility.
+
     "logo": {
         "source": "/usr/share/copper/fastfetch-logo.txt",
         "type": "file",
         "padding": {
             "top": 1,
             "right": 4,
-            "left": 3
+            "left": 2
         }
     },
+
     "display": {
-        "separator": " "
+        "separator": "  "
     },
+
     "modules": [
         {
-            "key": "╭───────────╮",
-            "type": "custom"
-        },
-        {
-            "key": "│ {#34} user    {#keys}│",
             "type": "title",
-            "format": "{user-name}"
+            "format": "{#34}{user-name}{#keys}@{#34}{host-name}{#reset}"
         },
         {
-            "key": "│ {#34}󰇅 hname   {#keys}│",
-            "type": "title",
-            "format": "{host-name}"
+            "type": "custom",
+            "format": "{#34}──────────────────────────────{#reset}"
         },
         {
-            "condition": {
-                "!system": "macOS"
-            },
-            "type": "disk",
-            "keyIcon": "",
-            "key": "│{#34} {icon} os age {#keys} │",
-            "folders": "/",
-            "format": "{create-time:10} [{days} days ({years} years)]"
+            "type": "os",
+            "key": "  OS"
         },
         {
-            "key": "│ {#34}󰅐 uptime  {#keys}│",
-            "type": "uptime"
+            "type": "host",
+            "key": "  Host"
         },
         {
-            "key": "│ {#34}{icon} distro  {#keys}│",
-            "type": "os"
+            "type": "kernel",
+            "key": "  Kernel"
         },
         {
-            "key": "│ {#34} kernel  {#keys}│",
-            "type": "kernel"
+            "type": "uptime",
+            "key": "  Uptime"
         },
         {
-            "key": "│ {#34} wm      {#keys}│",
-            "type": "wm"
+            "type": "packages",
+            "key": "  Packages"
         },
         {
-            "key": "│ {#34}󰇄 desktop {#keys}│",
-            "type": "de"
+            "type": "shell",
+            "key": "  Shell"
         },
         {
-            "key": "│ {#34} term    {#keys}│",
-            "type": "terminal"
+            "type": "display",
+            "key": "  Display"
         },
         {
-            "key": "│ {#34} shell   {#keys}│",
-            "type": "shell"
+            "type": "de",
+            "key": "  Desktop"
         },
         {
-            "key": "│ {#34}󰍛 cpu     {#keys}│",
+            "type": "wm",
+            "key": "  WM"
+        },
+        {
+            "type": "terminal",
+            "key": "  Terminal"
+        },
+        {
             "type": "cpu",
+            "key": "  CPU",
             "showPeCoreCount": true
         },
         {
-            "key": "│ {#34}󰉉 disk    {#keys}│",
+            "type": "gpu",
+            "key": "  GPU"
+        },
+        {
+            "type": "memory",
+            "key": "  Memory"
+        },
+        {
             "type": "disk",
+            "key": "  Disk",
             "folders": "/"
         },
         {
-            "key": "│ {#34} memory  {#keys}│",
-            "type": "memory"
+            "type": "custom",
+            "format": "{#34}──────────────────────────────{#reset}"
         },
         {
-            "key": "├───────────┤",
-            "type": "custom"
-        },
-        {
-            "key": "│ {#34} colors  {#keys}│",
             "type": "colors",
             "symbol": "circle"
-        },
-        {
-            "key": "╰───────────╯",
-            "type": "custom"
         }
     ]
 }
