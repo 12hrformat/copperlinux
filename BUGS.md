@@ -30,98 +30,6 @@ free), so the ENOSPC ceiling should be gone. The stopgap stands until
 
 ---
 
-# 25. the boot splash never draws a frame — impact 3/10
-
-**How it affects things:** the Copper boot splash does not appear. A real boot
-shows the built-in Plymouth text "details" screen at most, never the 150
-frames. Nothing else breaks — the boot, the session and XFCE are all
-unaffected — so this is cosmetic, but the feature is 100% absent.
-
-**What happens:** a real boot of the shipped ISO showed no frames (2026-10-14).
-Reproduced headlessly in QEMU against the exact built artifact: the display
-switches to graphics at ~20 s, then stays essentially blank — ~60 non-blank
-samples out of 10 556 over 230+ s, a few hundred pixels of small centred text.
-A rendered Copper frame at that resolution would light ~9 400 pixels per
-sample. Nothing was ever drawn.
-
-**Root cause:** the command line ends `console=ttyS0,115200 console=tty0`, so
-the kernel reports **two** active consoles in
-`/sys/class/tty/console/active`. Plymouth's device manager
-(`ply-device-manager.c`) sees an active console that is not the local one,
-sets `serial_consoles_detected`, `create_devices_from_terminals()` then
-succeeds and it **never creates a renderer**. `main.c` sets
-`should_force_details`, `plymouth_should_show_default_splash()` returns false,
-and Plymouth runs `show_detailed_splash()` — its built-in text splash — so the
-`copper` theme and its frames are never loaded. The serial console itself is
-deliberate (see the config facts below: the last `console=` owns
-`/dev/console`, so `tty0` must stay last), so it cannot simply be removed.
-
-**Diagnosed against the exact packaged build** `plymouth 24.004.60-1ubuntu7.2`
-(noble), not assumed: the strings, the flag handling in `main.c`, and the
-`IGNORE_SERIAL_CONSOLES` path in `ply-device-manager.c` all match.
-
-**Fix (in the tree 2026-10-20, needs a boot):** the serial console is told it is
-not the display, on both sides, so neither one alone has to be trusted.
-`iso/boot/grub.cfg` now passes `plymouth.ignore-serial-consoles` on the splash
-entry, and `splash_spawn()` in `iso/src-init/copper-init.c` passes
-`--ignore-serial-consoles` to `plymouthd` as an argument (both the attach and
-the non-attach path), so the fix does not depend on a command line a booting
-user can edit. `--graphical-boot` exists and was deliberately not used:
-forcing the graphical splash would paper over the cause instead of removing it,
-and would change behaviour on hardware where there is no graphical console at
-all.
-
-**About the `plymouthd` flags — the first pass's "not documented" reading was
-wrong, and checking cost one `apt-get download`.** The noble `plymouthd(8)` man
-page does not list them, which is what that pass went on; `plymouthd --help`
-does. Unpacked from the real `.deb` in the staged version
-(`plymouth 24.004.60-1ubuntu7.2`, the same one `iso/build.sh` stages), the
-option list contains
-
-    --mode=<string>                   Mode is one of: boot, shutdown
-    --attach-to-session               Redirect console messages from screen to log
-    --ignore-serial-consoles          Ignore serial consoles
-    --graphical-boot                  Use graphical splashes even if the kernel
-                                      console is not a VT
-
-and `plymouth.ignore-serial-consoles` is in the daemon's kernel-switch string
-table beside `plymouth.ignore-udev`, so both spellings now in the tree are the
-real ones. The worry that a rejected option would kill the splash outright is
-right, and it is exactly why the flag was tested instead of assumed: a bogus
-option makes `plymouthd` print that whole usage list and stop before it starts,
-while `--ignore-serial-consoles` is accepted and the daemon walks straight on to
-its next check. Usage dump versus proceeding is the whole evidence, and it comes
-from the packaged binary, not from upstream's git tree.
-
-**Two gates, because the two halves fail differently.** `build_iso()` extracts
-`/boot/grub/grub.cfg` back **off the finished ISO** and fails the build unless
-the splash entry carries `splash`, `plymouth.ignore-udev` and
-`plymouth.ignore-serial-consoles` *and* `tty0` is still the **last** `console=`
-(bug 7, which the same line governs) — a boot cannot be automated in CI, but the
-bytes on the disc can be read. `tests/plymouth-gate.sh` (new) checks the half a
-diff can get wrong silently: it pulls the `execl("/usr/sbin/plymouthd", ...)`
-argument lists out of `copper-init.c`, asserts the option set is exactly what is
-expected, asserts `--ignore-serial-consoles` is on **all** call forms, and, when
-a real `plymouthd` is on the host, checks every option against its `--help` and
-both kernel switches against its string table (no daemon on the host is a skip,
-not a failure). The gate passes with `fail=1` when the flag is dropped from
-either call form, when the kernel switch is removed, or when the console order
-is swapped back, so it can actually fail.
-
-**Why this entry stays in the list even though the fix is written.** Unlike
-bug 27, this one cannot be closed by a script test: it is a boot-time renderer
-decision, and the only proof is a booted ISO drawing frames — the gates prove
-the switches reached the disc and the daemon accepts them, not that a frame was
-drawn. It stays here until a boot says so.
-
-**Still open because:** the code is in the tree and gated, but no boot has run
-it. Verification is a QEMU boot of a remastered ISO (or `-kernel`/`-initrd`
-with the same `-append`), confirming the non-blank sample count jumps towards a
-full frame and changes from frame to frame. Until that boot happens, the
-splash can still be forced by hand at the GRUB menu by appending
-`plymouth.ignore-serial-consoles` (or `plymouth.graphical`) to the entry.
-
----
 
 # 28. `ingot` packages installed a binary you could not invoke by name — impact 8/10
 
@@ -783,8 +691,24 @@ names two consoles it concludes a serial console is in charge, forces its text
 never loaded and no frame is ever drawn. The way out is to say the serial
 console is a log and not the display: `plymouth.ignore-serial-consoles` on the
 kernel command line, and/or `--ignore-serial-consoles` as a `plymouthd`
-argument (both spelled that way in the packaged build, checked). See bug 25,
-fixed in the tree 2026-10-20 in `iso/boot/grub.cfg` and `splash_spawn()`.
+argument (both spelled that way in the packaged build, checked). Both are now
+passed — `iso/boot/grub.cfg` carries the switch and `splash_spawn()` passes the
+argument, so the fix does not rest on a command line a booting user can edit.
+Bug 25, fixed and boot-verified 2026-10-20.
+
+Two things about that are worth not relearning. The noble `plymouthd(8)` man
+page does not document `--ignore-serial-consoles` or `--graphical-boot`, but
+`plymouthd --help` lists both; a flag the daemon does not know makes it print
+that whole usage list and exit instead of starting, so a silent argv guess would
+have killed the splash outright. And `--graphical-boot`, which the option list
+also offers, was deliberately left unused: it forces the graphical splash rather
+than removing the thing that was suppressing it, which papers over the cause and
+changes behaviour on a box with no graphical console.
+
+`tests/plymouth-gate.sh` holds the argv and the kernel line still (it fails when
+the flag is dropped from either call form, when the switch is removed, or when
+the `console=` order is flipped back), and `build_iso()` reads `/boot/grub/grub.cfg`
+back off the finished ISO for the same reason.
 
 **The live image has no `/dev/pts` unless the initramfs mounts devpts.** Two
 things break silently: `sudo` dies with `unable to allocate pty`, and nothing
@@ -972,9 +896,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-44 bugs total: 37 fixed, 6 open, 1 that only looked like one.
-(One open bug, 25, has its fix in the tree and only lacks a boot; the count
-follows the tracker rows, not the tree.)
+44 bugs total: 38 fixed, 5 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -1002,7 +924,7 @@ follows the tracker rows, not the tree.)
 | bug 22 | 12hrformat | ISO rationalised Rock Ridge flattened modes — sudo lost setuid | (e934a12, 553528f) |
 | bug 23 | 12hrformat | a non-root X server dies grabbing the VT — `-novtswitch` was the wrong flag | (131b86d) |
 | bug 24 | farcrowx, dragon | startxfce reuses a dead display when /tmp persists | (boot-verified 2026-10-19) |
-| bug 25 | fix in tree 2026-10-20, needs a boot | plymouth never draws a frame — serial console forces the text splash |  |
+| bug 25 | 12hrformat, farcrowx | plymouth never drew a frame — a second `console=` made plymouthd force the text splash and build no renderer | (fix in tree 2026-10-20; boot-verified by the owner the same day) |
 | bug 26 | dragon | the empty-file gate rejected the Hyprland skel's intentional zero-byte files | (2026-10-16, completed 2026-10-19) |
 | bug 27 | farcrowx | `ingot update` deleted a package it then failed to reinstall | (fix in tree 2026-10-20, gate-tested) |
 | bug 28 | 12hrformat | payloads installed a binary you could not invoke by name | (2026-10-16) |
