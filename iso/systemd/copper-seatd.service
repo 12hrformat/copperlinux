@@ -1,0 +1,36 @@
+# Copper Linux — the seat daemon.
+#
+# The under-systemd home for what copper-init's start_seatd() does: run
+# /usr/bin/seatd -g _seatd, which is what starthyprland then finds on
+# /run/seatd.sock. The migration document's eventual answer is logind, but
+# retiring seatd is a separate step: Hyprland's seat path is tested as-is and
+# a seat swap and a PID-1 swap in the same boot would be two suspects for one
+# dark screen.
+#
+# seatd must not run as root with a root group: -g _seatd creates the socket
+# with that group, and the wizard puts the session user into _seatd so the
+# user's own compositor can open it without root. copper-init.c did this with
+# addgroup when the marker existed; under systemd the wizard still does it
+# (copper-firstboot), and this unit only has to start the daemon.
+#
+# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
+[Unit]
+Description=Copper seat daemon (seatd)
+Documentation=man:seatd(1)
+After=systemd-udev-settle.service
+Before=copper-console.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/seatd -g _seatd
+# A daemon, not a job: it runs for the life of the machine.
+Restart=on-failure
+RuntimeDirectory=seatd
+# seatd creates /run/seatd.sock itself with the _seatd group. There is no
+# socket unit here on purpose: socket activation would mean systemd binds the
+# socket and hands it over, and seatd's own bind is the path starthyprland
+# already tests. A socket unit would also make "seatd is not running" look
+# like "the seat is up", because the socket file would still exist.
+
+[Install]
+WantedBy=copper.target

@@ -1,0 +1,46 @@
+# Copper Linux — one-shot DHCP client for the wired interface.
+#
+# This is the busybox udhcpc that copper-init used to launch, as a unit: same
+# binary, same lease script, same pid file location. The migration is moving
+# PID 1, not replacing the network stack, and systemd-networkd would be a
+# second change riding along with the first. When there are two things wrong
+# on a booted machine and both are new, neither is easy to find. networkd is
+# a later step (SYSTEMD-MIGRATION.md, "not in this phase").
+#
+# Type=simple and the binary's own -b: udhcpc runs in the foreground, obtains
+# a lease, then daemonises itself with -b and leaves a short-lived parent.
+# systemd tracks the parent, and once it exits the unit is "dead" -- which is
+# correct for a one-shot lease, and is why there is no Restart= here. A lease
+# that later expires is udhcpc's own business (it re-acquires), not systemd's.
+#
+# After=network.target is not enough on its own -- nothing else defines
+# network.target meaningfully in this image -- so the unit also waits for udev
+# to have settled the interfaces, which is what makes "first non-loopback
+# interface" a stable answer.
+#
+# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
+[Unit]
+Description=Copper DHCP client (busybox udhcpc)
+Documentation=man:udhcpc(1)
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+Before=copper-console.service
+
+[Service]
+Type=simple
+# The interface list comes from /sys, and the applet is in /sbin. PATH matters:
+# udhcpc passes its environment to the lease script and never sets PATH
+# itself, and the script runs ip(8) (copper-init.c's start_dhcp says the same
+# thing, for the same reason).
+Environment=PATH=/sbin:/usr/sbin:/bin:/usr/bin
+# -i eth0 is deliberately literal. systemd's Predictable Network Interface
+# Names would rename the VMware NIC to ens33, and the console's own
+# documentation, the DHCP pid file and every command a user is told to type
+# all say eth0. 99-default.link (staged by build_systemd) keeps the kernel's
+# names, so eth0 is what a Copper machine has.
+ExecStart=/sbin/udhcpc -i eth0 -b -p /run/udhcpc.eth0.pid
+# Nothing to stop: udhcpc's own lifetime is the lease's.
+RemainAfterExit=no
+
+[Install]
+WantedBy=copper.target

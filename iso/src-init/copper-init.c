@@ -1231,7 +1231,187 @@ static void splash_stop(void) {
     g_splash_pid = -1;
 }
 
-int main(void) {
+/* Set by --console: something else is PID 1 (systemd, once Copper makes that
+   swap), and the half of this file that starts daemons is then somebody
+   else's job -- the units own the daemons, this file owns only the console.
+   see console_main(). */
+static int g_console_only = 0;
+
+/* The wizard, the session user, and the shell that waits for them.
+
+   Everything from "is the wizard done?" down to the loop that respawns the
+   session. Shared by both entry points: PID 1 (main), and a service under
+   another init (--console). Nothing in here mounts anything, installs a
+   signal handler or waits on a global child, so it is safe to reach from
+   either. */
+static void run_session(void) {
+    struct stat st_done;
+    if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
+        pid_t wiz = fork();
+        if (wiz == 0) {
+            /* The wizard needs a controlling terminal of its own. getpass()
+               reads from /dev/tty rather than stdin, so without a session and
+               an acquired tty it cannot open /dev/tty at all and the password
+               questions come back unusable. Same treatment spawn_tty() gives
+               the shell, pointed at /dev/console because that is where the
+               wizard's stdout already goes -- except under --console, where
+               the service's stdin already IS the console the user is looking
+               at (the unit pins TTYPath=/dev/tty1) and /dev/console may well
+               be a serial port instead. */
+            setsid();
+            int cfd = g_console_only ? dup(0) : open("/dev/console", O_RDWR);
+            if (cfd >= 0) {
+                ioctl(cfd, TIOCSCTTY, 0);
+                if (cfd > 2) close(cfd);
+            }
+            execl("/usr/bin/copper-firstboot", "copper-firstboot",
+                  (char *)NULL);
+            _exit(1);
+        }
+        int wst;
+        waitpid(wiz, &wst, 0);
+    }
+
+/* The session user, and where the shell starts.
+
+       This has to happen after the wizard, not before: on a first boot the
+       done-marker does not exist yet, so reading it any earlier finds nothing.
+       /etc/copper-firstboot.done holds the username on its first line, written
+       by the wizard as it finishes. Resolving it here means one read, used
+       both to pick the working directory and to drop the shell's privileges
+       in spawn_tty() below.
+
+       Dropping someone at / is worth avoiding: that is the session account
+       sitting next to /boot, /etc and the block devices. The account is no
+       longer root, so this is smaller than it once was, but the working
+       directory still should not be the root of the filesystem. */
+    session_from_marker("/etc/copper-firstboot.done", &g_session);
+    if (g_session.ok) {
+        /* Only adopt the home if it is a real, enterable directory: a stale
+           marker left by a half-finished wizard must not put us somewhere
+           that does not exist. The drop does not depend on this -- the
+           account is real either way, and cwd is not the shell's identity. */
+        if (access(g_session.home, X_OK) == 0 && chdir(g_session.home) == 0) {
+            setenv("HOME", g_session.home, 1);
+            setenv("USER", g_session.name, 1);
+            setenv("LOGNAME", g_session.name, 1);
+        } else {
+            printf("copper: no home directory at %s -- staying in /\n",
+                   g_session.home);
+        }
+    }
+
+    /* The shell.
+
+       There is no automatic desktop. The desktop is XFCE, and XFCE is something
+       the user starts with `startxfce` at the prompt below rather than something
+       boot hands them: the X stack is not in this image yet, so an automatic
+       start either works or leaves a blank screen, and neither is worth it to
+       someone who is about to type startxfce anyway. A shell in front of it also
+       means a failure in the X stack costs a shell rather than the machine.
+
+       This also removes the whole reason the desktop used to have a kernel
+       command line switch. Driving the VGA into a graphics mode is irreversible
+       from the text console: on a machine whose framebuffer it cannot drive there
+       is no way back, because the shell exists but there is no longer a screen to
+       show it on. Xorg takes the display through KMS and leaves a working console
+       behind, so there is nothing to switch away from. */
+
+    say("type %s",
+        chose_hyprland("/etc/copper-desktop")
+            ? "starthyprland for Hyprland (or startxfce for XFCE)"
+            : "startxfce for XFCE (or starthyprland for Hyprland)");
+
+    /* The seat, before the shell: Hyprland needs it the moment starthyprland
+       runs, and starting it here means the user never waits on it. Under
+       --console there is a unit for that (copper-seatd.service) and it is
+       ordered before this service, so starting a second seatd here would only
+       be a second process failing to bind the same socket. */
+    if (!g_console_only)
+        start_seatd();
+
+    /* Exactly one session at a time. Keep the pid so the reaper below can wait
+       on this specific child instead of on any child: udhcpc is our child too,
+       and `udhcpc -b` leaves a short-lived parent behind when it daemonises.
+
+       waitpid(-1) would return on that exit and start a second copper-sh on the
+       same tty, so two shells fought over stdin -- typing came out garbled and
+       the banner printed twice. */
+    for (;;) {
+        /* The libudev records, before the shell for the same reason the seat
+           is: the compositor needs them the moment starthyprland runs. Every
+           pass, not just the first, so a session that logs out and back in --
+           or a keyboard that only showed up later -- still gets its records.
+           /run/udev is ours to make; there is no daemon to have made it, and
+           the seeder makes the data/ directory under it.
+
+           Skipped under --console, where systemd-udevd owns /run/udev and
+           writes real records into it. Seeding here would put our guesses on
+           top of the daemon's own answer, and a stale hand-written record is
+           worse for libinput than no record at all. */
+        if (!g_console_only) {
+            mkdir("/run/udev", 0755);
+            int typed = 0;
+            int seeded = seed_udev_input_db("/sys/class/input",
+                                            "/run/udev/data", &typed);
+            if (seeded > 0) {
+                say("input: wrote %d libudev record(s), %d naming a device type",
+                    seeded, typed);
+                /* A record with no type in it is a record libinput will not use,
+                   and the session that follows looks like a working one: seat,
+                   config and DRM all fine, with a pointer that does not move. Say
+                   so here, where the only evidence is. */
+                if (typed == 0)
+                    say("input: none names a type, so libinput will ignore every device");
+            } else {
+                say("input: no /sys/class/input/event* node to seed yet");
+            }
+        }
+        grant_devices(&g_session);
+        prepare_session_dirs(&g_session);
+        pid_t session = spawn_tty(1);
+        int wst;
+        /* EINTR, not a bare wait: the power handler in main() returns when
+           reboot(2) fails, and a returning handler leaves the syscall it
+           interrupted with EINTR. Read as "the session ended" that would
+           spawn a second copper-sh on the same tty -- the two-shells bug
+           described above -- so retry on EINTR and only treat a real reap as
+           the session's end.
+           updated by farcrowx, bug 33, iso/src-init/copper-init.c (main loop) */
+        if (session > 0)
+            while (waitpid(session, &wst, 0) < 0 && errno == EINTR)
+                ;
+    }
+}
+
+/* --console: the tty1 half of this file, run as a service under another init.
+
+   This is the systemd entry point, and it is deliberately almost empty.
+   Everything a real PID 1 does is left to the init that is actually PID 1:
+
+     - mounting /proc, /sys, /dev and /run   -> already done before switch_root
+     - the power signal handlers             -> systemd's job; SIGTERM on a
+                                                service must mean "stop", not
+                                                "reboot the machine from under
+                                                the shutdown that asked"
+     - hostname, DHCP, seatd, dbus, polkit    -> units (copper-*.service)
+     - reaping orphans                        -> systemd reaps
+
+   What is left is exactly what the console needs: a PATH, the wizard, the
+   session user and the shell. The unit orders this after udevd and seatd and
+   pins TTYPath=/dev/tty1, which is the tty spawn_tty() below opens. */
+static int console_main(void) {
+    g_console_only = 1;
+    setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+           1);
+    run_session();
+    return 0;                        /* never reached */
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--console") == 0)
+        return console_main();
+
     console_stdio();
 
     /* PATH, set once, here, before anything is forked.
@@ -1322,127 +1502,11 @@ int main(void) {
        VT back into text mode. */
     splash_stop();
 
-    struct stat st_done;
-    if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
-        pid_t wiz = fork();
-        if (wiz == 0) {
-            /* The wizard needs a controlling terminal of its own. getpass()
-               reads from /dev/tty rather than stdin, so without a session and
-               an acquired tty it cannot open /dev/tty at all and the password
-               questions come back unusable. Same treatment spawn_tty() gives
-               the shell, pointed at /dev/console because that is where the
-               wizard's stdout already goes. */
-            setsid();
-            int cfd = open("/dev/console", O_RDWR);
-            if (cfd >= 0) {
-                ioctl(cfd, TIOCSCTTY, 0);
-                if (cfd > 2) close(cfd);
-            }
-            execl("/usr/bin/copper-firstboot", "copper-firstboot",
-                  (char *)NULL);
-            _exit(1);
-        }
-        int wst;
-        waitpid(wiz, &wst, 0);
-    }
-
-/* The session user, and where the shell starts.
-
-       This has to happen after the wizard, not before: on a first boot the
-       done-marker does not exist yet, so reading it any earlier finds nothing.
-       /etc/copper-firstboot.done holds the username on its first line, written
-       by the wizard as it finishes. Resolving it here means one read, used
-       both to pick the working directory and to drop the shell's privileges
-       in spawn_tty() below.
-
-       Dropping someone at / is worth avoiding: that is the session account
-       sitting next to /boot, /etc and the block devices. The account is no
-       longer root, so this is smaller than it once was, but the working
-       directory still should not be the root of the filesystem. */
-    session_from_marker("/etc/copper-firstboot.done", &g_session);
-    if (g_session.ok) {
-        /* Only adopt the home if it is a real, enterable directory: a stale
-           marker left by a half-finished wizard must not put us somewhere
-           that does not exist. The drop does not depend on this -- the
-           account is real either way, and cwd is not the shell's identity. */
-        if (access(g_session.home, X_OK) == 0 && chdir(g_session.home) == 0) {
-            setenv("HOME", g_session.home, 1);
-            setenv("USER", g_session.name, 1);
-            setenv("LOGNAME", g_session.name, 1);
-        } else {
-            printf("copper: no home directory at %s -- staying in /\n",
-                   g_session.home);
-        }
-    }
-
-    /* The shell.
-
-       There is no automatic desktop. The desktop is XFCE, and XFCE is something
-       the user starts with `startxfce` at the prompt below rather than something
-       boot hands them: the X stack is not in this image yet, so an automatic
-       start either works or leaves a blank screen, and neither is worth it to
-       someone who is about to type startxfce anyway. A shell in front of it also
-       means a failure in the X stack costs a shell rather than the machine.
-
-       This also removes the whole reason the desktop used to have a kernel
-       command line switch. Driving the VGA into a graphics mode is irreversible
-       from the text console: on a machine whose framebuffer it cannot drive there
-       is no way back, because the shell exists but there is no longer a screen to
-       show it on. Xorg takes the display through KMS and leaves a working console
-       behind, so there is nothing to switch away from. */
-
-    say("type %s",
-        chose_hyprland("/etc/copper-desktop")
-            ? "starthyprland for Hyprland (or startxfce for XFCE)"
-            : "startxfce for XFCE (or starthyprland for Hyprland)");
-
-    /* The seat, before the shell: Hyprland needs it the moment starthyprland
-       runs, and starting it here means the user never waits on it. */
-    start_seatd();
-
-    /* Exactly one session at a time. Keep the pid so the reaper below can wait
-       on this specific child instead of on any child: udhcpc is our child too,
-       and `udhcpc -b` leaves a short-lived parent behind when it daemonises.
-
-       waitpid(-1) would return on that exit and start a second copper-sh on the
-       same tty, so two shells fought over stdin -- typing came out garbled and
-       the banner printed twice. */
-    for (;;) {
-        /* The libudev records, before the shell for the same reason the seat
-           is: the compositor needs them the moment starthyprland runs. Every
-           pass, not just the first, so a session that logs out and back in --
-           or a keyboard that only showed up later -- still gets its records.
-           /run/udev is ours to make; there is no daemon to have made it, and
-           the seeder makes the data/ directory under it. */
-        mkdir("/run/udev", 0755);
-        int typed = 0;
-        int seeded = seed_udev_input_db("/sys/class/input", "/run/udev/data", &typed);
-        if (seeded > 0) {
-            say("input: wrote %d libudev record(s), %d naming a device type",
-                seeded, typed);
-            /* A record with no type in it is a record libinput will not use,
-               and the session that follows looks like a working one: seat,
-               config and DRM all fine, with a pointer that does not move. Say
-               so here, where the only evidence is. */
-            if (typed == 0)
-                say("input: none names a type, so libinput will ignore every device");
-        } else {
-            say("input: no /sys/class/input/event* node to seed yet");
-        }
-        grant_devices(&g_session);
-        prepare_session_dirs(&g_session);
-        pid_t session = spawn_tty(1);
-        int wst;
-        /* EINTR, not a bare wait: the power handler above returns when
-           reboot(2) fails, and a returning handler leaves the syscall it
-           interrupted with EINTR. Read as "the session ended" that would
-           spawn a second copper-sh on the same tty -- the two-shells bug
-           described above -- so retry on EINTR and only treat a real reap as
-           the session's end.
-           updated by farcrowx, bug 33, iso/src-init/copper-init.c (main loop) */
-        if (session > 0)
-            while (waitpid(session, &wst, 0) < 0 && errno == EINTR)
-                ;
-    }
+    /* Everything from here down is shared with the --console entry point:
+       the wizard, the session user, and the loop that keeps a shell on tty1.
+       It was split out when systemd became a possible PID 1 -- see
+       run_session() above -- because both entry points want exactly this and
+       neither wants the mounts, the signal handlers or the daemons. */
+    run_session();
     return 0;                        /* never reached */
 }
