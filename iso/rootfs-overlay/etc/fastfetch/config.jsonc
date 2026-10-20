@@ -22,11 +22,11 @@
     "modules": [
         {
             "type": "title",
-            "format": "{#34}{user-name}{#keys}@{#34}{host-name}{#reset}"
+            "format": "{#34}{user-name}{#keys}@{#34}{host-name}{#default}"
         },
         {
             "type": "custom",
-            "format": "{#34}──────────────────────────────{#reset}"
+            "format": "{#34}──────────────────────────────{#default}"
         },
         {
             "type": "os",
@@ -88,7 +88,7 @@
         },
         {
             "type": "custom",
-            "format": "{#34}──────────────────────────────{#reset}"
+            "format": "{#34}──────────────────────────────{#default}"
         },
         {
             "type": "colors",
