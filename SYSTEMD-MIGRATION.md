@@ -245,10 +245,9 @@ unbootable, not merely failed a check. The deb's own `/usr/bin/systemd` symlink
 (`../lib/systemd/systemd`) dangled for the same reason.
 
 The fix is the merge, scoped to the one subtree that needs it: a
-`lib/systemd -> ../usr/lib/systemd` symlink, made only when the packages brought
-`usr/lib/systemd` and the tree does not already resolve `lib/systemd`. systemd
-was compiled with `SYSTEMD_UTIL_DIR=/usr/lib/systemd`, so it reads its units
-natively and is content; only PID 1 itself has to also answer at `/lib`.
+`lib/systemd -> ../usr/lib/systemd` symlink. systemd was compiled with
+`SYSTEMD_UTIL_DIR=/usr/lib/systemd`, so it reads its units natively and is
+content; only PID 1 itself has to also answer at `/lib`.
 
 **Why the gate was green here and red on the runner is the useful part.** The
 gate stubs `dpkg-deb` with `tar`, so the "package" it feeds the stage is whatever
@@ -263,10 +262,63 @@ merged-usr-shaped, and two checks read the tree rather than the fixture:
 binary. The real package was downloaded and both were confirmed against it
 offline; sabotage case 13 drops the bridge and the gate catches it.
 
-All three are recorded here rather than in the commits alone because they are the
-argument for the new checks: a gate that is green only on the machine it was
-written on is not a gate, and a gate that is green only against its own fixture
-is not one either.
+### The fourth push: the bridge was there and still did not fire
+
+The bridge above landed, the gate went green, and CI failed **identically**:
+
+```
+  39 packages unpacked (58M)
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+  0 empty package files pruned
+systemd: /lib/systemd/systemd did not arrive from the packages
+```
+
+Note what is *not* in that transcript: the bridge's own line
+(`lib/systemd -> usr/lib/systemd (merged-usr bridge...)`) never printed. The
+packages arrived; the code that exposes them declined to run. The old guard was
+
+```sh
+if [ -d "$TGT/usr/lib/systemd" ] && [ ! -e "$TGT/lib/systemd" ]; then
+```
+
+and it has a blind spot the fixture did not model: it asks *"is `lib/systemd`
+absent?"*, so **any** pre-existing `lib/systemd` — a real directory left by an
+earlier stage, or by a cached tree — makes it skip, and PID 1 is then never
+linked into place. Three candidate causes were checked against the real inputs
+before touching the code:
+
+1. **The deb does not ship `usr/lib/systemd`.** Ruled out: the noble deb
+   `systemd_255.4-1ubuntu8.18_amd64.deb` was downloaded and unpacked, and it
+   ships `./usr/lib/systemd/systemd`; the whole 39-package closure unpacks PID 1
+   *only* under `usr/lib`.
+2. **`cp -a -n` refuses to merge into an existing `usr/lib`.** Ruled out by
+   direct repro: `-n` skips clobbering *files*, not descending into existing
+   *directories*, so `usr/lib/systemd` lands.
+3. **Something leaves a `lib/systemd` behind first.** Not ruled out, and the only
+   survivor. Nothing in this repo creates one and the packages do not either, but
+   a **cached** tree can: the CI cache is saved with `if: always()` (see
+   `build-iso.yml`), so the tree from every *failed* run is restored by the next
+   one, including runs that died mid-stage.
+
+The fix does not depend on which of those it was, because it stops asking the
+wrong question. The bridge is now keyed off the **file** — `usr/lib/systemd/systemd`
+— and then makes `/lib` answer for it from *any* state: it leaves an existing
+symlink alone, normalises a real `lib/systemd` directory into the symlink the rest
+of the tree expects (unless that directory holds a PID 1 of its own, which is a
+genuinely merged tree and is left untouched), and prints what it found when it
+cannot. The failure message now dumps the actual layout of `lib/systemd` and
+`usr/lib/systemd` instead of only asserting.
+
+The honesty checks behind this: `tests/systemd-gate.sh`'s mock rootfs now starts
+with a **real empty `lib/systemd` directory** — the squatter — and asserts the
+stage turns it into the symlink, so the guard's blind spot is a modelled input,
+not a comment. Sabotage case 13 plants the missing bridge; the new case 15 plants
+a bridge that no-ops on the squatter, and the gate catches both.
+
+All of this is recorded because it is the argument for the newer checks: a gate
+that is green only on the machine it was written on is not a gate, and one that
+is green only against its own fixture is not one either. This is the second time
+the same stage failed that test in the same way.
 
 **NOT verified — this is the honest gap:**
 
@@ -277,10 +329,19 @@ is not one either.
 - Nothing has exercised systemd's actual startup: udevd, unit ordering at boot,
   the wizard's terminal under `StandardInput=tty`, or the console service's
   restart behaviour.
+- **The disk-controller fix is untested on the hardware it is for.** Bug 46 added
+  `SCSI`/`SCSI_LOWLEVEL`/`SCSI_MPT3SAS`/`VMWARE_PVSCSI`/`SCSI_VIRTIO` because a
+  VMware Quick Setup guest showed the wizard **no disk at all** — VMware's default
+  controller is LSI Logic SAS (`mpt3sas`), and the kernel had `ATA_PIIX`,
+  `BLK_DEV_SD` and `BLK_DEV_NVME` but no SCSI host adapter. The symbols are
+  asserted so a dropped one stops the build (see `require_kernel_config`, and
+  `tests/kernel-gate.sh`), but "asserted =y" is a claim that it compiles, not
+  that it bound to a disk. That needs the same VMware boot.
 
 **A green `tests/systemd-gate.sh` is not a bootable image.** It says the pieces
 are coherent. The thing that closes this is a VMware boot of the systemd ISO,
-same as bugs 15/18/25/34/35/38/44.
+same as bugs 15/18/25/34/35/38/44 — and bug 46 is closed by the same boot, since
+a machine that cannot see its disk cannot get as far as the wizard.
 
 ## Remaining work (phase 2+)
 

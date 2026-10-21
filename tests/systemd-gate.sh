@@ -142,6 +142,18 @@ for c in reboot poweroff halt; do
 done
 ln -sf /sbin/shutdown "$TGT/usr/sbin/shutdown"
 
+# The GUI closure runs BEFORE this stage and leaves a real, populated
+# usr/lib/systemd behind -- 454 paths, all under usr/lib, none under lib (verified
+# by unpacking the closure; the packages never write a literal lib/systemd). So by
+# the time the bridge runs, usr/lib/systemd already exists as a directory, and the
+# stage has to expose it at /lib anyway. The fixture models that, and also leaves a
+# real empty lib/systemd that SQUATS on the name, because that is the state the
+# guard has to survive: a guard that only asked "is lib/systemd absent?" declined
+# to bridge and the stage then died claiming the packages never arrived. Left
+# empty on purpose -- the trap is `[ -d lib/systemd ]` being true.
+mkdir -p "$TGT/usr/lib/systemd/user" "$TGT/lib/systemd"
+printf '[Unit]\nDescription=placeholder\n' > "$TGT/usr/lib/systemd/user/dconf.service"
+
 STUB="$TMP/bin"; mkdir -p "$STUB"
 cat > "$STUB/apt-get" <<'STUBEOF'
 #!/bin/sh
@@ -298,6 +310,18 @@ if [ "$(readlink -f "$TGT/usr/bin/systemd" 2>/dev/null)" = \
 else
     bad "usr/bin/systemd (the deb's own link) resolves to the same PID 1" \
         "usr/bin/systemd -> $(readlink -f "$TGT/usr/bin/systemd" 2>/dev/null)"
+fi
+
+# The fixture deliberately starts with a REAL empty lib/systemd directory (see
+# the mkdir in the mock rootfs above). After the stage it must be a symlink to
+# usr/lib/systemd: the bridge has to normalise a squatter, not skip past it. The
+# executable check above would also catch a skip, but this names the mechanism,
+# so a regression points at the guard rather than at the packages.
+if [ -L "$TGT/lib/systemd" ] && [ "$(readlink "$TGT/lib/systemd")" = ../usr/lib/systemd ]; then
+    ok "lib/systemd squatter normalised to a symlink at usr/lib/systemd"
+else
+    bad "lib/systemd squatter normalised to a symlink at usr/lib/systemd" \
+        "$(ls -ld "$TGT/lib/systemd" 2>&1)"
 fi
 
 
