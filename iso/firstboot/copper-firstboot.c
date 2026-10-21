@@ -1043,6 +1043,29 @@ static int disk_has_fs(const char *disk) {
     return strstr(out, "TYPE=") != NULL || strstr(out, "UUID=") != NULL;
 }
 
+/* Does this disk already carry the COPPER label -- i.e. is it a disk Copper
+   formatted on a previous boot? /init's find_upper() mounts exactly this label
+   as the writable layer, so a disk that answers yes is ALREADY a valid
+   persistence disk: there is nothing on it to lose and nothing to format.
+   Searched the same way blkid is in disk_has_fs(), and matched on the same
+   output, for the same reason: the wizard's PATH is whatever copper-init handed
+   down. Splitting this out from disk_has_fs() (rather than testing the label
+   inline) keeps the two questions distinct -- "is there a filesystem here at
+   all" and "is the filesystem here Copper's own" -- because the answer to the
+   first no longer decides the branch. */
+static int disk_is_copper(const char *disk) {
+    char dev[PERSIST_NAME + 8];
+    snprintf(dev, sizeof dev, "/dev/%s", disk);
+    char out[256];
+    run_capture(out, sizeof out,
+                "if command -v blkid >/dev/null 2>&1; then blkid %s; "
+                "elif [ -x /sbin/blkid ]; then /sbin/blkid %s; "
+                "elif [ -x /usr/sbin/blkid ]; then /usr/sbin/blkid %s; "
+                "elif [ -x /bin/busybox ]; then /bin/busybox blkid %s; "
+                "fi", dev, dev, dev, dev);
+    return strstr(out, "LABEL=\"COPPER\"") != NULL;
+}
+
 static int list_spare_disks(char disks[][PERSIST_NAME]) {
     DIR *d = opendir("/sys/block");
     if (!d) return 0;
@@ -1222,32 +1245,57 @@ static int offer_persistence(void) {
         return 1;
     }
 
-    /* One empty disk is an ordinary first boot -- a fresh machine with a spare
-       disk attached -- and there is nothing on it to lose, so it is taken
-       without a question. Two of them, or one that already holds files, is a
-       choice only the person in front of the machine can make safely. */
-    if (n == 1 && !disk_has_fs(disks[0])) {
+    /* One disk is an ordinary first boot, and there are two ways it can be
+       already safe to take without a question:
+
+         - it is empty (nothing on it to lose), or
+         - it carries the COPPER label, i.e. Copper formatted it on an earlier
+           boot and the ISO is being run against the same machine again.
+
+       The second case is why this branch changed. On a VM -- where almost
+       everybody tests -- a disk that Copper had already claimed still fell
+       through to the ERASE prompt, even though the only thing on it was the
+       previous Copper session and its files. Already-COPPER is not offered for
+       erasure; it is reused, and the mount side already understood the label
+       before this line existed.
+
+       Anything else -- two candidates, or one disk holding somebody's data --
+       is still a choice only the person in front of the machine can make
+       safely, and still goes to the prompt below. */
+    if (n == 1 && (disk_is_copper(disks[0]) || !disk_has_fs(disks[0]))) {
+        int already = disk_is_copper(disks[0]);
         char sz[32];
         disk_size_str(disks[0], sz, sizeof sz);
-        int secs = persist_seconds();
-        printf("  Copper is running live, so nothing is saved when you reboot. One\n");
-        printf("  empty disk is attached, so Copper formats it and keeps your files\n");
-        printf("  on it from now on.\n");
-        printf("\n");
-        printf("      %-12s %s\n", disks[0], sz);
-        printf("\n");
-        printf("  Formatting /dev/%s in %d seconds — press Enter to skip.\n",
-               disks[0], secs);
-        fflush(stdout);
-        if (wait_key(secs)) {
-            char skip[8];
-            read_line(skip, sizeof skip);
-            printf("\nSkipped — this session stays in RAM.\n");
-            return 1;
+
+        if (already) {
+            /* Nothing to format, and no countdown: the disk is already a
+               persistence disk and there is no destructive act to escape. The
+               session that was on it comes back on the next boot. */
+            printf("  Already on: your files are kept on /dev/%s and are still\n",
+                   disks[0]);
+            printf("  here after a reboot. Nothing to set up.\n");
+        } else {
+            int secs = persist_seconds();
+            printf("  Copper is running live, so nothing is saved when you reboot. One\n");
+            printf("  empty disk is attached, so Copper formats it and keeps your files\n");
+            printf("  on it from now on.\n");
+            printf("\n");
+            printf("      %-12s %s\n", disks[0], sz);
+            printf("\n");
+            printf("  Formatting /dev/%s in %d seconds — press Enter to skip.\n",
+                   disks[0], secs);
+            fflush(stdout);
+            if (wait_key(secs)) {
+                char skip[8];
+                read_line(skip, sizeof skip);
+                printf("\nSkipped — this session stays in RAM.\n");
+                return 1;
+            }
+            printf("\n");
+            if (format_persistence_disk(disks[0]) != 0) return 1;
+            printf("\nDone. /dev/%s is labeled COPPER.\n", disks[0]);
         }
-        printf("\n");
-        if (format_persistence_disk(disks[0]) != 0) return 1;
-        printf("\nDone. /dev/%s is labeled COPPER.\n", disks[0]);
+
         carry_firstboot_answers(disks[0]);
         reboot_into_persistence();
         return 1;
