@@ -2647,8 +2647,41 @@ build_systemd() {
       echo "  (systemd-analyze does not run in the staged tree; unit verify skipped)"
     fi
     if [ "$canrun" = 1 ]; then
+      # ---- one transaction, not one unit at a time -------------------------
+      #
+      # An ORDERING CYCLE only exists in a transaction: it is a loop between
+      # units, so systemd-analyze has to be given all of them at once to see
+      # it. Verified one unit at a time, every unit in the loop looks perfect
+      # on its own -- which is exactly how copper-tty-clear.service shipped
+      # with `After=sysinit.target` AND `Before=systemd-udevd.service` while
+      # systemd's own udevd unit carries `Before=sysinit.target`:
+      #
+      #     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
+      #                    -> sysinit.target
+      #
+      # That is a cycle, and it is on sysinit.target, so the boot's initial
+      # transaction fails outright: not a degraded boot, no boot. The check
+      # below is the build-time version of that, and it is deliberately not
+      # scoped to a unit name -- systemd decides which job it drops when it
+      # breaks a cycle, so the message can name any unit in the loop.
+      local vlist=""
       for ul in copper-console.service copper-firstboot.service \
-                copper-network.service copper-seatd.service; do
+                copper-network.service copper-seatd.service \
+                copper-tty-clear.service copper.target; do
+        vlist="$vlist /etc/systemd/system/$ul"
+      done
+      out=$(chroot "$TGT" "$sa" verify $vlist 2>&1 || true)
+      if printf '%s\n' "$out" | grep -qiE 'ordering cycle|cyclic ordering|order is cyclic|break cycle'; then
+        echo "systemd: the units form an ordering cycle; the boot would fail" >&2
+        echo "          (a cycle on sysinit.target fails the initial transaction)" >&2
+        printf '%s\n' "$out" | grep -iE 'cycle|cyclic' | sed 's/^/     /' >&2
+        while IFS= read -r f; do [ -n "$f" ] && rm -f "$TGT$f"; done < "$added"
+        exit 1
+      fi
+
+      for ul in copper-console.service copper-firstboot.service \
+                copper-network.service copper-seatd.service \
+                copper-tty-clear.service; do
         out=$(chroot "$TGT" "$sa" verify "/etc/systemd/system/$ul" 2>&1 || true)
         # A message counts only if it is ABOUT this unit AND is a real defect.
         #

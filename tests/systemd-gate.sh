@@ -57,6 +57,16 @@ fails=0
 ok()  { printf '  ok    %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n        %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 
+# The wording systemd uses for an ordering cycle, in every form it has used.
+# It is here, once, because three places need the same answer: the gate's own
+# transaction check, the gate's test of the stage's check, and the stage's
+# check itself. The stage's copy is asserted to be this one (section 7), so
+# the three cannot drift apart.
+#
+# 255: "Found ordering cycle: ...", "Unable to break cycle ...", and
+#      "Transaction order is cyclic."  256+ keeps the first and the third.
+CYC_RE='ordering cycle|cyclic ordering|order is cyclic|break cycle'
+
 TMP=$(mktemp -d /tmp/systemd-gate.XXXXXX) || exit 1
 trap 'rm -rf "$TMP"' EXIT INT TERM HUP
 
@@ -73,9 +83,19 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     UD="$TMP/units"; mkdir -p "$UD"
     install -m 0644 "$REPO"/iso/systemd/*.service "$UD/" 2>/dev/null || true
     install -m 0644 "$REPO"/iso/systemd/*.target  "$UD/" 2>/dev/null || true
+
+    # The unit SEARCH PATH has to include $UD, or a Wants=/After= that names
+    # another Copper unit cannot be resolved and the graph systemd checks is
+    # not the graph the boot will build. Without this the gate was verifying
+    # each unit in isolation with half its dependencies missing -- which is
+    # exactly why it could not see an ordering cycle (see the transaction check
+    # below). The rest of the path is the host's own, which is where the base
+    # units live: sysinit.target, systemd-udevd.service and the rest.
+    UPATH="$UD:/etc/systemd/system:/run/systemd/system:/usr/local/lib/systemd/system:/usr/lib/systemd/system:/lib/systemd/system"
+
     for u in "$UD"/*.service "$UD"/*.target; do
         [ -e "$u" ] || continue
-        out=$(systemd-analyze verify "$u" 2>&1 || true)
+        out=$(SYSTEMD_UNIT_PATH="$UPATH" systemd-analyze verify "$u" 2>&1 || true)
         # Which of systemd-analyze's lines are a complaint about THIS unit?
         #
         # The filter used to be a deny-list (drop "Command X is not
@@ -107,6 +127,37 @@ if command -v systemd-analyze >/dev/null 2>&1; then
             bad "unit parses: $base" "$(printf '%s' "$out" | tr '\n' '|')"
         fi
     done
+
+    # ---- ONE transaction, not one unit at a time ---------------------------
+    #
+    # An ORDERING CYCLE only exists in a transaction: it is a loop BETWEEN
+    # units, so systemd-analyze has to be given all of them at once to see it.
+    # Verified one unit at a time, every unit in the loop looks perfect on its
+    # own -- and that is not a theoretical gap.
+    #
+    # copper-tty-clear.service shipped with `After=sysinit.target` AND
+    # `Before=systemd-udevd.service`, while systemd's own udevd unit carries
+    # `Before=sysinit.target` (read out of the noble 255.4 udev package this
+    # image unpacks). That closes a loop:
+    #
+    #     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
+    #                    -> sysinit.target
+    #
+    # and the cycle is on sysinit.target, so the boot's initial transaction
+    # fails outright: not a degraded boot, no boot. The per-unit loop above
+    # reported every unit as parsing perfectly.
+    #
+    # The check is deliberately NOT scoped to a unit name: systemd decides
+    # which job it drops when it breaks a cycle, so the message can name any
+    # unit in the loop.
+    out=$(SYSTEMD_UNIT_PATH="$UPATH" systemd-analyze verify \
+              "$UD"/*.service "$UD"/*.target 2>&1 || true)
+    if printf '%s\n' "$out" | grep -qiE "$CYC_RE"; then
+        bad "the units form no ordering cycle" \
+            "$(printf '%s' "$out" | grep -iE 'cycle|cyclic' | tr '\n' '|')"
+    else
+        ok "the units form no ordering cycle (verified as ONE transaction)"
+    fi
 else
     echo "  skip  systemd-analyze not on this host; unit parse checks skipped"
 fi
@@ -197,8 +248,31 @@ printf '#!/bin/sh\nexit 0\n' > "$PD/usr/bin/systemctl";  chmod 0755 "$PD/usr/bin
 for u in sysinit.target multi-user.target getty.target; do
     printf '[Unit]\nDescription=%s\n' "$u" > "$PD/usr/lib/systemd/system/$u"
 done
-printf '[Unit]\nDescription=udev\n\n[Service]\nType=notify\nExecStart=/usr/lib/systemd/systemd-udevd\n' \
+# systemd's OWN udevd unit, modelled on the real noble 255.4 udev package
+# (udev_255.4-1ubuntu8.18_amd64.deb, unpacked and read). Two lines matter:
+#
+#   DefaultDependencies=no   without it systemd adds an automatic
+#                            After=sysinit.target, which would contradict the
+#                            Before= below and fake a cycle of its own;
+#   Before=sysinit.target    this is the edge that closes the loop with
+#                            copper-tty-clear.service's After=sysinit.target.
+#
+# The fixture used to say "Description=udev" and nothing else, so the ordering
+# graph the stage's chrooted verify walked was not the graph the boot builds --
+# the same "a fixture that models its input wrongly certifies the wrong code"
+# trap, once more.
+printf '[Unit]\nDescription=Rule-based Manager for Device Events and Files\nDefaultDependencies=no\nBefore=sysinit.target\n\n[Service]\nType=notify\nExecStart=/usr/lib/systemd/systemd-udevd\n' \
     > "$PD/usr/lib/systemd/system/systemd-udevd.service"
+# The settle unit, which copper-firstboot.service and copper-seatd.service both
+# order themselves after. Real noble ships it; without it those two After= lines
+# point at nothing.
+printf '[Unit]\nDescription=Wait for udev To Complete Device Initialization\nDefaultDependencies=no\nBefore=sysinit.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=udevadm settle\n' \
+    > "$PD/usr/lib/systemd/system/systemd-udev-settle.service"
+printf '[Unit]\nDescription=Trigger udev uevent handling\nDefaultDependencies=no\nBefore=sysinit.target\n\n[Service]\nType=oneshot\nExecStart=/usr/lib/systemd/systemd-udev-trigger\n' \
+    > "$PD/usr/lib/systemd/system/systemd-udev-trigger.service"
+# the real udev package ships udevadm at /usr/bin; the settle unit execs it by
+# bare name, so it has to be in the tree for the ExecStart to resolve
+printf '#!/bin/sh\nexit 0\n' > "$PD/usr/bin/udevadm"; chmod 0755 "$PD/usr/bin/udevadm"
 # systemd's own ldconfig.service, exactly as the deb ships it: ExecStart=/sbin/
 # ldconfig -X. This image has no ldconfig, so the unit failed on the first boot
 # and showed up in `systemctl --failed`. build_systemd masks it now; the payload
@@ -443,6 +517,20 @@ else
     bad "copper-tty-clear.service is ordered before the wizard" \
         "$(grep Before "$TGT/etc/systemd/system/copper-tty-clear.service" 2>&1 | tr '\n' '|')"
 fi
+# And it must NOT be ordered after the target it is also ordered before.
+# `After=sysinit.target` together with `Before=systemd-udevd.service` is an
+# ordering cycle, because systemd's own udevd unit is ordered before
+# sysinit.target -- and a cycle on sysinit.target fails the boot's initial
+# transaction outright. This line is worth having on its own: the transaction
+# check above needs systemd-analyze, and a host without it skips the parse
+# checks entirely (the dev box is Windows). This one reads the installed unit
+# and needs nothing.
+if grep -qE '^After=sysinit\.target' "$TGT/etc/systemd/system/copper-tty-clear.service"; then
+    bad "copper-tty-clear.service is not ordered after sysinit.target" \
+        "After=sysinit.target with Before=systemd-udevd.service is a cycle on sysinit.target"
+else
+    ok "copper-tty-clear.service is not ordered after sysinit.target (no cycle)"
+fi
 # And the script must actually emit the erase, not merely exist: read the
 # sequence out of the installed file so a helper gutted to `exit 0` goes red.
 if grep -q '033\[r' "$TGT/usr/bin/copper-tty-clear" \
@@ -577,6 +665,34 @@ else
         "build_systemd no longer filters verify output with the allow-list regex"
 fi
 
+# ---- and the stage checks for an ORDERING CYCLE, in one transaction -------
+#
+# The allow-list above is about a unit's own text: a key in the wrong section,
+# a parse error, an empty ExecStart. A cycle is about the RELATIONSHIP between
+# units, and it can only be seen when they are verified TOGETHER -- verified one
+# at a time, every unit in the loop is perfect on its own. That is exactly how
+# copper-tty-clear.service shipped ordered into a cycle on sysinit.target, and
+# the stage had no check that could see it.
+#
+# The stage's copy of the pattern is asserted to be the gate's, for the same
+# reason VF_RE is: three places answer this question (the gate's transaction
+# check, the gate's test of the stage's check, and the stage itself), and
+# three copies of an answer drift.
+if grep -qF "grep -qiE '$CYC_RE'" "$BUILD"; then
+    ok "the stage checks the units for an ordering cycle, in one transaction"
+else
+    bad "the stage checks the units for an ordering cycle, in one transaction" \
+        "build_systemd has no ordering-cycle check; a cycle on sysinit.target would ship"
+fi
+# And the stage must give systemd-analyze more than one unit at a time,
+# because that is the only way a cycle exists to be found.
+if grep -qF 'verify $vlist' "$BUILD"; then
+    ok "the stage verifies the units as one transaction (cycles are only visible there)"
+else
+    bad "the stage verifies the units as one transaction" \
+        "build_systemd does not pass the whole unit set to one verify call"
+fi
+
 U1=copper-seatd.service
 # real defects: 255 spells it "Unknown key name", 256+ dropped "name"
 d255="/etc/systemd/system/$U1:12: Unknown key name 'SocketMode' in section 'Service', ignoring."
@@ -607,6 +723,67 @@ check_v "ignores a missing man page (host)"            no  "$nman"
 check_v "ignores 'Command ... is not executable' (host)" no "$ncmd"
 check_v "ignores a dependency the host lacks"          no  "$ndep"
 check_v "ignores noise about another unit"             no  "$nmiss"
+
+# The cycle filter is a SEPARATE filter, and it is not scoped to a unit name.
+# A cycle is a property of the whole transaction, and systemd decides which
+# job it drops when it breaks one -- so the message can name any unit in the
+# loop, and a filter that looked for one unit's name would miss it.
+cycf() { printf '%s\n' "$@" | grep -iE "$CYC_RE" || true; }
+
+# The three wordings systemd has used, all of which must be caught.
+c255="sysinit.target: Found ordering cycle: systemd-udevd.service/start after copper-tty-clear.service/start after sysinit.target/start - after systemd-udevd.service"
+c255b="sysinit.target: Unable to break cycle starting with sysinit.target/start"
+c255c="Requested transaction contains an unfixable cyclic ordering dependency: Transaction order is cyclic. See system logs for details."
+cunit="copper-tty-clear.service: Failed to create copper-tty-clear.service/start: Transaction order is cyclic. See system logs for details."
+
+check_c() {   # check_c <label> <expect-nonempty> <lines...>
+    _l=$1; _want=$2; shift 2
+    _got=$(cycf "$@")
+    if { [ "$_want" = yes ] && [ -n "$_got" ]; } \
+       || { [ "$_want" = no ] && [ -z "$_got" ]; }; then
+        ok "cycle filter $_l"
+    else
+        bad "cycle filter $_l" "got [$(printf '%s' "$_got" | tr '\n' '|')], wanted nonempty=$_want"
+    fi
+}
+check_c "rejects 'Found ordering cycle'"          yes "$c255"
+check_c "rejects 'Unable to break cycle'"         yes "$c255b"
+check_c "rejects 'unfixable cyclic ordering'"     yes "$c255c"
+check_c "rejects 'Transaction order is cyclic'"    yes "$cunit"
+# and it must not fire on the noise a real verify prints
+check_c "ignores 'Failed to parse'"               no  "$dparse"
+check_c "ignores 'Command ... is not executable'" no  "$ncmd"
+check_c "ignores 'not found'"                     no  "$nmiss"
+
+# ---------------- 8. the desktop stages' skip guards still ask about seatd --
+# build_gui and build_hypr decide whether a CACHED tree can be skipped. A
+# guard that asks only about the desktop stack skips a tree that has LOST
+# seatd -- or the _seatd group build_gui appends and build_rootfs' second
+# pass clobbers -- and the tree that ships points copper-seatd.service at a
+# binary that is not there. That is not hypothetical: the first boot found
+# exactly that (bug 47 -- the unit named /usr/bin/seatd, and noble installs
+# /usr/sbin/seatd), and the reason it shipped is that the guard had stopped
+# asking.
+#
+# This gate runs the systemd stage over a mocked tree; it does not run
+# build_gui or build_hypr, so there is no runtime path here to exercise. What
+# can be checked -- and what is checked -- is the shipped condition itself,
+# read out of build.sh rather than paraphrased. The window is the two lines
+# before the skip call: that is where the guards' own conditions live.
+if extract build_hypr | grep -B2 'stamped_skip "\$WORK/hypr.stamp"' \
+     | grep -q 'name seatd -type f'; then
+    ok "build_hypr's skip guard still checks for seatd"
+else
+    bad "build_hypr's skip guard still checks for seatd" \
+        "the guard no longer asks whether the tree still has a seatd binary"
+fi
+if extract build_gui | grep -B2 'stamped_skip "\$WORK/gui.stamp"' \
+     | grep -q '_seatd:'; then
+    ok "build_gui's skip guard still checks for the _seatd group"
+else
+    bad "build_gui's skip guard still checks for the _seatd group" \
+        "the guard no longer asks whether the tree still has the _seatd group"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then

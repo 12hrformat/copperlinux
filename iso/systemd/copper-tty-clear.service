@@ -11,39 +11,66 @@
 # that draw, and it is a oneshot with no RemainAfterExit: it does its work and
 # is gone, so nothing depends on its state and a later boot does it again.
 #
-# Ordered before BOTH of the things that paint on tty1 here:
+# Ordered before the things that paint on tty1 here, and before the first
+# status line of all:
 #
-#   systemd-udevd.service   the first unit sysinit.target pulls in, and the
-#                           first one systemd reports on;
+#   sysinit.target           the boundary the erase has to land in front of:
+#                            everything systemd reports happens after it;
+#   systemd-udevd.service    the first unit sysinit.target pulls in, and the
+#                            first one systemd reports on;
 #   copper-firstboot.service the wizard, which draws the form.
 #
 # Before= is deliberately not Requires= or Wants= anywhere: this is cosmetic,
 # and a console that failed to clear is still a working console. It must never
 # be able to hold a real unit back or take one down with it.
 #
+# HOW it is ordered is the whole trick, and getting it wrong is not a degraded
+# boot but no boot at all -- see the cycle written out under [Unit] below.
+#
 # handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper console clear (erase the kernel's boot text)
 DefaultDependencies=no
-# sysinit.target is the earliest point at which a normal unit can run this side
-# of the kernel handing over; before it and systemd has no job queue yet.
-After=sysinit.target
-Before=systemd-udevd.service copper-firstboot.service copper-console.service
+# BEFORE sysinit.target, not after it. The erase has to land in the window
+# between "the kernel has finished" and "the first thing prints", and the first
+# thing that prints is a sysinit unit's status line.
+#
+# After=sysinit.target here is an ORDERING CYCLE, and the boot does not survive
+# it. systemd's own systemd-udevd.service carries `Before=sysinit.target` --
+# read out of the noble 255.4 udev package this image unpacks, not guessed --
+# so these three lines close a loop:
+#
+#     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
+#                    -> sysinit.target
+#
+# systemd says so on the console, and the part that matters is the last one:
+#
+#     Found ordering cycle: systemd-udevd.service/start after
+#       copper-tty-clear.service/start after sysinit.target/start
+#     Unable to break cycle starting with sysinit.target/start
+#     Requested transaction contains an unfixable cyclic ordering dependency
+#
+# The cycle is on sysinit.target, so the INITIAL TRANSACTION fails: not a
+# degraded boot, no boot. DefaultDependencies=no is what keeps this unit out
+# of the loop -- it gives up the automatic Requires=/After= on sysinit.target,
+# so the only ordering that applies is the one written here.
+Before=sysinit.target systemd-udevd.service copper-firstboot.service copper-console.service
 # Never a reason for anything to fail or wait:
-#   - not in any target's Wants, so nothing pulls it in but the console's own
-#     ordering, and it may legitimately be skipped;
+#   - no Requires= and no Wants= of its own, so it cannot hold a real unit back
+#     or take one down with it. It IS in copper.target.wants, so it does run.
 #   - the burst limit is off so a restart (there will not be one) cannot trip it.
 StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/copper-tty-clear
-# The tty is the point. StandardInput/Output default to the journal, which is
-# right: the erase is written to /dev/tty1 by the script itself, because that is
-# the device being looked at and the journal is not. What the unit needs from
-# systemd is the TTY ownership below.
-TTYPath=/dev/tty1
-TTYReset=no
+# No TTYPath=. The erase is written to /dev/tty1 by the script itself, because
+# that is the device being looked at and the journal is not, so systemd owning
+# the tty buys nothing here. What it would buy is a second way to fail: systemd
+# opens the tty before it execs the script, and a unit that cannot open
+# /dev/tty1 FAILS -- a [ FAILED ] line on the very screen this unit exists to
+# clean, and one more entry in `systemctl --failed`. The script already treats
+# an unopenable tty as "nothing to clear" and exits 0.
 # Nothing here is allowed to be fatal: a machine with no tty1 (serial-only) has
 # nothing to clear and must still boot.
 SuccessExitStatus=0 1

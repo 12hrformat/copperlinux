@@ -1,8 +1,8 @@
 # Systemd as PID 1 — migration
 
-Status: **phase 1 in the tree, opt-in, NOT yet booted.** v0.9 still ships
-busybox init; the default image is unchanged, its gates are green, and this
-work is wired into the same gate set as everything else
+Status: **phase 1 in the tree, opt-in, and booted once (2026-10-21).** v0.9 still
+ships busybox init; the default image is unchanged, its gates are green, and
+this work is wired into the same gate set as everything else
 (`tests/systemd-gate.sh` + `tests/systemd-gate-sabotage.sh`, run by
 `tests/branch-gate.sh` and listed in CI). What exists now is the swap itself,
 behind a stage you have to ask for:
@@ -19,6 +19,11 @@ ships is never the half-finished one.
 
 What is verified, and what is not, is at the end of this file. Read that before
 trusting anything here.
+
+**The systemd image has now been booted once** (2026-10-21), and it came up —
+with four defects that every green gate had missed, one of which meant the
+*next* boot would not happen at all. What that boot found is in
+"The sixth push" below.
 
 ## Why this is a big deal
 
@@ -338,10 +343,98 @@ rather than a hypothesis. `checks` (13m57s) and `build` (7m56s) both went green,
 and **`copper-systemd.iso` was built and uploaded** alongside the default
 `copper.iso`.
 
+### The sixth push: the first real boot, and what it found
+
+The systemd ISO was booted on **2026-10-21** — the first time ever. It came
+up. It also came up with four defects, and the interesting thing about all
+four is that a green gate had missed every single one.
+
+**Bugs 47 and 48 — two units that failed on every boot.** `copper-seatd.service`
+exec'd `/usr/bin/seatd`, but noble ships seatd at **`/usr/sbin/seatd`**: the
+unit hard-coded one path where `copper-init.c` had always searched both. Every
+restart printed `[FAILED]` onto the very tty the wizard was drawing on, so the
+form corrupted as the user typed into it. And systemd's own `ldconfig.service`
+runs `ExecStart=/sbin/ldconfig -X` — an image with **no ldconfig at all** —
+so it was one of the two entries in `systemctl --failed`. Both are fixed: the
+seatd unit searches both directories and its restart is bounded, and
+`ldconfig.service` is masked with `/dev/null`, which systemd reads as "exists,
+must not run".
+
+**Bug 49 — the boot reads as two half-screens.** The kernel's own text stays
+on tty1 and systemd paints its status lines underneath it.
+`copper-tty-clear` and `copper-tty-clear.service` erase the screen in between.
+
+**Bug 50 — and then the image did not boot at all.** The unit added for bug 49
+was ordered `After=sysinit.target` AND `Before=systemd-udevd.service`, while
+systemd's own `systemd-udevd.service` carries `Before=sysinit.target`. Those
+three lines close a loop:
+
+```
+sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
+               -> sysinit.target
+```
+
+systemd reports it as "Found ordering cycle" and then "**Unable to break cycle
+starting with sysinit.target/start**" — and the cycle is on `sysinit.target`,
+so the boot's **initial transaction** fails: not a degraded boot, no boot.
+
+It survived a green gate because the gate verified each unit **one at a time**,
+and a cycle only exists in a transaction: every unit in the loop was perfect on
+its own. The unit is now ordered `Before=sysinit.target systemd-udevd.service
+copper-firstboot.service copper-console.service` with no `After=` at all —
+`DefaultDependencies=no` is what keeps it out of the loop — and both the gate
+and the stage verify the units **in one call** and fail on a cycle.
+
+That last one is the lesson worth keeping, and it is the third time this
+project has been bitten by a check that was green against its own fixture: the
+gate's fixture modelled systemd's udevd unit as `Description=udev` with no
+ordering in it, so the graph the stage walked was not the graph the boot
+builds. The fixture now models the **real** unit, read out of the noble
+`udev_255.4-1ubuntu8.18_amd64.deb` the image unpacks:
+
+```
+[Unit]
+Description=Rule-based Manager for Device Events and Files
+DefaultDependencies=no
+Before=sysinit.target
+```
+
+and sabotage cases 22-24 prove the three new checks can fail.
+
+**And the suite that proves the gate can fail was itself red.** While fixing
+the above, `tests/systemd-gate-sabotage.sh` was found to be failing **five of
+its own cases** — cases that had never been run against the tree they were
+written for. `tests/branch-gate.sh` runs that suite, so the gate set had been
+red since the commit that added the cases (it was never pushed, so nobody saw
+it). Every one of the five was a defect in the *case*, not in the gate, and
+they failed three different ways: two planted a shell **syntax error** instead
+of the defect they meant (the replacement swapped the `if` line but left the
+body and the closing `fi` behind, so `build.sh` could not be sourced at all,
+and the gate went red for a reason that had nothing to do with the case); one
+was anchored to a line of `build.sh` that had since been re-wrapped, so its
+exact-string edit no longer applied; and two asked the gate to catch something
+in a stage the gate **does not run** — `build_gui` and `build_hypr` are never
+called by `tests/systemd-gate.sh`, so no planting can make the gate notice
+their skip guards.
+
+The last pair is the dangerous kind: read at face value, they say "the gate is
+blind to the hypr/gui skip guards", which is a false conclusion you would act
+on. The gate now **can** say that — section 8 reads the shipped skip guards
+out of `build.sh` and fails if they stop asking about `seatd` and the
+`_seatd` group — so the two cases assert a real claim instead of a fiction.
+The other three now plant in the gate's **fixture** (the tree the stage
+builds) rather than in the stage's own assertions, because the assertions are
+the thing doing the catching.
+
 **NOT verified — this is the honest gap:**
 
-- **It has never been booted.** Not in a VM, not on hardware. Nothing in this
-  repo can boot an ISO in CI, so this is structural verification only.
+- **It has been booted exactly once** (2026-10-21, in a VMware guest), and that
+  boot found four defects — bugs 47, 48, 49 and 50 — of which bug 50 meant the
+  next boot would not have happened at all. One boot is not a test suite:
+  anything that only shows up on the *second* boot, on real hardware, on a
+  different disk controller, or with a serial console instead of a VT is still
+  unverified, and so is every one of the four fixes above, which have not been
+  booted since.
 - Package closure size is unmeasured (the dev box has no noble mirrors, so the
   closure could not be downloaded here).
 - Nothing has exercised systemd's actual startup: udevd, unit ordering at boot,
@@ -359,11 +452,15 @@ and **`copper-systemd.iso` was built and uploaded** alongside the default
 **A green `tests/systemd-gate.sh` is not a bootable image.** It says the pieces
 are coherent. The thing that closes this is a VMware boot of the systemd ISO,
 same as bugs 15/18/25/34/35/38/44 — and bug 46 is closed by the same boot, since
-a machine that cannot see its disk cannot get as far as the wizard.
+a machine that cannot see its disk cannot get as far as the wizard. The boot
+that has happened so far is the proof of the point: it found four defects the
+gate called green, one of which was fatal.
 
 ## Remaining work (phase 2+)
 
-- **Boot it.** Nothing below is worth doing before this happens.
+- **Boot it again**, with the fixes for bugs 47-50 in it. The first boot found
+  four defects; the next one is what says the fixes are fixes. Nothing below is
+  worth doing before that happens.
 - Network: `udhcpc` -> `systemd-networkd` (+ the lease/resolver files).
 - Seat: `seatd` -> `logind`, which is what makes
   `XDG_RUNTIME_DIR`/`pam_systemd` real and retires `prepare_session_dirs`.

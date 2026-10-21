@@ -718,6 +718,46 @@ inside a WSL shell **modifies WSL**. Back those files up and restore them in
 a `trap`, or you will leave junk accounts behind. This happened twice here and
 was cleaned up both times.
 
+**An ordering cycle only exists in a transaction — so verify the units
+TOGETHER, and model the base units honestly.** `systemd-analyze verify` on one
+unit at a time reports every unit as perfect, because a cycle is a loop
+BETWEEN units: `copper-tty-clear.service` shipped with `After=sysinit.target`
+AND `Before=systemd-udevd.service`, while systemd's own
+`systemd-udevd.service` carries `DefaultDependencies=no` and
+`Before=sysinit.target` — a loop on `sysinit.target`, which fails the boot's
+initial transaction outright (not a degraded boot: no boot). Two things had to
+be true for the check to see it, and both were false. The units have to be
+given to `systemd-analyze` **in one call**, with the unit search path
+including Copper's own units so their `Wants=` resolve — verified one at a
+time, half the graph is missing and every unit looks fine. And the fixture
+has to model systemd's real units, because a fixture whose udevd unit says
+only `Description=udev` describes a graph the boot will never build. Read
+`Before=`/`After=` out of the package you actually unpack, not out of memory:
+noble's **`udev`** package (not `systemd`) carries `systemd-udevd.service`,
+and it is `Before=sysinit.target`.
+
+**A test suite that has never been run is not a test — and a suite that is red
+for its own reasons is worse than no suite at all.** The systemd sabotage suite
+(`tests/systemd-gate-sabotage.sh`) shipped **red**: five of its cases had never
+been run against the tree they were written for, and `tests/branch-gate.sh`
+runs that suite, so the gate set had been red since the commit that added them.
+It was never pushed, so nobody saw it — which is exactly how a red suite dies
+unnoticed. All five failures were defects in the CASES, not in the gate, and
+they failed in three different ways. Two planted a shell **syntax error**
+instead of the defect they meant: the replacement swapped the `if` line but
+left the body and the closing `fi` behind, so `build.sh` could not be sourced
+at all and the gate went red for a reason that had nothing to do with the case
+— which reads exactly like "the gate caught the wrong thing". One was anchored
+to a line of `build.sh` that had since been **re-wrapped**: the anchor is an
+exact string, so a reflow breaks it, and the suite reports that as BROKEN
+rather than as a pass — the right behaviour, and still not a green run. And
+two asked the gate to catch something in a stage the gate **does not run**:
+`build_gui` and `build_hypr` are never called by `tests/systemd-gate.sh`, so
+no planting can make the gate notice their skip guards. The lesson has two
+halves. **Run the suite after you add to it**, and when a case asks for
+something the gate cannot do, either give the gate that ability or change the
+claim — never leave a case asserting a fiction.
+
 **Harness / VM facts:**
 
 - copper-sh rejects `2>&1` and `&`: the tokenizer splits them and `parse_line`
@@ -881,7 +921,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-49 bugs total: 44 fixed, 4 open, 1 that only looked like one.
+51 bugs total: 46 fixed, 4 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -933,3 +973,5 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 47 | 12hrformat | **the first real boot of the systemd image: `copper-seatd.service` restart-looping and the wizard's form glitching.** Two causes, and they compounded. (a) The unit said `ExecStart=/usr/bin/seatd`, but noble's `seatd` package installs the daemon at **`/usr/sbin/seatd`** — `copper-init.c` had always searched both, the unit hard-coded one. systemd exec'd a path that did not exist, the unit failed, `Restart=on-failure` tried again, and every attempt printed `[FAILED]`/`[ OK ]` onto the same tty the wizard was drawing on — so the form corrupted as the user typed into it. (b) The `_seatd` group was **absent from `/etc/group`**: `build_gui`/`build_hypr` append it, but the ISO is built by a second `build.sh iso` pass that re-runs `build_rootfs`, whose `cp -a iso/rootfs-overlay/.` **overwrites `/etc/group`** with the eight-line skeleton and erases the line — and the appending stage then **skipped**, because its stamp still matched and its guard never asked about the group. Found on the first boot ever of the systemd ISO (2026-10-21) | (fix in tree 2026-10-21: unit searches both directories via `/bin/sh -c` with `exec`, bounded `StartLimit*` so a failing unit cannot storm the wizard's tty; `build_gui`/`build_hypr` skip guards now check the group and the seatd binary; `build_systemd` asserts the binary, the group, and the unit's search; new sabotage cases 16–18, 20–21) |
 | bug 48 | 12hrformat | `ldconfig.service` fails on every boot — systemd's own unit runs `ExecStart=/sbin/ldconfig -X`, but the image has **no `ldconfig` at all** (`/sbin`, `/usr/sbin` and `/bin` all absent; the gui/hypr closures never brought one and no postinst runs on this build), and no `/etc/ld.so.cache`. On the first systemd boot it was one of the two entries in `systemctl --failed`. copper-init never ran ldconfig, so the busybox image never showed it | (fix in tree 2026-10-21: `build_systemd` masks the unit with `/dev/null`, which systemd reads as "exists, must not run" — truer than an enabled unit that is guaranteed to fail — and asserts the mask; sabotage case 19) |
 | bug 49 | 12hrformat | the boot reads as two half-screens — the kernel's own text (`Decompressing Linux... Parsing ELF...`) stays on tty1, and systemd then paints `[ OK ]`/`[ FAILED ]` at the cursor's current row, so the status lines arrive *underneath* the kernel's scrollback instead of on a clean screen. (A boot-experience defect, not a failure: everything comes up.) | (fix in tree 2026-10-21: new `copper-tty-clear.service` + `/usr/bin/copper-tty-clear`, wired into `copper.target` and ordered `Before=` the wizard and `systemd-udevd`, erases with `\033[r\033[2J\033[3J\033[H` to `/dev/tty1`; a serial-only machine has nothing to clear and must still boot, so the unit cannot fail the boot) |
+| bug 50 | 12hrformat | **the systemd image does not boot at all** - `copper-tty-clear.service` (added for bug 49) was ordered `After=sysinit.target` AND `Before=systemd-udevd.service`, while systemd's own `systemd-udevd.service` (from the noble `udev` package the image unpacks) carries `DefaultDependencies=no` and `Before=sysinit.target`. Those three lines close a loop: `sysinit.target -> copper-tty-clear.service -> systemd-udevd.service -> sysinit.target`. systemd says "Found ordering cycle", then "**Unable to break cycle starting with sysinit.target/start**" - and the cycle is on `sysinit.target`, so the **initial transaction** fails: not a degraded boot, no boot. Nothing caught it because the gate verified each unit **one at a time** (a cycle only exists in a transaction), both verify filters were allow-lists of a unit's own text (there was no class for a cycle at all), the stage's chrooted verify did not even list the new unit, and the gate's fixture modelled systemd's udevd unit as `Description=udev` with no ordering in it - so the graph the stage walked was not the graph the boot builds | (fix in tree 2026-10-21: the unit now orders itself `Before=sysinit.target systemd-udevd.service copper-firstboot.service copper-console.service` with no `After=` at all (`DefaultDependencies=no` is what keeps it out of the loop), and it no longer takes `TTYPath=` - a unit that cannot open the tty would fail, putting a `[ FAILED ]` line on the very screen it exists to clean; the gate verifies the units as ONE transaction with the unit search path including Copper's own units, the stage does the same chrooted and fails the build on a cycle, the fixture models the real udevd unit, and sabotage cases 22-24 prove all three) |
+| bug 51 | 12hrformat | **the systemd sabotage suite shipped red** - five of its own cases had never been run against the tree they were written for, and `tests/branch-gate.sh` runs that suite, so the gate set had been red since the commit that added them (it was never pushed, so nobody saw it). Every one of the five was a defect in the CASE, not in the gate, and they failed three different ways: two planted a shell **syntax error** instead of the defect they meant (the replacement swapped the `if` line but left the body and the closing `fi` behind, so `build.sh` could not be sourced at all and the gate went red for a reason that had nothing to do with the case - which reads exactly like "the gate caught the wrong thing"); one was anchored to a line of `build.sh` that had since been **re-wrapped**, so its exact-string edit no longer applied; and two asked the gate to catch something in a stage the gate **does not run** (`build_gui` and `build_hypr` are never called by `tests/systemd-gate.sh`, so no planting can make the gate notice their skip guards). The two guard cases were the dangerous ones: taken at face value they say "the gate is blind to the hypr/gui skip guards", which is a false conclusion you would act on | (fix in tree 2026-10-21: cases 16 and 17 now plant in the gate's FIXTURE (the tree the stage builds) instead of in the stage's own assertion, so the stage's assertion is what catches them; case 18's anchor matches the re-wrapped `build.sh`; the two guard cases now assert a claim the gate can actually make - new gate section 8 reads the shipped skip guards out of `build.sh` and fails if they stop asking about seatd and the `_seatd` group - and the whole suite is green) |

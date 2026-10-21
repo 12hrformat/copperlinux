@@ -9,8 +9,8 @@
 # scrollback above, the status lines below, and neither at the top.
 #
 # The fix is one erase before the status lines begin, and it has to happen on
-# the VT, from a process that owns it, before the first unit that prints. That
-# is copper-tty-clear.service's whole job; this is the body of it.
+# the VT itself, before the first unit that prints. That is
+# copper-tty-clear.service's whole job; this is the body of it.
 #
 # The escape sequence, and why each part is there:
 #
@@ -27,9 +27,12 @@
 #   \033[H      home the cursor.
 #
 # Written to /dev/tty1, not to stdout: this runs under systemd, where stdout is
-# the journal, and the journal is not the thing being looked at. If tty1 cannot
-# be opened (a serial-only machine, a console that never came up) there is
-# nothing to clear and nothing to fail -- hence the `|| exit 0` and the unit's
-# tolerant Type=oneshot, which must never be a reason a boot stops.
+# the journal, and the journal is not the thing being looked at. Owning the VT
+# is not needed -- writing to the device is enough, and the unit deliberately
+# does NOT take a TTYPath=, so that a console it cannot open is a console it
+# cannot fail on. If tty1 cannot be opened (a serial-only machine, a console
+# that never came up) there is nothing to clear and nothing to fail -- hence
+# the `|| exit 0` and the unit's `SuccessExitStatus`, which must never be a
+# reason a boot stops.
 printf '\033[r\033[2J\033[3J\033[H' > /dev/tty1 2>/dev/null || exit 0
 exit 0
