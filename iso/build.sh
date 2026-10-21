@@ -2272,14 +2272,47 @@ build_systemd() {
   # /sbin/init. A symlink makes one directory answer at both names, exactly as
   # a merged-usr system does, and leaves the rest of Copper's /lib untouched.
   #
-  # Only made when the packages actually brought /usr/lib/systemd: a tree that
-  # already resolved /lib/systemd (a future merged-usr rootfs, or a cached tree
-  # from one) is left alone, and the check below still has to pass.
-  if [ -d "$TGT/usr/lib/systemd" ] \
-     && [ ! -e "$TGT/lib/systemd" ]; then
-    mkdir -p "$TGT/lib"
-    ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"
-    echo "  lib/systemd -> usr/lib/systemd (merged-usr bridge; the tree is not merged)"
+  # Keyed off the FILE, not the directory. An earlier version asked only
+  # "is usr/lib/systemd a directory, and is lib/systemd absent?" and that
+  # question has a wrong answer whenever something has already put a lib/systemd
+  # in the tree: the bridge then skipped itself, nothing linked PID 1 into
+  # place, and the stage died three lines later with
+  #
+  #     systemd: /lib/systemd/systemd did not arrive from the packages
+  #
+  # which is a true sentence that names the wrong culprit -- the packages did
+  # arrive, and the bridge that was supposed to expose them declined to run.
+  # (The gui closure, which runs first, is known to leave 454 paths under
+  # usr/lib/systemd -- verified by unpacking it -- so usr/lib/systemd is always
+  # a real directory by the time this runs; and the CI cache is saved on failure,
+  # so a tree from a run that died here is restored by the next one.) So: work
+  # out where PID 1 actually landed and make /lib answer for it, from whatever
+  # state the tree is in.
+  if [ -x "$TGT/usr/lib/systemd/systemd" ]; then
+    if [ -L "$TGT/lib/systemd" ]; then
+      # Already bridged (idempotent re-run). Nothing to do but say so.
+      echo "  lib/systemd is already a symlink; merged-usr bridge in place"
+    elif [ -d "$TGT/lib/systemd" ]; then
+      # A real directory squats on the name. Normalise it to the symlink the
+      # rest of the tree expects, after proving it holds no PID 1 of its own
+      # (a tree with its own lib/systemd/systemd is a merged-usr rootfs and is
+      # left exactly as it is).
+      if [ ! -e "$TGT/lib/systemd/systemd" ]; then
+        rm -rf "$TGT/lib/systemd"
+        ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"
+        echo "  lib/systemd (real dir) -> usr/lib/systemd (merged-usr bridge)"
+      else
+        echo "  lib/systemd/systemd exists in the tree; left as it is"
+      fi
+    else
+      mkdir -p "$TGT/lib"
+      ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"
+      echo "  lib/systemd -> usr/lib/systemd (merged-usr bridge; the tree is not merged)"
+    fi
+  else
+    # Say what the tree actually looks like, so the gate below is not the only
+    # place this shows up.
+    echo "  note: usr/lib/systemd/systemd is not present; bridge not needed"
   fi
 
   # systemd needs the glibc loader at the path the kernel hard-codes, the same
@@ -2391,6 +2424,9 @@ build_systemd() {
   # ---- gates --------------------------------------------------------------
   if [ ! -x "$TGT/lib/systemd/systemd" ]; then
     echo "systemd: /lib/systemd/systemd did not arrive from the packages" >&2
+    echo "  lib/systemd:     $(ls -ld "$TGT/lib/systemd" 2>&1)" >&2
+    echo "  usr/lib/systemd: $(ls -ld "$TGT/usr/lib/systemd" 2>&1)" >&2
+    echo "  usr/lib/systemd/systemd: $(ls -l "$TGT/usr/lib/systemd/systemd" 2>&1)" >&2
     exit 1
   fi
   if [ "$(init_flavour "$TGT")" != systemd ]; then

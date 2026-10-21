@@ -209,10 +209,31 @@ run_case "verify filter weakened to a version-specific deny-list" "$B" \
 #     stage's own gate does catch it, but the gate was green locally because the
 #     fixture was wrong -- so the case plants the missing bridge in a stage whose
 #     fixture is now honest, and asserts the check fires.
-run_case "merged-usr bridge dropped (PID 1 unreachable at /lib)" "$B" \
-    '    mkdir -p "$TGT/lib"
-    ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"' \
-    '    true' \
+#
+#     The whole bridge is disabled at its entry condition rather than one branch
+#     of it: the fixture has a squatter lib/systemd, so the stage reaches the
+#     "real directory" branch, and neutering only the "absent" branch would
+#     remove dead code and pass. Short-circuiting the outer `if` covers every
+#     shape the fixture can present -- which is the point: the defect is "no
+#     bridge ran", not "this one branch of it did not".
+run_case "merged-usr bridge disabled entirely (PID 1 unreachable at /lib)" "$B" \
+    '  if [ -x "$TGT/usr/lib/systemd/systemd" ]; then' \
+    '  if false; then' \
+    "lib/systemd/systemd resolves to a real executable"
+
+# 15. The bridge exists but declines to run when /lib/systemd is already a real
+#     directory. This is the shape the SECOND post-fix CI failure had: the guard
+#     asked "is lib/systemd absent?" and answered no, so it skipped, and the
+#     stage died claiming the packages never arrived. Planted by making the
+#     squatter branch a no-op, so the real directory keeps the name and PID 1 is
+#     never linked into place.
+run_case "bridge no-ops when lib/systemd is already a real directory" "$B" \
+    '      if [ ! -e "$TGT/lib/systemd/systemd" ]; then
+        rm -rf "$TGT/lib/systemd"
+        ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"
+        echo "  lib/systemd (real dir) -> usr/lib/systemd (merged-usr bridge)"' \
+    '      if [ ! -e "$TGT/lib/systemd/systemd" ]; then
+        echo "  (sabotage: squatter left in place)"' \
     "lib/systemd/systemd resolves to a real executable"
 
 # 14. The fixture goes back to the non-merged layout. This is the false green
