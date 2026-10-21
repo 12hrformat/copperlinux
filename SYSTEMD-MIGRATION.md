@@ -167,12 +167,19 @@ with three possible causes.
   does not would still slip through), and the reason the gate also rejects a key
   in the wrong section rather than trusting the version. A host with no
   `systemd-analyze` says `skip` out loud instead of claiming a pass.
-- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants twelve
+- The **merged-usr bridge** was checked against the real package, offline: the
+  noble `systemd` deb (`255.4`, 3.47 MB) was downloaded, unpacked into a mock
+  non-merged tree, and the stage's bridge applied. `/lib/systemd/systemd` is an
+  ELF executable with interpreter `/lib64/ld-linux-x86-64.so.2`, and the deb's
+  own `usr/bin/systemd` link resolves to it. Without the bridge that path is
+  absent — the third CI failure reproduced exactly.
+- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants fourteen
   defects — misplaced key, nonexistent directive, bare glob, no repoint, unwired
   unit, removed `--console`, busybox power links, 0777 units, leaked build tool,
   a `tree_hash` blinded to symlinks, a `systemd)` dispatch line without its
-  toolchain, and the stage's verify filter weakened to a version-specific
-  deny-list — and every one is caught. That suite is
+  toolchain, the stage's verify filter weakened to a version-specific
+  deny-list, the merged-usr bridge dropped, and the gate's own fixture
+  un-merged-usr'd — and every one is caught. That suite is
   what found three real bugs during development, including a `readelf | sed |
   head` pipeline that aborts under `set -o pipefail` and would have killed a
   real build.
@@ -217,9 +224,49 @@ The gate could not have caught it by running the stage (the stage only fails on
 real defect and four shapes of host noise; a twelfth sabotage plants the
 deny-list to prove that check is load-bearing.
 
-Both are recorded here rather than in the commit alone because they are the
+A third push got further still — `checks` green, the default ISO built and
+uploaded — and died inside the stage:
+
+```
+  39 packages unpacked (58M)
+  0 empty package files pruned
+systemd: /lib/systemd/systemd did not arrive from the packages
+```
+
+This one was not a wording problem; it was the migration reading its own input
+wrong. Ubuntu's `systemd` deb ships PID 1 at **`/usr/lib/systemd/systemd`**, not
+`/lib/systemd/systemd` — every Debian-family tree since bookworm is **merged-usr**,
+where `/lib` *is* `/usr/lib` written as a top-level symlink, so the packages only
+ever write the `/usr/lib` name. Copper's tree is **not** merged-usr: `/lib` here
+is a real directory holding the musl loader and busybox. So the packages landed
+at `$TGT/usr/lib/systemd/systemd` and nothing landed at `$TGT/lib/systemd/systemd`,
+which is the path the kernel is handed by `/sbin/init`. The ISO would have been
+unbootable, not merely failed a check. The deb's own `/usr/bin/systemd` symlink
+(`../lib/systemd/systemd`) dangled for the same reason.
+
+The fix is the merge, scoped to the one subtree that needs it: a
+`lib/systemd -> ../usr/lib/systemd` symlink, made only when the packages brought
+`usr/lib/systemd` and the tree does not already resolve `lib/systemd`. systemd
+was compiled with `SYSTEMD_UTIL_DIR=/usr/lib/systemd`, so it reads its units
+natively and is content; only PID 1 itself has to also answer at `/lib`.
+
+**Why the gate was green here and red on the runner is the useful part.** The
+gate stubs `dpkg-deb` with `tar`, so the "package" it feeds the stage is whatever
+the fixture says — and the fixture put its fake PID 1 at
+`payload/lib/systemd/systemd`, a layout no Debian-family deb has produced since
+merged-usr. The stage's own `[ -x $TGT/lib/systemd/systemd ]` gate then passed
+against the *fixture*, certifying a stage that cannot handle a real deb. A test
+that models its input wrongly certifies the wrong code. The fixture is now
+merged-usr-shaped, and two checks read the tree rather than the fixture:
+`lib/systemd/systemd` must be an executable regular file through whatever
+`lib/systemd` is, and the deb's own `usr/bin/systemd` must resolve to the same
+binary. The real package was downloaded and both were confirmed against it
+offline; sabotage case 13 drops the bridge and the gate catches it.
+
+All three are recorded here rather than in the commits alone because they are the
 argument for the new checks: a gate that is green only on the machine it was
-written on is not a gate.
+written on is not a gate, and a gate that is green only against its own fixture
+is not one either.
 
 **NOT verified — this is the honest gap:**
 

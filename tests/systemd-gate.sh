@@ -118,7 +118,7 @@ TGT="$TMP/work/rootfs"; WORK="$TMP/work"; DL="$TMP/work/downloads"
 ROOT="$REPO/iso"; REPO_V="$REPO"; SELF="$BUILD"; JOBS=2
 export WORK DL ROOT SELF JOBS TGT
 
-mkdir -p "$TGT/bin" "$TGT/sbin" "$TGT/usr/bin" "$TGT/usr/sbin" \
+mkdir -p "$TGT/bin" "$TGT/sbin" "$TGT/usr/bin" "$TGT/usr/sbin" "$TGT/lib" \
          "$TGT/usr/lib/x86_64-linux-gnu" "$TGT/usr/share" "$TGT/etc" \
          "$TGT/run" "$TGT/tmp" "$TGT/home" "$TGT/root" "$TGT/var/log" \
          "$TGT/mnt" "$TGT/boot" "$TGT/dev"
@@ -163,9 +163,16 @@ exit 0
 STUBEOF
 chmod 0755 "$STUB/apt-get" "$STUB/dpkg-deb"
 
-PD="$TMP/payload"; mkdir -p "$PD/lib/systemd" "$PD/usr/bin" \
-    "$PD/usr/lib/systemd/system"
-printf '#!/bin/sh\nexit 0\n' > "$PD/lib/systemd/systemd"; chmod 0755 "$PD/lib/systemd/systemd"
+PD="$TMP/payload"; mkdir -p "$PD/usr/lib/systemd/system" "$PD/usr/bin"
+# merged-usr, the way a real noble deb is: PID 1 ships at usr/lib/systemd/systemd
+# and usr/bin/systemd is a symlink THROUGH /lib to it. The fixture used to put
+# the fake PID 1 at payload/lib/systemd/systemd -- a layout no Debian-family deb
+# has produced since merged-usr -- so the stage's `[ -x $TGT/lib/systemd/systemd ]`
+# gate passed against the fixture while a real build died with "39 packages
+# unpacked (58M)" and "/lib/systemd/systemd did not arrive". A fixture that
+# models the input wrongly certifies the wrong code; this one now models the deb.
+printf '#!/bin/sh\nexit 0\n' > "$PD/usr/lib/systemd/systemd"; chmod 0755 "$PD/usr/lib/systemd/systemd"
+ln -sf ../lib/systemd/systemd "$PD/usr/bin/systemd"
 printf '#!/bin/sh\nexit 0\n' > "$PD/usr/bin/systemctl";  chmod 0755 "$PD/usr/bin/systemctl"
 for u in sysinit.target multi-user.target getty.target; do
     printf '[Unit]\nDescription=%s\n' "$u" > "$PD/usr/lib/systemd/system/$u"
@@ -268,6 +275,31 @@ for cmd in reboot poweroff halt shutdown; do
     eq_link "sbin/$cmd -> systemctl"      "$TGT/sbin/$cmd"      /usr/bin/systemctl
     eq_link "usr/sbin/$cmd -> systemctl"  "$TGT/usr/sbin/$cmd"  /usr/bin/systemctl
 done
+
+# ---- 3b. PID 1 resolves at the path /sbin/init names -----------------------
+# The stage's own gate is `[ -x $TGT/lib/systemd/systemd ]`, and this is the
+# check that would have gone red on the runner's second run. Copper's tree is
+# not merged-usr, so a noble deb's usr/lib/systemd/systemd has to be reachable
+# at /lib/systemd/systemd by the time the kernel execs it -- and usr/bin/systemd,
+# which the deb ships as a symlink `../lib/systemd/systemd`, has to resolve too.
+# A fixture that put PID 1 at payload/lib/systemd/systemd hid both. These read
+# the tree, not the fixture: assert /lib/systemd/systemd exists as a regular
+# executable file THROUGH whatever /lib/systemd is, and that the deb's own
+# usr/bin/systemd link lands on it.
+if [ -x "$TGT/lib/systemd/systemd" ] && [ -f "$TGT/lib/systemd/systemd" ]; then
+    ok "lib/systemd/systemd resolves to a real executable (PID 1 is reachable)"
+else
+    bad "lib/systemd/systemd resolves to a real executable (PID 1 is reachable)" \
+        "not an executable regular file: $(ls -ld "$TGT/lib/systemd/systemd" 2>&1)"
+fi
+if [ "$(readlink -f "$TGT/usr/bin/systemd" 2>/dev/null)" = \
+     "$(readlink -f "$TGT/lib/systemd/systemd" 2>/dev/null)" ]; then
+    ok "usr/bin/systemd (the deb's own link) resolves to the same PID 1"
+else
+    bad "usr/bin/systemd (the deb's own link) resolves to the same PID 1" \
+        "usr/bin/systemd -> $(readlink -f "$TGT/usr/bin/systemd" 2>/dev/null)"
+fi
+
 
 for want in \
     copper.target.wants/copper-firstboot.service \

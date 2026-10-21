@@ -200,6 +200,36 @@ run_case "verify filter weakened to a version-specific deny-list" "$B" \
     '          | grep -vE "Can'"'"'t show |failed with exit status|\(man\)" \' \
     "verify filter"
 
+# 13. The merged-usr bridge is gone -- the THIRD CI failure, and the one that
+#     would have made the ISO unbootable rather than merely failing a check.
+#     Ubuntu's systemd deb ships PID 1 at usr/lib/systemd/systemd; Copper's tree
+#     has a real /lib, so without the bridge /lib/systemd/systemd does not
+#     exist and the kernel has nothing to exec. CI said exactly this: "39
+#     packages unpacked (58M)" then "/lib/systemd/systemd did not arrive". The
+#     stage's own gate does catch it, but the gate was green locally because the
+#     fixture was wrong -- so the case plants the missing bridge in a stage whose
+#     fixture is now honest, and asserts the check fires.
+run_case "merged-usr bridge dropped (PID 1 unreachable at /lib)" "$B" \
+    '    mkdir -p "$TGT/lib"
+    ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"' \
+    '    true' \
+    "lib/systemd/systemd resolves to a real executable"
+
+# 14. The fixture goes back to the non-merged layout. This is the false green
+#     itself: with the fake PID 1 at payload/lib/systemd/systemd, the stage's
+#     own `[ -x $TGT/lib/systemd/systemd ]` passes no matter what the stage does
+#     with the packages' usr/lib tree, so dropping the bridge goes unnoticed.
+#     Planting it back must make the gate MISS the bridge removal -- proving the
+#     behavioural check in 13 is load-bearing only because the fixture is honest,
+#     and that a fixture modelling the input wrongly certifies the wrong code.
+if grep -q 'payload/usr/lib/systemd/systemd\|PD/usr/lib/systemd/systemd' \
+        "$REPO/tests/systemd-gate.sh"; then
+    echo "  ok    fixture models a real noble deb (PID 1 at usr/lib/systemd)"
+else
+    echo "  FAIL  fixture is not merged-usr-shaped; gate can false-green again"
+    fails=$((fails + 1))
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "sabotage suite: the gate catches every planted defect"

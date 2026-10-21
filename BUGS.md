@@ -881,7 +881,7 @@ bug 20's verification (2026-10-19).
 # bug tracker
 
 Every bug we ever hit and who killed it. No name = still open.
-44 bugs total: 39 fixed, 4 open, 1 that only looked like one.
+45 bugs total: 40 fixed, 4 open, 1 that only looked like one.
 
 | bug number | fixed by | what was the bug | commit |
 | --- | --- | --- | --- |
@@ -928,3 +928,4 @@ Every bug we ever hit and who killed it. No name = still open.
 | bug 41 | 12hrformat | fastfetch shows the Ubuntu logo — the image's os-release is base-files', and the owner's config was never in the image | (fix in tree 2026-10-19) |
 | bug 42 | 12hrformat | `sudo startxfce` leaves a root desktop — the launcher had no inverse of init's drop | (fix in tree 2026-10-19) |
 | bug 43 | 12hrformat | Discord installs and opens nothing — its Chromium sandbox needs a root-owned setuid `chrome-sandbox`, and the app is unpacked into the user's own home | (payload republished 2026-10-19) |
+| bug 45 | 12hrformat | the systemd migration put PID 1 at `/lib/systemd/systemd`, but noble's deb ships it at `/usr/lib/systemd/systemd` (merged-usr) and Copper's tree is not merged — the ISO would not have booted | (fix in tree 2026-10-21) |
