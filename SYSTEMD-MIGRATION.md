@@ -167,11 +167,12 @@ with three possible causes.
   does not would still slip through), and the reason the gate also rejects a key
   in the wrong section rather than trusting the version. A host with no
   `systemd-analyze` says `skip` out loud instead of claiming a pass.
-- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants eleven
+- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants twelve
   defects — misplaced key, nonexistent directive, bare glob, no repoint, unwired
   unit, removed `--console`, busybox power links, 0777 units, leaked build tool,
-  a `tree_hash` blinded to symlinks, and a `systemd)` dispatch line without its
-  toolchain — and every one is caught. That suite is
+  a `tree_hash` blinded to symlinks, a `systemd)` dispatch line without its
+  toolchain, and the stage's verify filter weakened to a version-specific
+  deny-list — and every one is caught. That suite is
   what found three real bugs during development, including a `readelf | sed |
   head` pipeline that aborts under `set -o pipefail` and would have killed a
   real build.
@@ -206,8 +207,18 @@ The push was green locally and red on the runner, twice, and both were real:
   expectations are regexes now. A suite that goes red on the runner's distro
   rather than on the code is its own bug.
 
+A second push then showed the same wording problem in the **stage** itself,
+which is the one that would have failed a real build: `build_systemd`'s
+chrooted `systemd-analyze verify` used the same deny-list, so on the runner it
+kept a host-artifact line and exited 1 — `build_systemd ran` went red in the
+gate while the gate was green on the dev box. It is now the same allow-list.
+The gate could not have caught it by running the stage (the stage only fails on
+255), so it tests the filter's contract directly, feeding it both wordings of a
+real defect and four shapes of host noise; a twelfth sabotage plants the
+deny-list to prove that check is load-bearing.
+
 Both are recorded here rather than in the commit alone because they are the
-argument for the two new checks: a gate that is green only on the machine it was
+argument for the new checks: a gate that is green only on the machine it was
 written on is not a gate.
 
 **NOT verified — this is the honest gap:**

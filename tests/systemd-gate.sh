@@ -393,6 +393,71 @@ else
         "no require_toolchain guard in build_copper (a missing build_musl would crash on CC)"
 fi
 
+# --------------------------- 7. the stage's verify filter is version-stable --
+# This is the second CI failure, and the one the gate's own green run missed:
+# build_systemd's chrooted `systemd-analyze verify` kept any line naming the
+# unit and dropped a DENY-list of known noise. That list was tuned on the dev
+# box's systemd 261 and does not match 255's wording, so on the ubuntu-24.04
+# runner a host-artifact line survived and the STAGE exited 1 -- "build_systemd
+# ran" went red in the gate while `bash tests/systemd-gate.sh` was green here.
+#
+# Section 2 cannot catch it (it calls build_systemd, which only fails on 255),
+# so the filter's CONTRACT is tested directly instead: run the stage's own
+# filter expression over synthetic verify output and assert it accepts the two
+# wordings of a real misplaced key and rejects the host-noise shapes. Version
+# strings are inputs here, so this passes on whatever systemd the dev box has
+# and fails the moment the filter goes back to a version-specific deny-list.
+vfilter() {   # vfilter <unit> <line...> -> prints lines that would fail the unit
+    ul=$1; shift
+    printf '%s\n' "$@" \
+      | grep -E "Unknown (key|lvalue|section)|Failed to parse|Empty (ExecStart|section)|not a valid" \
+      | grep -F "$ul" || true
+}
+
+# The expression above must BE the stage's expression, not a copy of it that
+# can drift. build_systemd's chrooted verify builds `left` with this exact
+# regex; if someone weakens it back to a deny-list, the behavioural checks
+# below would keep passing while the stage went red on CI again -- the original
+# bug, one layer up. So assert the stage still carries the allow-list.
+VF_RE='Unknown \(key\|lvalue\|section\)\|Failed to parse\|Empty \(ExecStart\|section\)\|not a valid'
+if grep -q "grep -E \"$VF_RE\"" "$BUILD"; then
+    ok "the stage's verify filter is the allow-list this gate tests"
+else
+    bad "the stage's verify filter is the allow-list this gate tests" \
+        "build_systemd no longer filters verify output with the allow-list regex"
+fi
+
+U1=copper-seatd.service
+# real defects: 255 spells it "Unknown key name", 256+ dropped "name"
+d255="/etc/systemd/system/$U1:12: Unknown key name 'SocketMode' in section 'Service', ignoring."
+d261="/etc/systemd/system/$U1:12: Unknown key 'SocketMode' in section 'Service', ignoring."
+dempty="/etc/systemd/system/$U1:5: Empty section [Service], ignoring."
+dparse="/etc/systemd/system/$U1:3: Failed to parse file: bad assignment."
+# host noise that must NOT fail the unit
+nman="/etc/systemd/system/$U1:9: Can't show udhcpc(1), ignoring: No such file or directory"
+ncmd="/etc/systemd/system/$U1:20: Command /usr/bin/seatd is not executable, ignoring."
+ndep="Dependency failed. Failed to start /etc/systemd/system/$U1."
+nmiss="/usr/lib/systemd/system/systemd-udev-settle.service: not found"
+
+check_v() {   # check_v <label> <expect-nonempty> <lines...>
+    _l=$1; _want=$2; shift 2
+    _got=$(vfilter "$U1" "$@")
+    if { [ "$_want" = yes ] && [ -n "$_got" ]; } \
+       || { [ "$_want" = no ] && [ -z "$_got" ]; }; then
+        ok "verify filter $_l"
+    else
+        bad "verify filter $_l" "got [$(printf '%s' "$_got" | tr '\n' '|')], wanted nonempty=$_want"
+    fi
+}
+check_v "rejects a misplaced key, systemd 255 wording" yes "$d255"
+check_v "rejects a misplaced key, systemd 256+ wording" yes "$d261"
+check_v "rejects an empty section"                     yes "$dempty"
+check_v "rejects a parse error"                        yes "$dparse"
+check_v "ignores a missing man page (host)"            no  "$nman"
+check_v "ignores 'Command ... is not executable' (host)" no "$ncmd"
+check_v "ignores a dependency the host lacks"          no  "$ndep"
+check_v "ignores noise about another unit"             no  "$nmiss"
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "systemd migration gate: all checks passed"

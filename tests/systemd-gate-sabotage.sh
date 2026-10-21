@@ -191,6 +191,15 @@ run_case "systemd stage loses its toolchain prerequisite" "$B" \
     'systemd)    build_rootfs' \
     "systemd stage runs its prerequisites"
 
+# 12. The stage's verify filter goes back to a deny-list -- the SECOND CI
+#     failure. A deny-list tuned on the dev box's systemd 261 kept a
+#     host-artifact line on the runner's 255 and failed the build. Planted by
+#     replacing the allow-list regex with the old deny-list.
+run_case "verify filter weakened to a version-specific deny-list" "$B" \
+    '          | grep -E "Unknown (key|lvalue|section)|Failed to parse|Empty (ExecStart|section)|not a valid" \' \
+    '          | grep -vE "Can'"'"'t show |failed with exit status|\(man\)" \' \
+    "verify filter"
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "sabotage suite: the gate catches every planted defect"
