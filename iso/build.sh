@@ -2202,6 +2202,40 @@ build_systemd() {
   # working desktop for a boot detail.
   cp -a -n "$STAGE"/. "$TGT"/
 
+  # ---- merged-usr, for the systemd subtree only -----------------------------
+  # Ubuntu's systemd deb ships PID 1 at /usr/lib/systemd/systemd, because every
+  # Debian-family tree since bookworm is merged-usr: /lib IS /usr/lib, spelled
+  # as a symlink at the top level. Copper's tree is NOT merged-usr -- /lib here
+  # is a real directory holding the musl loader and busybox -- so the deb's
+  # files land at $TGT/usr/lib/systemd/... and NOTHING lands at
+  # $TGT/lib/systemd/... . That is what the second real CI run found: 39
+  # packages unpacked (58M), and then `/lib/systemd/systemd did not arrive`,
+  # because the gate at the end of this stage looks at the path the KERNEL and
+  # /sbin/init use, and the packages never wrote it.
+  #
+  # It was green locally for a bad reason: the gate's mock payload put its fake
+  # PID 1 at payload/lib/systemd/systemd, a layout no noble deb produces, so
+  # the stage's own check was satisfied by the fixture rather than by the
+  # package. The fixture is merged-usr-shaped now, which is the whole point --
+  # a test that models the input wrongly certifies the wrong code.
+  #
+  # The fix is the merge, scoped to the one subtree that needs it. systemd was
+  # compiled with SYSTEMD_UTIL_DIR=/usr/lib/systemd, so it reads its units and
+  # helpers from /usr/lib/systemd natively and is happy; the only path that must
+  # ALSO answer at /lib is PID 1 itself, which the kernel execs by the name in
+  # /sbin/init. A symlink makes one directory answer at both names, exactly as
+  # a merged-usr system does, and leaves the rest of Copper's /lib untouched.
+  #
+  # Only made when the packages actually brought /usr/lib/systemd: a tree that
+  # already resolved /lib/systemd (a future merged-usr rootfs, or a cached tree
+  # from one) is left alone, and the check below still has to pass.
+  if [ -d "$TGT/usr/lib/systemd" ] \
+     && [ ! -e "$TGT/lib/systemd" ]; then
+    mkdir -p "$TGT/lib"
+    ln -sfn ../usr/lib/systemd "$TGT/lib/systemd"
+    echo "  lib/systemd -> usr/lib/systemd (merged-usr bridge; the tree is not merged)"
+  fi
+
   # systemd needs the glibc loader at the path the kernel hard-codes, the same
   # way every other glibc ELF in this image does. build_gui creates it; this
   # stage can run against a tree that was never through build_gui (or through
