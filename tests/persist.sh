@@ -94,12 +94,18 @@ exit 0
 EOF
 chmod +x "$ROOT/bin/mkfs.ext4"
 
-# Stub blkid, the probe that decides whether a disk still has files on it. A
-# disk named in $ROOT/has-fs reports a filesystem; every other disk reports
-# nothing, which is what an empty disk does.
+# Stub blkid, the probe that decides whether a disk still has files on it and
+# whether those files are Copper's own. A disk named in $ROOT/has-fs reports a
+# filesystem; every other disk reports nothing, which is what an empty disk
+# does. A disk named in $ROOT/is-copper reports the COPPER label -- the two
+# files are separate because the wizard now asks two different questions of the
+# same output ("is there a filesystem" and "is it Copper's"), and case 9 needs a
+# disk that answers yes to one and no to the other.
 cat > "$ROOT/bin/blkid" <<EOF
 #!/bin/sh
-if [ -f "$ROOT/has-fs" ] && grep -qx "\$1" "$ROOT/has-fs"; then
+if [ -f "$ROOT/is-copper" ] && grep -qx "\$1" "$ROOT/is-copper"; then
+    echo "\$1: LABEL=\"COPPER\" UUID=1234-5678 TYPE=ext4"
+elif [ -f "$ROOT/has-fs" ] && grep -qx "\$1" "$ROOT/has-fs"; then
     echo "\$1: UUID=1234-5678 TYPE=ext4"
 fi
 exit 0
@@ -339,6 +345,73 @@ else
     ok "the wizard left the disks alone when it was not a Copper boot"
 fi
 mv "$ROOT/var/lib/copper/live-boot.off" "$ROOT/var/lib/copper/live-boot"
+
+# -------------------------- 9. one disk that is already Copper's own (COPPER)
+# The feature this gate gained. A VM that Copper has booted on once has a disk
+# labelled COPPER and a filesystem on it; before this change that fell through
+# to the ERASE prompt, because "has a filesystem" was treated as "has somebody's
+# data". It is not: /init mounts exactly this label as the writable layer, so a
+# COPPER disk is already a persistence disk and is reused, never formatted and
+# never offered for erasure.
+#
+# upper=ram, so persistence is NOT already on -- this is the first boot against
+# a disk that happens to be Copper's from a previous run, which is precisely the
+# re-run-a-VM case. The disk must be claimed silently: no list, no countdown, no
+# ERASE, and above all no mkfs.
+echo /dev/sdy > "$ROOT/is-copper"
+run_wizard "Press Enter to continue|"
+rm -f "$ROOT/is-copper"
+if printf '%s' "$out" | grep -q 'Already on'; then
+    ok "a disk already carrying the COPPER label was claimed without a question"
+else
+    bad "the already-COPPER disk was not recognised and reclaimed"
+    show
+fi
+if printf '%s' "$out" | grep -q 'Disk to keep files on'; then
+    bad "the ERASE list was shown for a disk that is already Copper's"
+    show
+else
+    ok "no disk list for an already-COPPER disk"
+fi
+if printf '%s' "$out" | grep -q 'press Enter to skip\|Type ERASE'; then
+    bad "an already-COPPER disk still offered a format or an ERASE"
+    show
+else
+    ok "neither a countdown nor an ERASE was offered for a disk Copper owns"
+fi
+if [ -s "$ROOT/calls/mkfs" ]; then
+    bad "an already-COPPER disk was formatted (losing its previous session): $(cat "$ROOT/calls/mkfs")"
+else
+    ok "nothing was formatted -- the disk's existing contents are kept"
+fi
+if printf '%s' "$out" | grep -q 'Reboot to turn persistence on'; then
+    ok "the reclaimed disk still takes the boot into persistence"
+else
+    bad "the already-COPPER path did not reach the reboot"
+    show
+fi
+
+# ---------------------- 10. a foreign filesystem is still not taken silently
+# The line that must not move: COPPER is reusable, somebody else's data is not.
+# Same single disk, same filesystem, but no COPPER label -- so it is the ERASE
+# prompt and nothing else. This is the case 3 assertion re-stated next to case 9
+# so the contrast is in one place: the label, not the presence of a filesystem,
+# is what decides.
+echo /dev/sdy > "$ROOT/has-fs"
+run_wizard "Disk to keep files on|" \
+           "Press Enter to continue|"
+rm -f "$ROOT/has-fs"
+if printf '%s' "$out" | grep -q 'Disk to keep files on'; then
+    ok "a foreign filesystem was still listed, not claimed"
+else
+    bad "a foreign filesystem was taken without asking"
+    show
+fi
+if [ -s "$ROOT/calls/mkfs" ]; then
+    bad "a foreign filesystem was formatted without ERASE: $(cat "$ROOT/calls/mkfs")"
+else
+    ok "nothing was formatted when the disk held foreign data"
+fi
 
 echo
 if [ $fail -gt 0 ]; then
