@@ -1,7 +1,7 @@
 # Copper Linux — the seat daemon.
 #
 # The under-systemd home for what copper-init's start_seatd() does: run
-# /usr/bin/seatd -g _seatd, which is what starthyprland then finds on
+# `seatd -g _seatd`, which is what starthyprland then finds on
 # /run/seatd.sock. The migration document's eventual answer is logind, but
 # retiring seatd is a separate step: Hyprland's seat path is tested as-is and
 # a seat swap and a PID-1 swap in the same boot would be two suspects for one
@@ -13,18 +13,46 @@
 # addgroup when the marker existed; under systemd the wizard still does it
 # (copper-firstboot), and this unit only has to start the daemon.
 #
+# The binary's PATH is not fixed, and a boot proved it: noble's seatd package
+# installs it at /usr/sbin/seatd, while this unit said /usr/bin/seatd. systemd
+# ran a command that did not exist, the unit failed, Restart=on-failure started
+# it again, and every attempt printed [FAILED] onto the same tty the first-boot
+# wizard was drawing its form on -- the form glitched and the seat was never up.
+# copper-init.c always searched both directories; the unit now does too, and
+# names the real path in the failure message instead of a plausible one.
+#
 # handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper seat daemon (seatd)
 Documentation=man:seatd(1)
+ConditionPathExists=|/usr/bin/seatd
+ConditionPathExists=|/usr/sbin/seatd
 After=systemd-udev-settle.service
 Before=copper-console.service
+# A seatd that exits immediately must not become a restart storm on the console
+# -- the first-boot wizard owns that tty, and systemd's status lines over it
+# corrupt the form the user is typing into. Five fast attempts then give up; the
+# unit is still wanted, so a later `systemctl restart copper-seatd` works, and a
+# machine that cannot run seatd (no Hyprland) is not a machine that cannot boot.
+# Both keys live in [Unit], which is where systemd reads them from -- in
+# [Service] they are "Unknown key ... ignoring", a silent no-op AND a line the
+# stage's verify filter rejects, so this was a build failure waiting on a runner.
+StartLimitIntervalSec=30
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/seatd -g _seatd
-# A daemon, not a job: it runs for the life of the machine.
+# Search the two directories the package has used, exactly as copper-init did,
+# rather than hard-coding one. exec replaces the shell, so seatd is still the
+# process systemd manages and its exit status is still the unit's.
+ExecStart=/bin/sh -c 'for p in /usr/bin/seatd /usr/sbin/seatd; do \
+    [ -x "$p" ] && exec "$p" -g _seatd; done; \
+    echo "copper-seatd: no seatd binary at /usr/bin/seatd or /usr/sbin/seatd" >&2; \
+    exit 127'
+# A daemon, not a job: it runs for the life of the machine. The restart policy
+# is bounded by the StartLimit* keys in [Unit].
 Restart=on-failure
+RestartSec=5
 RuntimeDirectory=seatd
 # seatd creates /run/seatd.sock itself with the _seatd group. There is no
 # socket unit here on purpose: socket activation would mean systemd binds the
