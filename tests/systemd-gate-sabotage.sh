@@ -21,7 +21,17 @@
 #   3. under that corrected errexit, the SHIPPED stage aborted on its own
 #      `readelf | sed | head` pipeline — head closes the pipe, sed takes
 #      SIGPIPE, and `set -o pipefail` makes the pipeline non-zero. A real build
-#      would have died there too.
+#      would have died there too;
+#   4. and the suite itself was red: five of its own cases had never been run
+#      against the tree they were written for. Two planted a shell syntax
+#      error instead of the defect they meant — the replacement left an `fi`
+#      behind, so build.sh could not be sourced at all and the gate went red
+#      for a reason that had nothing to do with the case. One was anchored to
+#      a line that had since been re-wrapped, so it never applied. And two
+#      asked the gate to catch something in a stage the gate does not run,
+#      which no planting can make happen. A suite that is red for its own
+#      reasons teaches its reader to ignore it, which is the one thing a
+#      sabotage suite exists to prevent.
 #
 # Root only (the gate chroots). Run: sudo tests/systemd-gate-sabotage.sh
 #
@@ -251,32 +261,37 @@ else
     fails=$((fails + 1))
 fi
 
-# 16. The seatd binary is absent. Sabotage by deleting both possible locations
-#     from the fixture in the gate itself.
-run_case "seatd binary missing from the tree" "$B" \
-    '  if [ ! -x "$TGT/usr/bin/seatd" ] && [ ! -x "$TGT/usr/sbin/seatd" ]; then' \
-    '  if false; then
-  fi
-  # sabotage
-  rm -f "$TGT/usr/bin/seatd" "$TGT/usr/sbin/seatd"' \
+# 16. The seatd binary is absent from the tree. The stage asserts it is there
+#     (a boot found the unit pointing at a path that did not exist), and the
+#     gate's fixture is what makes the tree the stage sees. Deleting the binary
+#     from the FIXTURE is the honest way to plant this: the tree the stage
+#     builds is the tree the gate checks, and a stage that accepted a tree
+#     without seatd would ship a unit that execs nothing.
+#
+#     Planting it in the stage's own assertion instead would prove nothing --
+#     the assertion is the thing that catches this.
+run_case "seatd binary missing from the tree" "tests/systemd-gate.sh" \
+    '         usr/bin/seatd sbin/udhcpc; do' \
+    '         sbin/udhcpc; do' \
     "no seatd binary at /usr/bin/seatd or /usr/sbin/seatd"
 
-# 17. The _seatd group is missing. The stage asserts it; the fixture pre-populates
-#     it (and the real build_gui/build_hypr append it). Delete it from the
-#     fixture's tree in the copy AND disable the assertion.
-run_case "_seatd group lost from /etc/group" "$B" \
-    "  if ! grep -q '^_seatd:' \"\$TGT/etc/group\"; then
-    echo \"systemd: /etc/group has no _seatd group; seatd -g _seatd would exit\" >&2" \
-    "  if ! grep -q '^_seatd:' \"\$TGT/etc/group\"; then
-    echo \"systemd: /etc/group has no _seatd group\" >&2; then grep -v '^_seatd:' \"\$TGT/etc/group\" > \"\$TGT/etc/group.$$\" && mv \"\$TGT/etc/group.$$\" \"\$TGT/etc/group\"; " \
-    "_seatd group did not install"
+# 17. The _seatd group is missing. build_gui appends it, build_rootfs' second
+#     pass clobbers /etc/group, and a boot found seatd unable to start because
+#     of it. The stage asserts the group; the gate's fixture carries it. Take
+#     the line out of the fixture and the assertion must fire.
+run_case "_seatd group lost from /etc/group" "tests/systemd-gate.sh" \
+    "_seatd:x:999:\\n' \\" \
+    "' \\" \
+    "no _seatd group"
 
 # 18. The unit hard-codes ONE directory again. The gate reads the INSTALLED unit
 #     and checks for both paths; edit the unit AFTER it's installed in the copy by
 #     sabotaging the stage to replace it with a hard-coded version.
 run_case "copper-seatd.service hard-codes /usr/bin/seatd again" "$B" \
-    'ln -sf /etc/systemd/system/copper.target "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"' \
-    'ln -sf /etc/systemd/system/copper.target "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"
+    'ln -sf /etc/systemd/system/copper.target \
+         "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"' \
+    'ln -sf /etc/systemd/system/copper.target \
+         "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"
   printf '\''[Unit]\nDescription=Copper seat daemon (seatd)\nAfter=systemd-udev-settle.service\nBefore=copper-console.service\n[Service]\nType=simple\nExecStart=/usr/bin/seatd -g _seatd\nRestart=on-failure\nRuntimeDirectory=seatd\n[Install]\nWantedBy=copper.target\n'\'' > "$TGT/etc/systemd/system/copper-seatd.service"' \
     "copper-seatd.service searches both /usr/bin and /usr/sbin"
 
@@ -288,24 +303,88 @@ run_case "ldconfig.service left unmasked" "$B" \
     ':' \
     "ldconfig.service is masked"
 
-# 20. The hypr skip guard stops checking seatd. The guard is what keeps the build
-#     fast; a guard that doesn't check its own guarantees skips the stage that
-#     would rebuild a missing binary. Disabling the guard AND removing the binary
-#     from the tree makes the skip real.
-run_case "hypr guard blind to seatd (skips a tree it must rebuild)" "$B" \
+# 20. The hypr skip guard stops checking seatd. The guard decides whether a
+#     cached tree can be skipped; a guard that doesn't check its own guarantees
+#     skips the stage that would rebuild a missing binary -- and the tree that
+#     ships points copper-seatd.service at a binary that is not there, which is
+#     what the first boot found (bug 47).
+#
+#     The gate does not run build_hypr -- it runs the systemd stage over a
+#     mocked tree -- so there is no runtime path here to break. What the gate
+#     CAN do, and what section 8 of the gate does, is hold the shipped guard to
+#     its contract: so this case plants the blindness and expects the gate to
+#     say so.
+run_case "hypr skip guard blind to seatd" "$B" \
     '     && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
 ' \
     $'     && true \\\n' \
-    "no seatd binary at /usr/bin/seatd or /usr/sbin/seatd"
+    "build_hypr's skip guard still checks for seatd"
 
 # 21. The gui skip guard stops checking _seatd. The group is appended by build_gui;
-#     build_rootfs' second pass clobbers it. Disabling the guard AND deleting the
-#     group makes the skip real and the stage's assertion must catch it.
-run_case "gui guard blind to _seatd (skips a tree it must rebuild)" "$B" \
+#     build_rootfs' second pass clobbers it. A guard that stops asking skips the
+#     stage that would put it back, and seatd cannot start without the group.
+#
+#     Same shape as 20: the guard is the gate's to hold, not a runtime path.
+run_case "gui skip guard blind to the _seatd group" "$B" \
     '     && grep -q '"'"'^_seatd:'"'"' "$TGT/etc/group" \
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then' \
-    $'     && stamped_skip "$WORK/gui.stamp" "$SELF"; then\ngrep -v \'^_seatd:\' "$TGT/etc/group" > "$TGT/etc/group.$$" && mv "$TGT/etc/group.$$" "$TGT/etc/group"' \
-    "_seatd group did not install"
+    '     && stamped_skip "$WORK/gui.stamp" "$SELF"; then' \
+    "build_gui's skip guard still checks for the _seatd group"
+
+# 22. The ordering cycle that shipped. copper-tty-clear.service was ordered
+#     after sysinit.target AND before systemd-udevd.service, while systemd's
+#     own udevd unit is ordered before sysinit.target -- a loop on
+#     sysinit.target, which fails the boot's initial transaction outright (not
+#     a degraded boot: no boot).
+#
+#     Planted by putting the After= back. The point of this case is that it
+#     must be caught by the TRANSACTION check: verified one unit at a time,
+#     every unit in the loop looks perfect, and that is how the cycle shipped
+#     in the first place.
+run_case "copper-tty-clear.service ordered into a cycle with sysinit.target" \
+    "$U/copper-tty-clear.service" \
+    'Before=sysinit.target systemd-udevd.service copper-firstboot.service copper-console.service' \
+    'After=sysinit.target
+Before=sysinit.target systemd-udevd.service copper-firstboot.service copper-console.service' \
+    "form no ordering cycle"
+
+# 23. The STAGE stops checking for an ordering cycle. The gate's own
+#     transaction check would still see a planted cycle, but the stage is what
+#     runs on the CI runner -- a gate that only proves itself is not the same
+#     as a build that is protected. Removing the stage's check must go red.
+T=$(mktemp -d /tmp/systemd-sabotage.XXXXXX); cp -a "$REPO" "$T/repo"
+python3 - "$T/repo/$B" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "grep -qiE 'ordering cycle|cyclic ordering|order is cyclic|break cycle'"
+assert old in s, "the stage's cycle check is not where it was expected"
+s = s.replace(old, "grep -qiE 'nothing at all'", 1)
+open(p, 'w', encoding='utf-8').write(s)
+PY
+out=$(bash "$T/repo/tests/systemd-gate.sh" 2>&1); rc=$?
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qE "stage checks the units for an ordering cycle"; then
+    echo "  ok    gate rejects: the stage's ordering-cycle check disabled"
+else
+    echo "  FAIL  gate MISSED: the stage's ordering-cycle check disabled (rc=$rc)"
+    printf '%s\n' "$out" | grep -i "fail" | head -4 | sed 's/^/          /'
+    fails=$((fails + 1))
+fi
+rm -rf "$T"
+
+# 24. The fixture goes back to modelling systemd's udevd unit wrongly. The
+#     fixture used to say "Description=udev" and nothing else, so the ordering
+#     graph the stage's chrooted verify walked was not the graph the boot
+#     builds -- and the stage's cycle check could not see the cycle even with
+#     the right code. The real noble udev unit carries DefaultDependencies=no
+#     and Before=sysinit.target; without both, the stage is blind.
+if grep -q 'Before=sysinit.target' "$REPO/tests/systemd-gate.sh" \
+   && grep -q 'DefaultDependencies=no' "$REPO/tests/systemd-gate.sh"; then
+    echo "  ok    fixture models systemd's own udevd unit (ordering included)"
+else
+    echo "  FAIL  fixture does not model systemd's udevd unit; the stage's cycle check is blind"
+    fails=$((fails + 1))
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then
