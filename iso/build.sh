@@ -1214,7 +1214,18 @@ copper_identity() {
 # cache costs image formats, and is the first thing to look at if the
 # session comes up drawing boxes instead of icons.
 build_gui() {
+  # "Already staged" is not the same question as "the packages are there". The
+  # _seatd group is created by a line in THIS stage, and a later stage can take
+  # it back out: build_rootfs runs again before the ISO is made (`build.sh iso`
+  # re-runs the whole chain) and `cp -a "$ROOT/rootfs-overlay/."` overwrites
+  # /etc/group with the eight-line skeleton, erasing whatever this stage
+  # appended. The stamp still matches, so this guard used to skip and the group
+  # never came back -- and the boot paid for it: the systemd image shipped
+  # without _seatd, seatd could not start, and its unit restart-looped on the
+  # wizard's tty. The group is part of what this stage guarantees, so it is
+  # part of "already staged".
   if [ -e "$TGT/usr/bin/Xorg" ] && [ -e "$TGT/usr/bin/startxfce4" ] \
+     && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then
     echo "gui: already staged, skipping"
     # Skipping the packages must not skip their repair: a cached tree written
@@ -1560,9 +1571,19 @@ build_hypr() {
   # hypr's stamp would still match and skip the stage that puts the files back.
   # So the stub the config require()s is part of "already staged": if it is
   # gone, the skeleton is not whole and the whole stage re-runs to re-unpack it.
+  #
+  # seatd and the _seatd group are here for the same reason, and the boot found
+  # them missing. The gate below ("seatd did not arrive from the packages") is
+  # the loud check, but a guard that skips the stage never runs it: the guard
+  # asked only about Hyprland, so a tree that HAD Hyprland and had LOST seatd
+  # (or the group build_gui appends, which build_rootfs' overlay copy clobbers
+  # on the second pass) skipped everything, passed everything, and shipped a
+  # seatd unit pointing at a binary that was not there.
   if [ -e "$TGT/usr/bin/Hyprland" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/conf/environments/default.lua" ] \
+     && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
+     && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/hypr.stamp" "$SELF"; then
     echo "hypr: already staged, skipping"; return
   fi
@@ -2366,6 +2387,12 @@ build_systemd() {
   # added to the directory and just work.
   install -m 0644 "$ROOT/systemd"/*.service "$TGT/etc/systemd/system/"
   install -m 0644 "$ROOT/systemd"/*.target  "$TGT/etc/systemd/system/"
+  # The console-clear helper is a SCRIPT, not a unit, and it is the one file in
+  # iso/systemd/ that has to be executable and to live on PATH (its unit runs it
+  # as /usr/bin/copper-tty-clear). 0755 here, not 0644 like the units: a unit
+  # systemd reads is data, a program systemd execs is not.
+  install -D -m 0755 "$ROOT/systemd/copper-tty-clear" \
+          "$TGT/usr/bin/copper-tty-clear"
   for f in "$ROOT/systemd"/*.conf; do
     [ -e "$f" ] || continue
     install -m 0644 "$f" "$TGT/etc/systemd/"
@@ -2376,7 +2403,7 @@ build_systemd() {
   done
 
   local u
-  for u in copper-firstboot.service copper-console.service; do
+  for u in copper-tty-clear.service copper-firstboot.service copper-console.service; do
     ln -sf "/etc/systemd/system/$u" \
            "$TGT/etc/systemd/system/copper.target.wants/$u"
   done
@@ -2421,6 +2448,23 @@ build_systemd() {
     ln -sf /usr/bin/systemctl "$TGT/sbin/$cmd"
   done
 
+  # ---- ldconfig: mask a unit that cannot succeed here ----------------------
+  # systemd ships ldconfig.service as ExecStart=/sbin/ldconfig -X, and this
+  # image has no ldconfig at all -- the gui and hypr closures never brought one,
+  # and there is no DEB postinst on this build to run it. On the booted ISO it
+  # therefore failed every time, and it was one of the two entries in
+  # `systemctl --failed`. A live image with no /etc/ld.so.cache and no ldconfig
+  # has nothing for the unit to do, so mask it: /dev/null at the unit's name is
+  # systemd's own way of saying "this exists and must not run", which is truer
+  # than a unit that is enabled and broken. Masking is idempotent.
+  #
+  # The mask points at systemd's unit directory, and it has to. The name is
+  # resolved through /usr/lib/systemd/system (where the deb put ldconfig.service)
+  # and through /etc/systemd/system (which wins) -- so the link is made in /etc,
+  # where an administrator's own unmask is a rm away, and it shadows the vendor
+  # copy without touching it.
+  ln -sf /dev/null "$TGT/etc/systemd/system/ldconfig.service"
+
   # ---- gates --------------------------------------------------------------
   if [ ! -x "$TGT/lib/systemd/systemd" ]; then
     echo "systemd: /lib/systemd/systemd did not arrive from the packages" >&2
@@ -2457,14 +2501,15 @@ build_systemd() {
   # that silently never starts, which on a booted machine looks exactly like
   # the feature not existing.
   local want uf
-  for uf in copper.target copper-firstboot.service copper-console.service \
-            copper-seatd.service copper-network.service; do
+  for uf in copper.target copper-tty-clear.service copper-firstboot.service \
+            copper-console.service copper-seatd.service copper-network.service; do
     if [ ! -f "$TGT/etc/systemd/system/$uf" ]; then
       echo "systemd: unit $uf did not install" >&2
       exit 1
     fi
   done
-  for want in copper.target.wants/copper-firstboot.service \
+  for want in copper.target.wants/copper-tty-clear.service \
+              copper.target.wants/copper-firstboot.service \
               copper.target.wants/copper-console.service \
               copper.target.wants/copper-seatd.service \
               copper.target.wants/copper-network.service \
@@ -2474,6 +2519,48 @@ build_systemd() {
       exit 1
     fi
   done
+  # The clear helper is exec'd by the unit above. A unit with an ExecStart that
+  # does not exist is the seatd failure all over again, one unit over -- so it is
+  # asserted executable at the exact path the unit names.
+  if [ ! -x "$TGT/usr/bin/copper-tty-clear" ]; then
+    echo "systemd: /usr/bin/copper-tty-clear is missing or not executable;" >&2
+    echo "          copper-tty-clear.service would exec a path that does not exist" >&2
+    exit 1
+  fi
+  # The seat is part of the migration, not a nicety: copper-seatd.service is
+  # wanted by copper.target, and the two ways it can be broken are both silent.
+  # The binary must be at a path the unit actually searches -- the unit's own
+  # ExecStart lists /usr/bin/seatd and /usr/sbin/seatd -- and the _seatd group
+  # must exist, or seatd exits before it binds the socket. A boot found the
+  # first of these wrong (the unit named /usr/bin/seatd; noble installs
+  # /usr/sbin/seatd) and the second missing (build_rootfs overwrote /etc/group
+  # after build_hypr had appended it). Neither was caught here, so both are
+  # asserted here now.
+  if [ ! -x "$TGT/usr/bin/seatd" ] && [ ! -x "$TGT/usr/sbin/seatd" ]; then
+    echo "systemd: no seatd binary at /usr/bin/seatd or /usr/sbin/seatd;" >&2
+    echo "          copper-seatd.service would exec a path that does not exist" >&2
+    exit 1
+  fi
+  if ! grep -q '^_seatd:' "$TGT/etc/group"; then
+    echo "systemd: /etc/group has no _seatd group; seatd -g _seatd would exit" >&2
+    echo "          before binding /run/seatd.sock (the wizard's addgroup line did not survive)" >&2
+    exit 1
+  fi
+  # The mask, read back the way systemd resolves it: the name in /etc must be a
+  # symlink to /dev/null. A mask that silently failed to install is the failure
+  # this whole block is about, so it is asserted rather than assumed.
+  if [ "$(readlink "$TGT/etc/systemd/system/ldconfig.service" 2>/dev/null)" != /dev/null ]; then
+    echo "systemd: ldconfig.service is not masked; the image has no ldconfig and" >&2
+    echo "          the unit would fail on every boot (it did, on the first boot)" >&2
+    exit 1
+  fi
+  # (An ExecStart-path sweep was tried here and removed: the units legitimately
+  # name shell expressions -- copper-seatd.service runs
+  # `/bin/sh -c '… exec /usr/sbin/seatd; done; …'` -- and runtime paths such as
+  # /run/udhcpc.eth0.pid, so a parser that reads "every absolute word after
+  # ExecStart" rejects correct units. The assertions just above say what the
+  # boot actually proved, without guessing at shell syntax.)
+
   # The mode too, not just the presence. A unit that installed 0777 is a unit
   # systemd reads with a warning, and the source tree is 777 on Windows, so
   # this is the check that catches a cp that should have been install -m.

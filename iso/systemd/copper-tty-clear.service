@@ -1,0 +1,52 @@
+# Copper Linux — clear the console once, before the boot messages start.
+#
+# The kernel prints its own text on the way up and it stays on tty1. systemd
+# then paints [ OK ] / [ FAILED ] at the cursor's current row, so the screen
+# shows the kernel's scrollback above the status lines instead of one clean
+# boot. A user watching a boot of this image sees exactly that: "Decompressing
+# Linux... Parsing ELF..." and then the [ OK ] block arriving underneath it.
+#
+# This unit's only job is to erase the screen in the window between "the kernel
+# has finished" and "the first thing prints". It is ordered Before= the units
+# that draw, and it is a oneshot with no RemainAfterExit: it does its work and
+# is gone, so nothing depends on its state and a later boot does it again.
+#
+# Ordered before BOTH of the things that paint on tty1 here:
+#
+#   systemd-udevd.service   the first unit sysinit.target pulls in, and the
+#                           first one systemd reports on;
+#   copper-firstboot.service the wizard, which draws the form.
+#
+# Before= is deliberately not Requires= or Wants= anywhere: this is cosmetic,
+# and a console that failed to clear is still a working console. It must never
+# be able to hold a real unit back or take one down with it.
+#
+# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
+[Unit]
+Description=Copper console clear (erase the kernel's boot text)
+DefaultDependencies=no
+# sysinit.target is the earliest point at which a normal unit can run this side
+# of the kernel handing over; before it and systemd has no job queue yet.
+After=sysinit.target
+Before=systemd-udevd.service copper-firstboot.service copper-console.service
+# Never a reason for anything to fail or wait:
+#   - not in any target's Wants, so nothing pulls it in but the console's own
+#     ordering, and it may legitimately be skipped;
+#   - the burst limit is off so a restart (there will not be one) cannot trip it.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/copper-tty-clear
+# The tty is the point. StandardInput/Output default to the journal, which is
+# right: the erase is written to /dev/tty1 by the script itself, because that is
+# the device being looked at and the journal is not. What the unit needs from
+# systemd is the TTY ownership below.
+TTYPath=/dev/tty1
+TTYReset=no
+# Nothing here is allowed to be fatal: a machine with no tty1 (serial-only) has
+# nothing to clear and must still boot.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=copper.target

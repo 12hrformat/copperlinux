@@ -1,0 +1,35 @@
+#!/bin/sh
+# Wipe the console and leave the cursor at the top left.
+#
+# Why this exists at all: the kernel prints its own text on the way up
+# ("Decompressing Linux... Parsing ELF...", then anything the kernel has to say
+# before PID 1 runs), and on this image that text stays on tty1. systemd then
+# starts painting its [ OK ] / [ FAILED ] lines at whatever row the cursor is
+# already on, so the boot reads as two half-screens fighting -- the kernel's
+# scrollback above, the status lines below, and neither at the top.
+#
+# The fix is one erase before the status lines begin, and it has to happen on
+# the VT, from a process that owns it, before the first unit that prints. That
+# is copper-tty-clear.service's whole job; this is the body of it.
+#
+# The escape sequence, and why each part is there:
+#
+#   \033[r      reset the scrolling region DECSTBM. A console left inside a
+#               scroll region counts the erase against the region, not the
+#               screen, and \033[H then homes to the top of the REGION -- so
+#               without this the clear can leave text visible and start the
+#               cursor low. copper-firstboot's clr() resets the region for the
+#               same reason (iso/firstboot/copper-firstboot.c).
+#   \033[2J     erase the whole screen.
+#   \033[3J     drop the scrollback too, where the console supports it. Cheap,
+#               and it is what stops a user scrolling up into kernel text after
+#               a clear that was only meant for the visible screen.
+#   \033[H      home the cursor.
+#
+# Written to /dev/tty1, not to stdout: this runs under systemd, where stdout is
+# the journal, and the journal is not the thing being looked at. If tty1 cannot
+# be opened (a serial-only machine, a console that never came up) there is
+# nothing to clear and nothing to fail -- hence the `|| exit 0` and the unit's
+# tolerant Type=oneshot, which must never be a reason a boot stops.
+printf '\033[r\033[2J\033[3J\033[H' > /dev/tty1 2>/dev/null || exit 0
+exit 0

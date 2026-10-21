@@ -251,6 +251,62 @@ else
     fails=$((fails + 1))
 fi
 
+# 16. The seatd binary is absent. Sabotage by deleting both possible locations
+#     from the fixture in the gate itself.
+run_case "seatd binary missing from the tree" "$B" \
+    '  if [ ! -x "$TGT/usr/bin/seatd" ] && [ ! -x "$TGT/usr/sbin/seatd" ]; then' \
+    '  if false; then
+  fi
+  # sabotage
+  rm -f "$TGT/usr/bin/seatd" "$TGT/usr/sbin/seatd"' \
+    "no seatd binary at /usr/bin/seatd or /usr/sbin/seatd"
+
+# 17. The _seatd group is missing. The stage asserts it; the fixture pre-populates
+#     it (and the real build_gui/build_hypr append it). Delete it from the
+#     fixture's tree in the copy AND disable the assertion.
+run_case "_seatd group lost from /etc/group" "$B" \
+    "  if ! grep -q '^_seatd:' \"\$TGT/etc/group\"; then
+    echo \"systemd: /etc/group has no _seatd group; seatd -g _seatd would exit\" >&2" \
+    "  if ! grep -q '^_seatd:' \"\$TGT/etc/group\"; then
+    echo \"systemd: /etc/group has no _seatd group\" >&2; then grep -v '^_seatd:' \"\$TGT/etc/group\" > \"\$TGT/etc/group.$$\" && mv \"\$TGT/etc/group.$$\" \"\$TGT/etc/group\"; " \
+    "_seatd group did not install"
+
+# 18. The unit hard-codes ONE directory again. The gate reads the INSTALLED unit
+#     and checks for both paths; edit the unit AFTER it's installed in the copy by
+#     sabotaging the stage to replace it with a hard-coded version.
+run_case "copper-seatd.service hard-codes /usr/bin/seatd again" "$B" \
+    'ln -sf /etc/systemd/system/copper.target "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"' \
+    'ln -sf /etc/systemd/system/copper.target "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"
+  printf '\''[Unit]\nDescription=Copper seat daemon (seatd)\nAfter=systemd-udev-settle.service\nBefore=copper-console.service\n[Service]\nType=simple\nExecStart=/usr/bin/seatd -g _seatd\nRestart=on-failure\nRuntimeDirectory=seatd\n[Install]\nWantedBy=copper.target\n'\'' > "$TGT/etc/systemd/system/copper-seatd.service"' \
+    "copper-seatd.service searches both /usr/bin and /usr/sbin"
+
+# 19. ldconfig is left unmasked. The image has no ldconfig and no ld.so.cache, so
+#     systemd's own unit fails on every boot -- which is what put it in
+#     `systemctl --failed` on the first boot. Removing the mask must go red.
+run_case "ldconfig.service left unmasked" "$B" \
+    'ln -sf /dev/null "$TGT/etc/systemd/system/ldconfig.service"' \
+    ':' \
+    "ldconfig.service is masked"
+
+# 20. The hypr skip guard stops checking seatd. The guard is what keeps the build
+#     fast; a guard that doesn't check its own guarantees skips the stage that
+#     would rebuild a missing binary. Disabling the guard AND removing the binary
+#     from the tree makes the skip real.
+run_case "hypr guard blind to seatd (skips a tree it must rebuild)" "$B" \
+    '     && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
+' \
+    $'     && true \\\n' \
+    "no seatd binary at /usr/bin/seatd or /usr/sbin/seatd"
+
+# 21. The gui skip guard stops checking _seatd. The group is appended by build_gui;
+#     build_rootfs' second pass clobbers it. Disabling the guard AND deleting the
+#     group makes the skip real and the stage's assertion must catch it.
+run_case "gui guard blind to _seatd (skips a tree it must rebuild)" "$B" \
+    '     && grep -q '"'"'^_seatd:'"'"' "$TGT/etc/group" \
+     && stamped_skip "$WORK/gui.stamp" "$SELF"; then' \
+    $'     && stamped_skip "$WORK/gui.stamp" "$SELF"; then\ngrep -v \'^_seatd:\' "$TGT/etc/group" > "$TGT/etc/group.$$" && mv "$TGT/etc/group.$$" "$TGT/etc/group"' \
+    "_seatd group did not install"
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "sabotage suite: the gate catches every planted defect"

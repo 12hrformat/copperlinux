@@ -154,6 +154,14 @@ ln -sf /sbin/shutdown "$TGT/usr/sbin/shutdown"
 mkdir -p "$TGT/usr/lib/systemd/user" "$TGT/lib/systemd"
 printf '[Unit]\nDescription=placeholder\n' > "$TGT/usr/lib/systemd/user/dconf.service"
 
+# /etc/group, with the _seatd line build_gui appends. The stage now ASSERTS this
+# group exists (a boot proved the group can be lost -- build_rootfs overwrites
+# /etc/group from the overlay on the second pass and the appending stage skips),
+# so the fixture has to carry it or the good run fails for the wrong reason.
+# The sabotage suite deletes the line to prove the assertion fires.
+printf 'root:x:0:\nnobody:x:65534:\nusers:x:100:\nwheel:x:10:\n_seatd:x:999:\n' \
+    > "$TGT/etc/group"
+
 STUB="$TMP/bin"; mkdir -p "$STUB"
 cat > "$STUB/apt-get" <<'STUBEOF'
 #!/bin/sh
@@ -191,6 +199,13 @@ for u in sysinit.target multi-user.target getty.target; do
 done
 printf '[Unit]\nDescription=udev\n\n[Service]\nType=notify\nExecStart=/usr/lib/systemd/systemd-udevd\n' \
     > "$PD/usr/lib/systemd/system/systemd-udevd.service"
+# systemd's own ldconfig.service, exactly as the deb ships it: ExecStart=/sbin/
+# ldconfig -X. This image has no ldconfig, so the unit failed on the first boot
+# and showed up in `systemctl --failed`. build_systemd masks it now; the payload
+# carries the vendor unit so the mask has a real name to shadow and a sabotage
+# case can prove the assertion reads it back.
+printf '[Unit]\nDescription=Rebuild Dynamic Linker Cache\nConditionNeedsUpdate=/etc\n\n[Service]\nType=oneshot\nExecStart=/sbin/ldconfig -X\n' \
+    > "$PD/usr/lib/systemd/system/ldconfig.service"
 DEBDIR="$TMP/debs"; mkdir -p "$DEBDIR"
 tar -C "$PD" -cf "$DEBDIR/systemd.deb" .
 tar -C "$PD" -cf "$DEBDIR/udev.deb" .
@@ -326,6 +341,7 @@ fi
 
 
 for want in \
+    copper.target.wants/copper-tty-clear.service \
     copper.target.wants/copper-firstboot.service \
     copper.target.wants/copper-console.service \
     copper.target.wants/copper-seatd.service \
@@ -342,8 +358,8 @@ done
 
 # The units must be present as real files at mode 644 -- a unit installed 0777
 # is one systemd reads with a warning, and the source tree is 777 on Windows.
-for u in copper.target copper-firstboot.service copper-console.service \
-         copper-seatd.service copper-network.service; do
+for u in copper.target copper-tty-clear.service copper-firstboot.service \
+         copper-console.service copper-seatd.service copper-network.service; do
     f="$TGT/etc/systemd/system/$u"
     if [ ! -f "$f" ]; then
         bad "installed $u" "missing"
@@ -358,6 +374,84 @@ if [ -x "$TGT/usr/bin/copper-init" ]; then
     ok "copper-init kept for copper-console.service"
 else
     bad "copper-init kept for copper-console.service" "missing or not executable"
+fi
+
+# ---- the seat: the binary and the group -----------------------------------
+# Both were wrong on the first real boot. The unit named /usr/bin/seatd while
+# noble installs /usr/sbin/seatd, so its ExecStart resolved to nothing; and the
+# _seatd group was gone because a later build_rootfs overwrote /etc/group and
+# the stage that appends the group skipped. These assert the two things the
+# boot needed, in the tree the stage produced.
+if [ -x "$TGT/usr/bin/seatd" ] || [ -x "$TGT/usr/sbin/seatd" ]; then
+    ok "a seatd binary is present where copper-seatd.service searches"
+else
+    bad "a seatd binary is present where copper-seatd.service searches" \
+        "neither /usr/bin/seatd nor /usr/sbin/seatd is executable"
+fi
+if grep -q '^_seatd:' "$TGT/etc/group"; then
+    ok "/etc/group carries the _seatd group"
+else
+    bad "/etc/group carries the _seatd group" "$(cat "$TGT/etc/group" 2>&1 | tr '\n' '|')"
+fi
+# The unit must actually search both directories, the way copper-init.c does --
+# a unit that hard-codes one is the bug this is guarding against, and reading
+# the installed unit is the only way to see it.
+if grep -q '/usr/bin/seatd' "$TGT/etc/systemd/system/copper-seatd.service" \
+   && grep -q '/usr/sbin/seatd' "$TGT/etc/systemd/system/copper-seatd.service"; then
+    ok "copper-seatd.service searches both /usr/bin and /usr/sbin"
+else
+    bad "copper-seatd.service searches both /usr/bin and /usr/sbin" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-seatd.service" 2>&1 | tr '\n' '|')"
+fi
+
+# ---- ldconfig is masked ----------------------------------------------------
+# The image has no ldconfig and no /etc/ld.so.cache; systemd's shipped unit
+# fails every boot. It is masked (/dev/null), and that is asserted because a
+# mask that silently failed to install is exactly the failure being fixed.
+if [ "$(readlink "$TGT/etc/systemd/system/ldconfig.service" 2>/dev/null)" = /dev/null ]; then
+    ok "ldconfig.service is masked (the image has no ldconfig)"
+else
+    bad "ldconfig.service is masked (the image has no ldconfig)" \
+        "readlink says '$(readlink "$TGT/etc/systemd/system/ldconfig.service" 2>/dev/null || echo missing)'"
+fi
+
+# ---- the console clear -----------------------------------------------------
+# The first thing a user sees after the kernel text is this unit's erase, and
+# the whole value is the ORDER: clear before the units that print, or the status
+# lines land on top of the kernel's scrollback and the boot reads as two screens.
+# So both halves are asserted -- the helper is exec'd where the unit names it,
+# and the ordering names the two things that paint on tty1.
+if [ -x "$TGT/usr/bin/copper-tty-clear" ]; then
+    ok "console-clear helper installed executable at /usr/bin/copper-tty-clear"
+else
+    bad "console-clear helper installed executable at /usr/bin/copper-tty-clear" \
+        "$(ls -l "$TGT/usr/bin/copper-tty-clear" 2>&1)"
+fi
+if grep -qE '^ExecStart=/usr/bin/copper-tty-clear$' \
+        "$TGT/etc/systemd/system/copper-tty-clear.service"; then
+    ok "copper-tty-clear.service execs the helper"
+else
+    bad "copper-tty-clear.service execs the helper" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-tty-clear.service" 2>&1 | tr '\n' '|')"
+fi
+# Before= must name at least the wizard: it is the thing that draws the form, and
+# a clear that runs after it would erase the form a user is filling in.
+if grep -qE '^Before=.*copper-firstboot\.service' \
+        "$TGT/etc/systemd/system/copper-tty-clear.service"; then
+    ok "copper-tty-clear.service is ordered before the wizard"
+else
+    bad "copper-tty-clear.service is ordered before the wizard" \
+        "$(grep Before "$TGT/etc/systemd/system/copper-tty-clear.service" 2>&1 | tr '\n' '|')"
+fi
+# And the script must actually emit the erase, not merely exist: read the
+# sequence out of the installed file so a helper gutted to `exit 0` goes red.
+if grep -q '033\[r' "$TGT/usr/bin/copper-tty-clear" \
+   && grep -q '033\[2J' "$TGT/usr/bin/copper-tty-clear" \
+   && grep -q '/dev/tty1' "$TGT/usr/bin/copper-tty-clear"; then
+    ok "the clear helper writes the erase sequence to /dev/tty1"
+else
+    bad "the clear helper writes the erase sequence to /dev/tty1" \
+        "$(grep -E '033|tty1' "$TGT/usr/bin/copper-tty-clear" 2>&1 | tr '\n' '|')"
 fi
 
 # The build-time verifier must not be left in the image. It is copied into the
