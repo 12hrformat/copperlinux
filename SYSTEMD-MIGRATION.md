@@ -320,6 +320,24 @@ that is green only on the machine it was written on is not a gate, and one that
 is green only against its own fixture is not one either. This is the second time
 the same stage failed that test in the same way.
 
+### The fifth push: green, and the runner said which branch it took
+
+CI run `39569804960` passed both jobs. The stage's own line in the runner's log
+is the confirmation that it was the squatter all along:
+
+```
+  39 packages unpacked (58M)
+  lib/systemd (real dir) -> usr/lib/systemd (merged-usr bridge)
+```
+
+That is the **`elif [ -d "$TGT/lib/systemd" ]` branch** — a real directory
+squatting on `lib/systemd`. The old guard asked `[ ! -e "$TGT/lib/systemd" ]`,
+got "no", and skipped; the new one normalised the squatter and moved on. So the
+third theory above was the right one, and it is now a fact read off the runner
+rather than a hypothesis. `checks` (13m57s) and `build` (7m56s) both went green,
+and **`copper-systemd.iso` was built and uploaded** alongside the default
+`copper.iso`.
+
 **NOT verified — this is the honest gap:**
 
 - **It has never been booted.** Not in a VM, not on hardware. Nothing in this
