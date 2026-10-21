@@ -247,7 +247,51 @@ require_kernel_config() {
     exit 1
   fi
 
-  echo "kernel: config looks fit to boot, to reach the network, and to draw"
+  # The disk controllers, asserted for the same reason the display drivers are:
+  # a symbol whose dependencies are unmet is dropped by olddefconfig without a
+  # word, and a kernel with no driver for the machine's disk boots to a shell
+  # that cannot find its own root.
+  #
+  # This block exists because of a real gap. The first-boot wizard offers the
+  # user every spare disk it can see, and on a VMware Quick Setup VM it saw
+  # NONE -- the wizard had nothing to offer, so a fresh machine could not be set
+  # up at all. The cause was not the wizard: ATA_PIIX, BLK_DEV_SD and BLK_DEV_NVME
+  # were all built in, but a SCSI disk needs a SCSI HOST ADAPTER, and none was.
+  # VMware's default controller for a Linux guest is LSI Logic SAS, which is
+  # SCSI_MPT3SAS (in 6.12 the old parallel mptspi driver is gone; MPT3SAS covers
+  # SAS, SPI and FC). An NVMe disk was detected only because BLK_DEV_NVME *is* in
+  # the list -- which is exactly the workaround the report described, and exactly
+  # the kind of accidental coverage that hides a missing driver.
+  #
+  # BLK_DEV_SD depends on SCSI, so asking for the SCSI disk without SCSI itself
+  # would drop both: that is why SCSI and SCSI_LOWLEVEL are asserted here and not
+  # merely enabled.
+  #
+  #   SCSI            the base any SCSI disk needs (BLK_DEV_SD depends on it)
+  #   SCSI_LOWLEVEL   the menu the host-adapter drivers live under
+  #   SCSI_MPT3SAS    LSI Logic SAS/SPI/FC -- VMware's default guest controller
+  #   VMWARE_PVSCSI   VMware Paravirtual SCSI (not VMWARE_VMXNET3: that is the
+  #                   network adapter, a different symbol entirely)
+  #   SCSI_VIRTIO     virtio-scsi, the common QEMU/KVM alternative to virtio-blk
+  #
+  # The same limit applies as to the display list: asserted =y means it compiles,
+  # not that it has initialised on that hardware. SCSI_VIRTIO and VMWARE_PVSCSI
+  # are untested until somebody boots a machine that uses them; SCSI_MPT3SAS is
+  # the one the VMware report is about.
+  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO ; do
+    grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
+  done
+  if [ -n "$missing" ]; then
+    echo "kernel: these disk drivers did not survive olddefconfig:$missing" >&2
+    echo "        Without a driver for the machine's disk there is no /dev/sda," >&2
+    echo "        so the first-boot wizard has no disk to offer and a VMware" >&2
+    echo "        guest cannot be set up at all. This build would boot to an" >&2
+    echo "        empty wizard." >&2
+    exit 1
+  fi
+
+  echo "kernel: config looks fit to boot, to reach the network, to draw, and to"
+  echo "kernel: find a disk"
 }
 
 build_kernel() {
@@ -299,6 +343,8 @@ build_kernel() {
       --enable E1000 --enable E1000E \
       --enable VMXNET3 --enable VMWARE_VMXNET3 \
       --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD --enable BLK_DEV_NVME \
+      --enable SCSI --enable SCSI_LOWLEVEL \
+      --enable SCSI_MPT3SAS --enable VMWARE_PVSCSI --enable SCSI_VIRTIO \
       --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
       --enable VGA_CONSOLE --enable INPUT \
       --enable DRM --enable DRM_FBDEV_EMULATION \

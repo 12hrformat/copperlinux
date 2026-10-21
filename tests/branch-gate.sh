@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Thirteen gates: smoke.sh always; startxfce-gate.sh, charge.sh,
-# account-gate.sh, persist.sh and shutdown-gate.sh need root, because they
-# exercise sockets, staged rootfs trees, the hotfix database, a mount namespace
-# and a private /sbin; init-session.sh needs root because it calls setuid, and
+# Fifteen gates: smoke.sh always; startxfce-gate.sh, charge.sh,
+# account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
+# root, because they exercise sockets, staged rootfs trees, the hotfix database,
+# a mount namespace and a private /sbin; init-session.sh needs root because it
+# calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
 # starthyprland-gate.sh and plymouth-gate.sh do not -- ingot's install lands in
 # a scratch INGOT_ROOT and its repo is served on localhost, starthyprland's
 # compositor is a stub under a private home, and plymouth-gate.sh only reads
 # grub.cfg and copper-init.c -- so all three run unprivileged too.
+# kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
+# the shipped require_kernel_config() against synthetic configs rather than
+# building a kernel.
 # xprobe-gate.sh needs a C
 # compiler and python3, which CI and the build VM have, and skips cleanly where
 # neither exists; starthyprland-gate.sh needs python3 for one case and skips the
@@ -282,6 +286,54 @@ elif out=$(bash tests/systemd-gate-sabotage.sh 2>&1); then
     record systemd-gate-sabotage.sh ok "$n sabotages, all caught"
 else
     record systemd-gate-sabotage.sh bad "the gate missed a planted defect"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^BROKEN' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/persist-sabotage.sh: prove the persistence gate can go red ---"
+# tests/persist.sh asserts DECISIONS (which disk the wizard takes, what it
+# refuses, what it runs), not devices. A gate like that is worth its lines only
+# if it goes red when a decision is wrong, so this plants four defects in the
+# wizard, one at a time, and asserts every one is caught. Needs root, as
+# persist.sh does -- it uses the same mount namespace.
+if [ "$ROOT" -ne 1 ]; then
+    record persist-sabotage.sh skipped "needs root for the mount namespace"
+elif out=$(bash tests/persist-sabotage.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
+    record persist-sabotage.sh ok "$n sabotages, all caught"
+else
+    record persist-sabotage.sh bad "the gate missed a planted defect"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^BROKEN' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/kernel-gate.sh: the kernel config asserts what it needs ---"
+# The kernel config is where a dropped symbol turns into a machine that boots to
+# a shell -- no disk (bug 46), no screen, no network. require_kernel_config()
+# asserts every symbol is =y after olddefconfig, and until this gate nothing
+# tested it. No root needed: it runs the shipped function against synthetic
+# configs, deleting each asserted symbol in turn.
+if out=$(bash tests/kernel-gate.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
+    record kernel-gate.sh ok "$n checks"
+else
+    record kernel-gate.sh bad "a kernel-config assertion is missing or wrong"
+    printf '%s\n' "$out" | grep -E '^  FAIL' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/kernel-gate-sabotage.sh: prove that gate can go red ---"
+# For the same reason as the two sabotage suites above: a gate that only ever
+# goes green certifies nothing. Plants a dropped symbol, a misspelled symbol (the
+# DRM_VMWARE mistake, again), a deleted block and an emptied loop.
+if out=$(bash tests/kernel-gate-sabotage.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
+    record kernel-gate-sabotage.sh ok "$n sabotages, all caught"
+else
+    record kernel-gate-sabotage.sh bad "the gate missed a planted defect"
     printf '%s\n' "$out" | grep -E '^  FAIL|^BROKEN' | sed 's/^/    /'
 fi
 
