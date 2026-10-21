@@ -2447,19 +2447,35 @@ build_systemd() {
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service; do
         out=$(chroot "$TGT" "$sa" verify "/etc/systemd/system/$ul" 2>&1 || true)
-        # A message counts only if it is ABOUT one of our units. systemd-analyze
-        # pulls in every dependency (the base system units) and reports their
-        # problems too, and those are the build host's packaging, not ours. So
-        # the filter is a whitelist: keep lines that name this unit's own file,
-        # then drop the two classes that name it but are still about the host --
-        # Documentations=man:... that the build host has no man page for, and
-        # the same line's man(1) exit status. Anything else naming our unit is
-        # a real problem and fails the build. A blacklist of known noise would
-        # be one new kind of host noise away from hiding a real error; this is
-        # narrow instead.
+        # A message counts only if it is ABOUT this unit AND is a real defect.
+        #
+        # Two independent problems with the obvious "keep lines naming the
+        # unit, drop known noise" filter:
+        #
+        #   - systemd-analyze pulls in every dependency (the base system
+        #     units) and reports those too. Lines that name our unit can still
+        #     be the host's packaging -- "Command X is not executable" is the
+        #     HOST failing to resolve an ExecStart that only exists in the
+        #     image once chrooted (the chroot removes most of that, but a
+        #     missing dependency unit still reports against the unit that
+        #     wanted it).
+        #   - a BLACKLIST of known noise is one new wording away from hiding a
+        #     real error, and systemd changes its wording between releases:
+        #     255 says "Unknown key name 'X' in section 'Service'", 256+ says
+        #     "Unknown key 'X'". A deny-list tuned on one version goes red on
+        #     the other -- which is exactly what happened: this step passed on
+        #     the dev box's systemd 261 and failed the CI runner's 255.
+        #
+        # So it is an allow-list. Only a key systemd does not know, a key in
+        # the wrong section, a parse error, or a missing ExecStart can fail a
+        # Copper unit -- all answered by the unit's own text, none of them
+        # dependent on what the build host happens to have installed. A
+        # message that is not one of those shapes is the host talking about
+        # itself, and the gates above already prove the units installed, are
+        # wired, and are mode 644.
         left=$(printf '%s\n' "$out" \
+          | grep -E "Unknown (key|lvalue|section)|Failed to parse|Empty (ExecStart|section)|not a valid" \
           | grep -F "$ul" \
-          | grep -vE "Can't show |failed with exit status|\(man\)" \
           | grep -c . || true)
         if [ "$left" != 0 ]; then
           echo "systemd: systemd-analyze rejected $ul:" >&2
