@@ -1,6 +1,12 @@
 # Copper Linux
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# The session sets this too (copper-init); repeating it here covers logins that
+# do not come through copper-init, and a shell started from one of those. C.UTF-8
+# is the one locale the image can rely on having: libc-bin ships its files and
+# musl treats it as UTF-8, so nothing has to run locale-gen at boot.
+export LANG=C.UTF-8
+
 if [ -n "$PS1" ]; then
     export PS1='copper:\w\$ '
 fi

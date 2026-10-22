@@ -1425,9 +1425,26 @@ build_gui() {
   # superblock leaves EXT2_FEATURE_COMPAT_SUPP at zero, so there is no EXT_ATTR
   # bit and overlayfs refuses that upper outright. A real ext4 carries the
   # xattrs an overlay needs, which is why the glibc tool comes in here.
+  #
+  # fonts: DejaVu is Latin and little else. The terminal tools draw out of the
+  # rest of Unicode -- btop's graphs and fastfetch's separators are braille,
+  # block elements and dingbats -- and a font that lacks them is a tofu box.
+  # Noto carries the scripts and symbols, Symbola the monochrome emoji, Noto
+  # Color Emoji the coloured ones VTE can draw, Powerline the prompt glyphs,
+  # and Font Awesome the set the Hyprland config asks for by name.
+  #
+  # libc-bin is not desktop, but it owns /usr/lib/locale/C.utf8. The session
+  # sets LANG=C.UTF-8 and glibc refuses a locale whose files are absent, so
+  # without this every TUI would quietly stay in the C locale and draw one
+  # byte at a time. It also brings ldd and ldconfig, which the image otherwise
+  # lacks.
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
-         dbus dbus-x11 xfce4 xfce4-terminal fonts-dejavu-core hicolor-icon-theme \
-         adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs
+         dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
+         adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs \
+         libc-bin \
+         fonts-dejavu-core fonts-noto-core fonts-noto-mono \
+         fonts-noto-color-emoji fonts-symbola fonts-powerline \
+         fonts-font-awesome
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \

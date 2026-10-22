@@ -486,6 +486,22 @@ export XDG_RUNTIME_DIR
 say "runtime directory: $XDG_RUNTIME_DIR"
 mkdir -p /dev/shm 2>/dev/null || :
 
+# No package manager runs maintainer scripts on this image, so the caches a
+# postinst would have built are built here, once, when absent. Without the
+# font cache every program that asks fontconfig for a glyph walks the font
+# directories again; without the pixbuf cache GTK draws holes where images
+# should be. Both are quiet: this is a session starting, not a build log.
+if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
+    if [ -z "$(find /usr/lib -name loaders.cache -print -quit 2>/dev/null)" ]; then
+        gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || :
+    fi
+fi
+if command -v fc-cache >/dev/null 2>&1; then
+    if [ -z "$(find /var/cache/fontconfig -name '*.cache' -print -quit 2>/dev/null)" ]; then
+        fc-cache -f >/dev/null 2>&1 || :
+    fi
+fi
+
 # The session bus. Quickshell, the portals, swaync and the polkit agent all want
 # one, and there is no session manager to have started it. Prefer dbus-launch,
 # which sets both the address and the pid; fall back to dbus-daemon directly,
