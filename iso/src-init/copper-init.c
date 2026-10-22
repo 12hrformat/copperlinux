@@ -185,6 +185,8 @@ static void start_dhcp(const char *ifname) {
        PATH itself, so the script needs one to find ip(8). */
     setenv("PATH", "/sbin:/usr/sbin:/bin:/usr/bin", 1);
     snprintf(pidfile, sizeof pidfile, "/run/udhcpc.%s.pid", ifname);
+    /* god please kill me: fork, then hope the lease script finds its own way
+       to ip(8). If it does not, the machine boots offline and says nothing. */
     execl("/sbin/udhcpc", "udhcpc", "-i", ifname, "-b", "-p", pidfile,
           (char *)NULL);
     _exit(127);
@@ -792,6 +794,11 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir, int *typed)
     int written = 0, named = 0;
     struct dirent *e;
 
+    /* idk how ts works: a device is a mouse if its capability bits say EV_REL
+       and EV_KEY and EV_SW are not enough to tell a mouse from a keyboard with
+       a trackball, so every one of these tags is a guess the kernel could have
+       made for us. */
+
     /* Walk the devices rather than the event nodes. The inputN entries are the
        input devices themselves -- the directory udev's input_id builtin reaches
        by walking up from an event node -- so the capability attributes it reads
@@ -1019,6 +1026,9 @@ static pid_t spawn_tty(int tty) {
    Kept as its own function so the mapping is unit-testable without actually
    rebooting the machine that runs the test -- see tests/init-session.c. */
 static int power_how(int sig) {
+    /* kill me: three signals and three meanings, and the only way to find out
+       which one the user meant is to guess. SIGTERM says reboot, SIGUSR2 says
+       power off, everything else says halt. */
     if (sig == SIGTERM || sig == SIGINT) return RB_AUTOBOOT;
     if (sig == SIGUSR2) return RB_POWER_OFF;
     return RB_HALT_SYSTEM;              /* SIGUSR1, SIGPWR */

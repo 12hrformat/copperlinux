@@ -189,6 +189,10 @@ static uint32_t rd32(const unsigned char *p) {
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* idk how ts works: little-endian by hand, because linking libX11 to ask the
+   server where its screen is would defeat the point of the probe. The wire
+   format is documented and has been since 1987; the client library is 40 MB. */
+
 /* Read and throw away. The setup reply carries the vendor string, the pixmap
    formats, and every screen; this probe only wants the first screen, and a
    server is free to announce more of that than fits in any fixed buffer. */

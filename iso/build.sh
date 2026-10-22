@@ -3055,6 +3055,10 @@ WRAP
     echo "iso: /usr/bin/sudo in the ISO is owned by $(stat -c '%u:%g' "$ex/sudo" 2>/dev/null || echo 'missing'), not 0:0" >&2
     exit 1
   fi
+  # kill me: every check from here down reads the DISC, not the tree that made
+  # it. That is on purpose. The tree can be right and the disc wrong (the
+  # packaging drops a mode, a link resolves elsewhere), and the only witness
+  # that cannot be wrong about what ships is the thing that ships.
   echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
 
   # The power commands, read back off the disc -- bug 29 in one check. PATH
