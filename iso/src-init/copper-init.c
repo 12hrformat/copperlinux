@@ -988,6 +988,25 @@ static void start_seatd(void) {
 }
 
 
+/* Make fd's terminal this session's controlling terminal.
+
+   TIOCSCTTY(0) refuses when the tty is already the controlling terminal of a
+   different session, and that is the console on the systemd flavour:
+   copper-console.service carries StandardInput=tty and TTYPath=/dev/tty1, so
+   systemd has made tty1 the service's controlling terminal before copper-init
+   --console forks anything. The child's setsid() starts a session with no tty,
+   the zero-flag ioctl answers EPERM, and the shell ends up with working
+   stdin/stdout and no /dev/tty at all -- so `sudo` cannot open it to ask for a
+   password ("a terminal is required to read the password"), while anything
+   that reads stdin, the wizard included, looks fine. Steal the tty instead:
+   we are still root here, and this shell is the only thing that should own the
+   console. Under PID 1 the first ioctl succeeds and the second is not tried. */
+static void acquire_ctty(int fd) {
+    if (fd < 0) return;
+    if (ioctl(fd, TIOCSCTTY, 0) == 0) return;
+    (void)ioctl(fd, TIOCSCTTY, 1);
+}
+
 /* Returns the child's pid (the caller reaps it), or -1 if the fork failed. */
 static pid_t spawn_tty(int tty) {
     pid_t pid = fork();
@@ -1001,7 +1020,7 @@ static pid_t spawn_tty(int tty) {
         dup2(fd, 0);
         dup2(fd, 1);
         dup2(fd, 2);
-        ioctl(fd, TIOCSCTTY, 0);
+        acquire_ctty(fd);
         if (fd > 2) close(fd);
     }
     drop_to_session(&g_session);
@@ -1255,6 +1274,14 @@ static int g_console_only = 0;
    signal handler or waits on a global child, so it is safe to reach from
    either. */
 static void run_session(void) {
+    /* UTF-8, before anything draws. Nothing else in the image set a locale,
+       so every program that calls setlocale("") got "C" -- one byte per
+       character -- and the terminal tools painted a replacement box for each
+       piece of their own art. C.UTF-8 needs no locale-gen and musl maps it to
+       UTF-8 too; the glibc half of it is in libc-bin, which build_gui now
+       stages. Overwrite 0: a LANG inherited from the caller wins. */
+    setenv("LANG", "C.UTF-8", 0);
+
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
         pid_t wiz = fork();
@@ -1271,7 +1298,7 @@ static void run_session(void) {
             setsid();
             int cfd = g_console_only ? dup(0) : open("/dev/console", O_RDWR);
             if (cfd >= 0) {
-                ioctl(cfd, TIOCSCTTY, 0);
+                acquire_ctty(cfd);
                 if (cfd > 2) close(cfd);
             }
             execl("/usr/bin/copper-firstboot", "copper-firstboot",

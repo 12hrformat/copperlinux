@@ -241,6 +241,115 @@ int main(void) {
         }
     }
 
+    /* ------------------------------------------- the controlling terminal */
+    /* `sudo` on the console asked for a password it could not read: "a
+       terminal is required to read the password". The shell had stdin and
+       stdout on tty1 but no controlling terminal: under systemd,
+       copper-console.service's StandardInput=tty has already given tty1 to the
+       service's session, so the child's setsid() + TIOCSCTTY(0) answers EPERM
+       and /dev/tty cannot be opened at all. acquire_ctty() steals the tty in
+       that case. A pty stands in for tty1; one child holds the slave the way
+       the service does, and a second does what spawn_tty() does. The control
+       child proves the fixture really is the bug -- a plain TIOCSCTTY(0) must
+       be refused -- so the fixed child passing means something. */
+    {
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) {
+            printf("FAIL a pty for the controlling-terminal test: %s\n",
+                   strerror(errno));
+            fails++;
+        } else {
+            char slave[64];
+            snprintf(slave, sizeof slave, "%s", ptsname(master));
+
+            int ready[2], wake[2];
+            if (pipe(ready) != 0 || pipe(wake) != 0) {
+                printf("FAIL pipe: %s\n", strerror(errno));
+                fails++;
+            } else {
+                /* The service's session, exactly as systemd leaves it. */
+                pid_t holder = fork();
+                if (holder == 0) {
+                    close(ready[0]);
+                    close(wake[1]);
+                    if (setsid() < 0) _exit(20);
+                    int hfd = open(slave, O_RDWR);
+                    if (hfd < 0) _exit(21);
+                    if (ioctl(hfd, TIOCSCTTY, 0) != 0) _exit(22);
+                    if (write(ready[1], "R", 1) != 1) _exit(23);
+                    char b;
+                    (void)!read(wake[0], &b, 1);
+                    _exit(0);
+                }
+                close(ready[1]);
+                close(wake[0]);
+
+                char r = 0;
+                int held = holder > 0 && read(ready[0], &r, 1) == 1;
+                close(ready[0]);
+                if (!held) {
+                    printf("FAIL the service-session fixture did not take the tty\n");
+                    fails++;
+                } else {
+                    /* Control: the session that owns the tty refuses to give
+                       it up to a plain TIOCSCTTY(0), which is the bug. */
+                    pid_t control = fork();
+                    if (control == 0) {
+                        setsid();
+                        int cfd = open(slave, O_RDWR);
+                        if (cfd < 0) _exit(2);
+                        errno = 0;
+                        if (ioctl(cfd, TIOCSCTTY, 0) != -1 || errno != EPERM)
+                            _exit(1);
+                        _exit(0);
+                    }
+                    int cst = 0;
+                    if (control > 0) waitpid(control, &cst, 0);
+                    int c_exit = WIFEXITED(cst) ? WEXITSTATUS(cst) : -1;
+                    if (control > 0 && c_exit == 0) {
+                        printf("ok   the fixture denies a plain TIOCSCTTY(0)\n");
+                    } else {
+                        printf("FAIL the fixture does not reproduce the bug "
+                               "(control exit %d)\n", c_exit);
+                        fails++;
+                    }
+
+                    /* The shell, with the fix: it has to end up with a usable
+                       /dev/tty, or sudo cannot prompt. */
+                    pid_t shell = fork();
+                    if (shell == 0) {
+                        setsid();
+                        int sfd = open(slave, O_RDWR);
+                        if (sfd < 0) _exit(10);
+                        acquire_ctty(sfd);
+                        int t = open("/dev/tty", O_RDWR | O_NOCTTY);
+                        if (t < 0) _exit(11);
+                        close(t);
+                        _exit(0);
+                    }
+                    int sst = 0;
+                    if (shell > 0) waitpid(shell, &sst, 0);
+                    int s_exit = WIFEXITED(sst) ? WEXITSTATUS(sst) : -1;
+                    if (shell > 0 && s_exit == 0) {
+                        printf("ok   acquire_ctty takes a tty another session owns\n");
+                        printf("ok   the console shell keeps /dev/tty, so sudo can prompt\n");
+                    } else if (s_exit == 11) {
+                        printf("FAIL acquire_ctty ran but /dev/tty is still unusable\n");
+                        fails++;
+                    } else {
+                        printf("FAIL acquire_ctty did not give the shell a tty "
+                               "(exit %d)\n", s_exit);
+                        fails++;
+                    }
+                }
+
+                close(wake[1]);          /* let the fixture session go */
+                if (holder > 0) waitpid(holder, NULL, 0);
+                close(master);
+            }
+        }
+    }
+
     /* ------------------------------------------------- the desktop marker */
     /* chose_hyprland() decides which launcher the boot hint names. It must be
        conservative: only the exact word "hyprland" selects Hyprland, and
