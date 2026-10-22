@@ -18,3 +18,9 @@ __pycache__/
 # tarball is uploaded to GitHub Releases, not committed.
 firefox-*.tar.gz
 firefox-pkg-work/
+
+# The bug log. It is a working notebook -- read, appended to and argued with
+# locally -- not part of the tree: nothing in the build reads it, and an entry
+# is worth writing before there is a fix to commit. Keeping it here means the
+# file survives, and stays out of every diff.
+BUGS.md
