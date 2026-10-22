@@ -621,24 +621,58 @@ build_tools() {
   stamp_set "$WORK/tools.stamp" "$SELF"
 }
 
-# Point the SysV power commands at busybox -- in BOTH directories PATH
-# searches for them. The order is /usr/local/sbin:/usr/local/bin:/usr/sbin:
-# /usr/bin:/sbin:/bin (assert_commands_reachable above keeps it in step with
-# copper-init's setenv, and sudo's secure_path and /etc/profile carry the same
-# list), so /usr/sbin comes FIRST: a `reboot` left there by systemd-sysv wins
-# the name over a busybox link in /sbin, and `sudo reboot` answers "System has
-# not been booted with systemd" (bug 29). The 2026-10-17 fix only relinked
-# /sbin; the CI ISO built from it still shipped
+# Point the power commands at the tools THIS TREE's PID 1 understands -- in
+# BOTH directories PATH searches for them. The order is /usr/local/sbin:
+# /usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin (assert_commands_reachable above
+# keeps it in step with copper-init's setenv, and sudo's secure_path and
+# /etc/profile carry the same list), so /usr/sbin comes FIRST: a `reboot` left
+# there by systemd-sysv wins the name over a busybox link in /sbin, and `sudo
+# reboot` answers "System has not been booted with systemd" (bug 29). The
+# 2026-10-17 fix only relinked /sbin; the CI ISO built from it still shipped
 # /usr/sbin/reboot|poweroff|halt|shutdown -> ../bin/systemctl, which is how
 # this was caught -- by reading the links back off the shipped disc, and
 # re-checked there by build_iso's gate.
-# /usr/sbin/shutdown points at our wrapper: busybox ships no shutdown applet.
+#
+# WHICH tools depends on which init the tree carries, and the tree is not
+# remembered in a variable: the staged tree outlives any one build.sh run, so
+# init_flavour() reads sbin/init and answers. The two answers are:
+#
+#   - busybox (the shipped default): the applets, which signal PID 1 the way
+#     copper-init reads it. /usr/sbin/shutdown points at our own wrapper,
+#     because busybox ships no shutdown applet.
+#   - systemd (the migration): systemctl, in both directories. A busybox applet
+#     there signals a PID 1 convention systemd does not read at all.
+#
+# This has to be right on EVERY call, not only the first. The `iso` chain
+# re-runs the desktop stages over the tree -- build_rootfs clobbers /etc/group
+# and takes the _seatd group with it, and that group is part of what those
+# stages' skip guards ask about -- and each of them calls this. A version that
+# always wrote busybox quietly undid the systemd flavour's systemctl links on
+# the way to the disc, and the systemd ISO failed its own read-back gate:
+#
+#     iso: the ISO boots systemd but its power commands are wrong:
+#          sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
+#
 # Called after every stage that copies packages into $TGT (copper, gui, hypr;
-# plymouth only copies its own lib directory).
+# plymouth only copies its own lib directory), and by the systemd stage right
+# after it swaps PID 1.
 # updated by farcrowx, bug 29, iso/build.sh (the /sbin-only relink loops)
 power_links() {          # power_links <staged-root>
   local root=$1 cmd
   mkdir -p "$root/sbin" "$root/usr/sbin"
+  if [ "$(init_flavour "$root")" = systemd ]; then
+    # /usr/sbin/shutdown currently points at our own wrapper (/sbin/shutdown),
+    # and /sbin/shutdown is about to become a link to systemctl. The chain
+    # would still RESOLVE to systemctl, but the ISO's read-back gate reads the
+    # link's own target -- and a chain is not what it expects to find there.
+    # So remove it and write the link that answers the question directly.
+    rm -f "$root/usr/sbin/shutdown"
+    for cmd in reboot poweroff halt shutdown; do
+      ln -sf /usr/bin/systemctl "$root/sbin/$cmd"
+      ln -sf /usr/bin/systemctl "$root/usr/sbin/$cmd"
+    done
+    return
+  fi
   for cmd in reboot poweroff halt; do
     ln -sf /bin/busybox "$root/sbin/$cmd"
     ln -sf /bin/busybox "$root/usr/sbin/$cmd"
@@ -759,6 +793,17 @@ copy_stage_in() {        # copy_stage_in <stage> <target>
 default_flavour() {
   if [ "$(init_flavour "$TGT")" = systemd ]; then
     ln -sf /usr/bin/copper-init "$TGT/sbin/init"
+    # The systemd flavour replaced Copper's own /sbin/shutdown wrapper with a
+    # link to systemctl. Put the wrapper back before power_links points
+    # /usr/sbin/shutdown at it: busybox ships no shutdown applet, so the
+    # wrapper IS the shutdown command on a default tree, and a default tree
+    # whose /sbin/shutdown is systemctl's link ships a `sudo shutdown` that
+    # talks to a PID 1 that is not there. rm first, so what is left is a
+    # regular file and not a link -- install replaces a symlink with the file
+    # it copies, but removing it outright says so rather than leaving it to
+    # the install implementation.
+    rm -f "$TGT/sbin/shutdown"
+    install -m 0755 "$ROOT/shutdown.sh" "$TGT/sbin/shutdown"
     echo "  sbin/init: systemd -> copper-init (the tree came in systemd-flavoured)"
   fi
   power_links "$TGT"
@@ -1609,10 +1654,12 @@ build_gui() {
     exit 1
   fi
 
-  # Re-point the power commands at busybox: the gui stage just copied
-  # systemd/sysvinit-utils versions that cannot talk to busybox init -- in
-  # /sbin and in /usr/sbin, which PATH (and sudo's secure_path) searches first
-  # (bug 29; the /usr/sbin half is what the 2026-10-17 fix missed).
+  # Re-point the power commands at whatever THIS TREE's PID 1 understands: the
+  # gui stage just copied systemd/sysvinit-utils versions that cannot talk to
+  # busybox init -- in /sbin and in /usr/sbin, which PATH (and sudo's
+  # secure_path) searches first (bug 29; the /usr/sbin half is what the
+  # 2026-10-17 fix missed). power_links() asks the tree which init it carries,
+  # so on a systemd-flavoured tree it points them at systemctl instead.
   power_links "$TGT"
 
   # Last, so nothing copied in after it can undo it: whose distribution this is.
@@ -2040,7 +2087,9 @@ build_hypr() {
   # status makes apt keep every Priority: important package systemd ships),
   # and that is where /usr/sbin/reboot|poweroff|halt|shutdown ->
   # ../bin/systemctl came from in the shipped ISO. Re-point them after the
-  # copy, or `sudo reboot` resolves to systemctl first (bug 29).
+  # copy, or `sudo reboot` resolves to systemctl first (bug 29). power_links()
+  # answers from the tree's own PID 1, so this stage cannot undo the systemd
+  # flavour's links on a tree that has already been swapped.
   power_links "$TGT"
 
   echo "  Hyprland session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
@@ -2537,16 +2586,21 @@ build_systemd() {
   # dropped in /usr/sbin, put them where a systemd machine expects: /usr/sbin
   # wins PATH, so both directories have to agree.
   #
+  # power_links() answers that from the tree's own PID 1, which is systemd as
+  # of the line above, so the stage and the stages that re-run over this tree
+  # later cannot disagree about what a systemd machine wants. That is the whole
+  # point: the stages that re-run over this tree (the `iso` chain runs the
+  # desktop stages again) each call power_links(), and a power_links() that
+  # always wrote busybox's applets silently undid this stage on the way to the
+  # disc.
+  #
   # /usr/sbin/shutdown is the one with a history: build_copper installs our own
   # wrapper there and busybox ships no shutdown applet. systemd-sysv does ship
   # one, and on a systemd machine it is the right one to ship -- /usr/bin/
-  # systemctl and a D-Bus that answers. Remove the wrapper's link first so a
-  # dangling link to a file we are about to delete is not what is left.
-  rm -f "$TGT/usr/sbin/shutdown"
-  for cmd in reboot poweroff halt shutdown; do
-    ln -sf /usr/bin/systemctl "$TGT/usr/sbin/$cmd"
-    ln -sf /usr/bin/systemctl "$TGT/sbin/$cmd"
-  done
+  # systemctl and a D-Bus that answers. power_links removes the wrapper's link
+  # first, so the link that is left answers the question directly instead of
+  # pointing through /sbin/shutdown.
+  power_links "$TGT"
 
   # ---- ldconfig: mask a unit that cannot succeed here ----------------------
   # systemd ships ldconfig.service as ExecStart=/sbin/ldconfig -X, and this
@@ -3146,20 +3200,28 @@ full() {
 # The DEFAULT flavour's chains take the tree back from the systemd flavour
 # if that is what they find.
 #
-# The staged tree outlives any one build.sh run: the CI saves iso/work AFTER
-# the systemd flavour has run, so the next run can restore a tree whose PID 1
-# is systemd, whose power commands are systemctl's, and whose lib/systemd is
-# the merged-usr bridge. A default build that inherited any of that would
-# ship an image that boots systemd while calling itself the default one --
-# the half-done swap SYSTEMD-MIGRATION.md warns about -- and would fail to
-# copy the Hyprland packages into the tree at all.
+# The staged tree outlives any one build.sh run: iso/work is cached between
+# runs, and a cached tree can hold either flavour. A default build that
+# inherited the systemd flavour's state would ship an image that boots systemd
+# while calling itself the default one -- the half-done swap
+# SYSTEMD-MIGRATION.md warns about -- and would fail to copy the Hyprland
+# packages into the tree at all.
 #
 # The `iso` chain is deliberately NOT in this list: the CI builds the default
 # ISO and the systemd ISO with the same command, and the tree's own state is
-# what says which flavour is being packaged. The `systemd` chain is not in it
-# either: that stage is what puts the swap in place.
+# what says which flavour is being packaged.
+#
+# The `systemd` chain IS in it, and it is the one that has to be: that stage
+# is what puts the swap in place, so it has to do the swap from a KNOWN
+# default tree rather than from whatever it found. Two reasons, both real:
+# build_copper asserts that sbin/init is copper-init, and it runs before
+# build_systemd in that chain, so a tree that came in systemd-flavoured would
+# stop the stage dead; and the swap itself is supposed to be the ONLY thing
+# that makes a tree systemd-flavoured. Normalising first also makes the stage
+# re-runnable: running it twice leaves the same tree, not a tree that has been
+# swapped twice.
 case "$STAGE" in
-  rootfs|gui|hypr|plymouth|sudo|initramfs|copper|all|"")
+  rootfs|gui|hypr|plymouth|sudo|initramfs|copper|systemd|all|"")
     default_flavour ;;
 esac
 
