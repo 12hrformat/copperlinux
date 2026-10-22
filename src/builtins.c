@@ -408,6 +408,8 @@ int b_head(int argc, char **argv) {
 /* rolling buffer holding the last n lines */
 static void print_tail(FILE *in, int n) {
     if (n <= 0) return;
+    /* why am i doing this: a ring buffer, in C, for `tail -n`. The modulo is
+       the whole algorithm and the off-by-one is the whole bug. */
     char **ring = calloc((size_t)n, sizeof(char *));
     if (!ring) { perror("tail"); return; }
     int idx = 0, total = 0;

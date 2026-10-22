@@ -421,6 +421,9 @@ static void ensure_trailing_newline(const char *path) {
 
    Returns 0 on success. */
 static int create_user_direct(const char *user) {
+    /* god please kill me: shadow has NINE fields and passwd has SEVEN, and the
+       only difference between a working account and one nobody can log into is
+       one colon. This function has lost that argument before. */
     /* Before anything is appended. See ensure_trailing_newline() above: an
        append to a file with no trailing newline silently corrupts the last
        record instead of adding a new one. */
@@ -735,6 +738,9 @@ static void collect(int idx) {
     f->has_value = 0;
     f->value[0] = '\0';
 
+    /* why am i doing this: the form is twelve fields, every one of them can be
+       wrong, and a re-run has to be able to leave a field that is already set.
+       The loop below is the entire UX. */
     if (ui_fancy) {
         raw_begin();
         const char *status = f->ask;
@@ -1034,6 +1040,10 @@ static int disk_has_fs(const char *disk) {
     char dev[PERSIST_NAME + 8];
     snprintf(dev, sizeof dev, "/dev/%s", disk);
     char out[256];
+    /* idk how ts works: blkid's exit status is a lie either way. "Nothing
+       found" is non-zero and "could not probe at all" is non-zero, so the only
+       answer we can trust is the output text. Four fallbacks because the
+       wizard's PATH is whatever PID 1 handed it. */
     run_capture(out, sizeof out,
                 "if command -v blkid >/dev/null 2>&1; then blkid %s; "
                 "elif [ -x /sbin/blkid ]; then /sbin/blkid %s; "
@@ -1109,6 +1119,9 @@ static void disk_size_str(const char *disk, char *out, size_t cap) {
    1 means a key is already waiting (the caller reads the line itself), 0 means
    the time ran out. */
 static int wait_key(int secs) {
+    /* kill me: a countdown is poll(2), a timeout, and one boolean. The reason
+       this is not three lines in offer_persistence() is that "did the user stop
+       it" and "did time run out" are different answers to the same question. */
     struct pollfd p;
     p.fd = STDIN_FILENO;
     p.events = POLLIN;

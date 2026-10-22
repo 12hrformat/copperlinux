@@ -436,6 +436,9 @@ static int parse_line(char **argv, int n, struct cmdseg **out, int *nsegs) {
     for (int i = 0; i < n; i++)
         if (!strcmp(argv[i], "|")) pipes++;
 
+    /* god please kill me: a pipe is counted first and cut out afterwards,
+       because the segment sizes are only known once every '|' has been seen.
+       Count twice and you get a heap buffer that is one segment too short. */
     struct cmdseg *cmds = calloc((size_t)(pipes + 1), sizeof(*cmds));
     if (!cmds) { perror("malloc"); return -1; }
 
