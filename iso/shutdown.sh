@@ -3,7 +3,7 @@
 #
 # busybox ships halt, poweroff and reboot but no `shutdown` applet, so
 # `sudo shutdown now` was "shutdown: not found" and there was no clean way off
-# the machine (BUGS.md #18). The three applets it does ship do not call
+# the machine (bug 18). The three applets it does ship do not call
 # reboot(2) themselves -- they signal PID 1 and let it do the orderly
 # shutdown -- and copper-init now answers those signals (see
 # on_power_signal() in copper-init.c). So this only maps the usual flags onto
@@ -26,7 +26,7 @@
 # refused rather than silently dropped, and a second, conflicting mode flag is
 # refused rather than guessed at (last one used to win). On a live ISO,
 # refusing loudly beats powering off someone's machine for a typo
-# (BUGS.md #33).
+# (bug 33).
 #
 # POSIX sh: the image's /bin/sh is busybox ash.
 

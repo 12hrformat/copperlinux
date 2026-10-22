@@ -1,5 +1,5 @@
 #!/bin/sh
-# Gate for the boot splash's plymouthd invocation (BUGS.md #25).
+# Gate for the boot splash's plymouthd invocation (bug 25).
 #
 # The splash is started by PID 1, and the one part of that a test on this box
 # can really hold still is the argv copper-init hands plymouthd. It matters
@@ -24,7 +24,7 @@
 #      on the host is a skip, not a failure: the repository still has to build
 #      and test on a box that has never seen plymouth.
 #
-# See BUGS.md #25: --ignore-serial-consoles and plymouth.ignore-serial-consoles
+# See bug 25: --ignore-serial-consoles and plymouth.ignore-serial-consoles
 # were both checked against the packaged plymouth 24.004.60-1ubuntu7.2 this
 # image stages, and a bogus option makes that daemon print its whole usage list
 # instead of starting, which is how an accepted option is told from a rejected

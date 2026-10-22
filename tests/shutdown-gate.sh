@@ -1,5 +1,5 @@
 #!/bin/sh
-# Gate for iso/shutdown.sh (BUGS.md #18, #33).
+# Gate for iso/shutdown.sh (bugs 18 and 33).
 #
 # busybox ships halt, poweroff and reboot but no `shutdown`, so Copper ships
 # its own. The wrapper's whole job is to map the usual flags onto one of those
