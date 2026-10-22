@@ -148,8 +148,13 @@ with three possible causes.
   Enabling is just symlinks.
 - re-asserts the glibc loader at `/lib64/ld-linux-x86-64.so.2`, then proves with
   `readelf` that PID 1's interpreter exists in the tree.
-- repoints `/sbin/init` and the power commands (`/sbin` **and** `/usr/sbin`) at
-  systemd's own, after `build_copper`'s `power_links()` pointed them at busybox.
+- repoints `/sbin/init` at systemd's own, and asks `power_links()` for the power
+  commands (`/sbin` **and** `/usr/sbin`). `power_links()` answers from the
+  tree's **own PID 1** — it reads `sbin/init` and links busybox's applets or
+  `systemctl` accordingly — so the stage and every stage that re-runs over the
+  tree later cannot disagree about what the machine wants. That question has to
+  be asked every time: the `iso` chain re-runs the desktop stages over the
+  tree, and each of them calls `power_links()`.
 - verifies the units with `systemd-analyze`, **chrooted** into the staged tree,
   so `ExecStart` resolves the way it will at boot.
 
@@ -178,13 +183,18 @@ with three possible causes.
   ELF executable with interpreter `/lib64/ld-linux-x86-64.so.2`, and the deb's
   own `usr/bin/systemd` link resolves to it. Without the bridge that path is
   absent — the third CI failure reproduced exactly.
-- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants fourteen
+- The sabotage suite (`tests/systemd-gate-sabotage.sh`, new) plants **twenty-five**
   defects — misplaced key, nonexistent directive, bare glob, no repoint, unwired
   unit, removed `--console`, busybox power links, 0777 units, leaked build tool,
   a `tree_hash` blinded to symlinks, a `systemd)` dispatch line without its
   toolchain, the stage's verify filter weakened to a version-specific
-  deny-list, the merged-usr bridge dropped, and the gate's own fixture
-  un-merged-usr'd — and every one is caught. That suite is
+  deny-list, the merged-usr bridge dropped (twice — gone, and present but
+  no-opping on the squatter), the gate's own fixture un-merged-usr'd and its
+  udevd unit mis-modelled, the seatd binary and the `_seatd` group missing, the
+  seatd unit back to one hard-coded path, `ldconfig.service` unmasked, the
+  hypr/gui skip guards blinded, the ordering cycle that shipped, the stage's own
+  cycle check dropped, and `power_links()` blind to the tree's init — and every
+  one is caught. That suite is
   what found three real bugs during development, including a `readelf | sed |
   head` pipeline that aborts under `set -o pipefail` and would have killed a
   real build.
@@ -455,6 +465,61 @@ same as bugs 15/18/25/34/35/38/44 — and bug 46 is closed by the same boot, sin
 a machine that cannot see its disk cannot get as far as the wizard. The boot
 that has happened so far is the proof of the point: it found four defects the
 gate called green, one of which was fatal.
+
+### The seventh push: the ISO's own read-back gate caught the swap being undone
+
+CI run `39760973097` got all the way to packaging the disc and then failed the
+**ISO's own read-back gate**:
+
+```
+iso: the ISO boots systemd but its power commands are wrong:
+     sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
+iso: systemd expects /usr/bin/systemctl there, not a busybox applet
+```
+
+The gate is the one in `build_iso`: it reads `/sbin/init` off the finished
+image, decides from it which init the disc boots, and then checks that the
+power commands on the disc agree. The image booted systemd, and the power
+commands were busybox's. Both facts were true of the same tree.
+
+The cause is that **the swap was undone on the way to the disc**. The `iso`
+chain re-runs the desktop stages over the tree: `build_rootfs` clobbers
+`/etc/group`, which takes the `_seatd` group with it, and that group is part of
+what the gui and hypr stages' skip guards ask about — so those stages run
+again, and each of them calls `power_links()`. `power_links()` did not know
+which init the tree carried; it always wrote busybox's applets. The systemd
+stage had done the right thing, and then the desktop stages overwrote it.
+
+So the tree's flavour was never remembered in a variable, and every caller
+guessed — or, rather, every caller asserted the default. The staged tree
+outlives any one `build.sh` run (it is cached between runs), so "what does this
+tree boot" has to be answered by **reading the tree**, not by remembering.
+
+`init_flavour()` already existed and already answered exactly that question, by
+reading `sbin/init`. `power_links()` now asks it, and links `systemctl` or
+busybox accordingly:
+
+- `power_links()` is the **one** definition of the layout. `build_systemd()`
+  calls it like everybody else does, instead of carrying its own copy of the
+  systemctl loop, so the stage and the stages that re-run over the tree later
+  cannot disagree about what a systemd machine wants.
+- `default_flavour()` puts Copper's own `/sbin/shutdown` wrapper back when it
+  takes a tree *back* from systemd, because busybox ships no shutdown applet —
+  the wrapper **is** the shutdown command on a default tree. (`rm` first, so
+  what is left is a regular file and not a link. `install` replaces a symlink
+  rather than writing through it — checked, not assumed — but removing it
+  outright says what is meant and does not depend on that.)
+- The `systemd` chain now normalises to the default flavour before it swaps,
+  so the stage is re-runnable and always starts from a known tree.
+
+**Why the gate did not see it.** `tests/systemd-gate.sh` runs `build_systemd`
+against a mocked tree, so it never sees the desktop stages re-run over that
+tree — and a gate that cannot see the path cannot guard it. But the function
+that was wrong is `power_links()`, and it can be exercised directly against a
+tree of each flavour: section 3a of the gate now checks that a systemd tree
+gets `systemctl` links and a busybox tree gets busybox's applets and the
+wrapper. Sabotage case 25 plants the opposite defect — `power_links()` blind
+to the tree's init — and the gate catches it.
 
 ## Remaining work (phase 2+)
 

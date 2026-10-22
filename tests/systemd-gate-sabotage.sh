@@ -163,9 +163,13 @@ run_case "--console no longer recognised" "$C" \
     "copper-init recognises --console"
 
 # 7. Power commands left pointing at busybox (bug 29's shape, inverted).
+#    The systemctl links live in power_links, which the systemd stage calls
+#    after it swaps PID 1 -- one definition, so the stage and the stages that
+#    re-run over the tree later cannot disagree about what a systemd machine
+#    wants.
 run_case "power commands left as busybox" "$B" \
-    'ln -sf /usr/bin/systemctl "$TGT/sbin/$cmd"' \
-    'ln -sf /bin/busybox "$TGT/sbin/$cmd"' \
+    'ln -sf /usr/bin/systemctl "$root/sbin/$cmd"' \
+    'ln -sf /bin/busybox "$root/sbin/$cmd"' \
     "sbin/reboot -> systemctl"
 
 # 8. Units installed at the wrong mode. A world-writable unit is one systemd
@@ -385,6 +389,23 @@ else
     echo "  FAIL  fixture does not model systemd's udevd unit; the stage's cycle check is blind"
     fails=$((fails + 1))
 fi
+
+# 25. power_links stops asking which init the tree carries. This is the bug
+#     the last CI run shipped: the `iso` chain re-runs the desktop stages over
+#     the systemd tree -- build_rootfs clobbers /etc/group and takes the
+#     _seatd group with it, and that group is part of what those stages' skip
+#     guards ask about -- and each of them calls power_links. A power_links
+#     that always wrote busybox undid the systemd flavour's systemctl links on
+#     the way to the disc, and the systemd ISO failed its own read-back gate:
+#
+#         iso: the ISO boots systemd but its power commands are wrong: ...
+#
+#     Planted by making the flavour question answer "no" for every tree, so the
+#     systemd branch is dead code and every tree gets busybox's links.
+run_case "power_links blind to the tree's init" "$B" \
+    'if [ "$(init_flavour "$root")" = systemd ]; then' \
+    'if false; then' \
+    "power_links on a systemd tree"
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -295,6 +295,7 @@ export COPPER_TEST_DEB_DIR="$DEBDIR"
 # literally this repo's build.sh.
 extract() { sed -n "/^$1()/,/^}/p" "$BUILD"; }
 eval "$(extract init_flavour)"
+eval "$(extract power_links)"
 eval "$(extract stamped_skip)"
 eval "$(extract stamp_set)"
 copper_identity() { :; }      # re-asserting /etc/os-release is not under test
@@ -336,6 +337,7 @@ RUN="$TMP/run-stage.sh"
     echo '#!/usr/bin/env bash'
     echo 'set -euo pipefail'
     extract init_flavour
+    extract power_links
     extract stamped_skip
     extract stamp_set
     extract build_systemd
@@ -376,6 +378,45 @@ for cmd in reboot poweroff halt shutdown; do
     eq_link "sbin/$cmd -> systemctl"      "$TGT/sbin/$cmd"      /usr/bin/systemctl
     eq_link "usr/sbin/$cmd -> systemctl"  "$TGT/usr/sbin/$cmd"  /usr/bin/systemctl
 done
+
+# ---- 3a. power_links asks the tree which init it carries ---------------------
+# This is the bug CI shipped and every gate here missed. The `iso` chain re-runs
+# the desktop stages over the tree -- build_rootfs clobbers /etc/group, and the
+# _seatd group is part of what those stages' skip guards ask about, so they
+# re-run -- and each of them calls power_links. A power_links that always wrote
+# busybox quietly undid the systemd flavour's systemctl links on the way to the
+# disc, and the systemd ISO failed its own read-back gate:
+#
+#     iso: the ISO boots systemd but its power commands are wrong:
+#          sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
+#
+# The gate runs the systemd stage over a mocked tree, so it never sees the
+# desktop stages re-run -- and a gate that cannot see the path cannot guard it.
+# But the function that was wrong is power_links, and it can be exercised
+# directly against a tree of each flavour: the question it has to answer is
+# "which init does this tree carry", and both answers are checked here.
+ptree() {   # ptree <dir> <what sbin/init points at>
+    rm -rf "$1"; mkdir -p "$1/sbin" "$1/usr/sbin"
+    ln -sf "$2" "$1/sbin/init"
+}
+PS="$TMP/power-systemd"; ptree "$PS" /lib/systemd/systemd
+power_links "$PS"
+for cmd in reboot poweroff halt shutdown; do
+    eq_link "power_links on a systemd tree: sbin/$cmd -> systemctl" \
+            "$PS/sbin/$cmd" /usr/bin/systemctl
+    eq_link "power_links on a systemd tree: usr/sbin/$cmd -> systemctl" \
+            "$PS/usr/sbin/$cmd" /usr/bin/systemctl
+done
+PB="$TMP/power-busybox"; ptree "$PB" /usr/bin/copper-init
+power_links "$PB"
+for cmd in reboot poweroff halt; do
+    eq_link "power_links on a busybox tree: sbin/$cmd -> busybox" \
+            "$PB/sbin/$cmd" /bin/busybox
+    eq_link "power_links on a busybox tree: usr/sbin/$cmd -> busybox" \
+            "$PB/usr/sbin/$cmd" /bin/busybox
+done
+eq_link "power_links on a busybox tree: usr/sbin/shutdown -> the wrapper" \
+        "$PB/usr/sbin/shutdown" /sbin/shutdown
 
 # ---- 3b. PID 1 resolves at the path /sbin/init names -----------------------
 # The stage's own gate is `[ -x $TGT/lib/systemd/systemd ]`, and this is the
