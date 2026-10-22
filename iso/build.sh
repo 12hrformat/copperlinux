@@ -666,6 +666,106 @@ init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
 }
 
 # ---------------------------------------------------------------
+# The merged-usr bridge: /lib/systemd is a NAME for /usr/lib/systemd
+# ---------------------------------------------------------------
+# The systemd flavour needs one directory to answer at two names. Ubuntu's
+# systemd deb ships PID 1 at /usr/lib/systemd/systemd, because every
+# Debian-family tree since bookworm is merged-usr -- /lib IS /usr/lib.
+# Copper's tree is NOT merged-usr: /lib here is a real directory holding the
+# musl loader and busybox. So the systemd stage makes lib/systemd a symlink
+# to ../usr/lib/systemd (build_systemd), and PID 1 is reachable at the name
+# the kernel execs.
+#
+# The bridge is a systemd-flavour ARTEFACT, and the staged tree outlives any
+# one build.sh run: the CI saves iso/work AFTER the systemd flavour has run,
+# so the next run can restore a tree that carries the bridge. Two things
+# then go wrong, and both of them happened for real:
+#
+#   * cp cannot merge a directory into a symlink, so a package tree that has
+#     a real lib/systemd of its own -- the Hyprland closure has one, the gui
+#     closure does not -- cannot be copied into the tree at all:
+#
+#         cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
+#             directory '.../hypr-root/./lib/systemd'
+#
+#     and cp stops. That killed the Hyprland stage in CI, on two consecutive
+#     runs, on a tree that had been perfectly good a moment before.
+#
+#   * a tree whose PID 1 is systemd packages a "default" ISO that silently
+#     boots systemd -- the half-done swap SYSTEMD-MIGRATION.md warns about,
+#     and the reason the two artefacts have to stay unambiguous.
+#
+# So the stages that copy packages in take the bridge off for the copy and
+# put it back afterwards IF this tree is the systemd flavour's. The tree
+# then ends where a fresh build of the same flavour ends: the systemd tree
+# bridged again (which is exactly what build_systemd's own bridge does to a
+# real lib/systemd), the default tree with a real lib/systemd directory, as
+# the packages ship it.
+#
+# build_systemd's own bridge is NOT this code: it is the stage's, it is
+# tested by the gate's fixture (which deliberately leaves a real lib/systemd
+# squatting on the name), and the sabotage suite proves the gate goes red
+# when that block is disabled. Two copies of a rule is a smell, but a gate
+# that stops testing the code the stage actually runs is worse.
+merged_usr_bridge() {    # merged_usr_bridge <staged-root> -> true if the bridge is in place
+  [ -L "$1/lib/systemd" ] && [ "$(readlink "$1/lib/systemd")" = "../usr/lib/systemd" ]
+}
+
+drop_merged_usr_bridge() {   # drop_merged_usr_bridge <staged-root>
+  if merged_usr_bridge "$1"; then
+    rm -f "$1/lib/systemd"
+    echo "  lib/systemd: merged-usr bridge taken off for the package copy"
+  fi
+}
+
+make_merged_usr_bridge() {   # make_merged_usr_bridge <staged-root>
+  [ -x "$1/usr/lib/systemd/systemd" ] || return 0
+  if merged_usr_bridge "$1"; then return 0; fi
+  # A real directory squats on the name. build_systemd's bridge normalises
+  # it the same way: a tree with a lib/systemd/systemd of its own is a
+  # merged-usr rootfs and is left exactly as it is.
+  if [ -d "$1/lib/systemd" ] && [ -e "$1/lib/systemd/systemd" ]; then
+    return 0
+  fi
+  rm -rf "$1/lib/systemd"
+  mkdir -p "$1/lib"
+  ln -sfn ../usr/lib/systemd "$1/lib/systemd"
+  echo "  lib/systemd: merged-usr bridge back in place"
+}
+
+# Copy a staged package tree into the staged rootfs.
+#
+# The bridge has to come off for the copy (see above) and goes back on if
+# this tree is the systemd flavour's. Everything else is cp's ordinary
+# -n behaviour: a file the tree already has wins over the package's.
+copy_stage_in() {        # copy_stage_in <stage> <target>
+  local stage=$1 tgt=$2
+  drop_merged_usr_bridge "$tgt"
+  cp -a -n "$stage"/. "$tgt"/
+  if [ "$(init_flavour "$tgt")" = systemd ]; then
+    make_merged_usr_bridge "$tgt"
+  fi
+}
+
+# Take the staged tree back to the default flavour: PID 1 is copper-init
+# again, the power commands are busybox's again, and the bridge is off.
+# Idempotent -- a tree that is already the default flavour is left as it is.
+#
+# This is called by the DEFAULT flavour's chains only. The `iso` chain is not
+# one of them: the CI builds the default ISO and the systemd ISO with the
+# same command, and the tree's own state is what says which flavour is being
+# packaged. The `systemd` chain is not one either: that stage is what puts
+# the swap in place.
+default_flavour() {
+  if [ "$(init_flavour "$TGT")" = systemd ]; then
+    ln -sf /usr/bin/copper-init "$TGT/sbin/init"
+    echo "  sbin/init: systemd -> copper-init (the tree came in systemd-flavoured)"
+  fi
+  power_links "$TGT"
+  drop_merged_usr_bridge "$TGT"
+}
+
+# ---------------------------------------------------------------
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
 
@@ -1298,7 +1398,7 @@ build_gui() {
   n=$(ls "$DG"/*.deb | wc -l)
   echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
 
-  cp -a -n "$STAGE"/. "$TGT"/
+  copy_stage_in "$STAGE" "$TGT"
 
   # Every glibc ELF names /lib64/ld-linux-x86-64.so.2 as its interpreter, and
   # the kernel resolves that exact path before a single instruction of the
@@ -1720,7 +1820,7 @@ build_hypr() {
   n=$(ls "$DH"/*.deb | wc -l)
   echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
 
-  cp -a -n "$STAGE"/. "$TGT"/
+  copy_stage_in "$STAGE" "$TGT"
 
   # Shared libraries are the one thing copied from a PACKAGE that must be
   # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
@@ -3043,6 +3143,26 @@ full() {
   build_iso
 }
 
+# The DEFAULT flavour's chains take the tree back from the systemd flavour
+# if that is what they find.
+#
+# The staged tree outlives any one build.sh run: the CI saves iso/work AFTER
+# the systemd flavour has run, so the next run can restore a tree whose PID 1
+# is systemd, whose power commands are systemctl's, and whose lib/systemd is
+# the merged-usr bridge. A default build that inherited any of that would
+# ship an image that boots systemd while calling itself the default one --
+# the half-done swap SYSTEMD-MIGRATION.md warns about -- and would fail to
+# copy the Hyprland packages into the tree at all.
+#
+# The `iso` chain is deliberately NOT in this list: the CI builds the default
+# ISO and the systemd ISO with the same command, and the tree's own state is
+# what says which flavour is being packaged. The `systemd` chain is not in it
+# either: that stage is what puts the swap in place.
+case "$STAGE" in
+  rootfs|gui|hypr|plymouth|sudo|initramfs|copper|all|"")
+    default_flavour ;;
+esac
+
 case "$STAGE" in
   kernel)     build_kernel ;;
   base)       build_musl; build_busybox ;;
@@ -3067,5 +3187,4 @@ case "$STAGE" in
   all|"")     full ;;
   *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|hypr|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
 esac
-
 echo "==> done"

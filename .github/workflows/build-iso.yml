@@ -204,6 +204,61 @@ jobs:
           path: iso/out/copper.iso
           retention-days: 14
 
+      # ---- the cache is saved HERE, before the systemd flavour ---------------
+      # The staged tree outlives this run: the next run restores it and keeps
+      # building on it. What goes in the cache therefore has to be the tree
+      # the NEXT run's default build expects -- and that is the default
+      # flavour's tree, not the systemd flavour's.
+      #
+      # The cache used to be saved at the very end, after the systemd stage
+      # had swapped PID 1 in the same tree, so what it saved was a
+      # systemd-flavoured tree: sbin/init pointing at /lib/systemd/systemd,
+      # the power commands pointing at systemctl, and lib/systemd a symlink to
+      # ../usr/lib/systemd (the merged-usr bridge). The next run restored that
+      # tree and died in the Hyprland stage:
+      #
+      #     cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
+      #         directory '.../hypr-root/./lib/systemd'
+      #
+      # because cp cannot merge a directory into a symlink, and the Hyprland
+      # closure ships a real lib/systemd. Two CI runs in a row failed on
+      # exactly that line, on a tree that had been perfectly good a moment
+      # before.
+      #
+      # The same tree would also have packaged a "default" ISO that boots
+      # systemd, silently, which is the half-done swap the two artefacts are
+      # supposed to keep apart. Saving the cache before the swap keeps the
+      # two flavours apart in the cache as well as on the disc.
+      #
+      # The cost is that the systemd stage is not cached: it re-downloads and
+      # re-unpacks its 40-odd packages on every run. That is a minute of CI,
+      # and it is cheaper than a cache that carries the wrong tree.
+
+      # The stages run under sudo, so iso/work is root-owned, and the cache
+      # action tars it as the unprivileged runner: tar exits 2 on the first
+      # file it cannot read (etc/shadow, the apt lock dirs, ssl/private), which
+      # left the tree uncached and made every run cold. Hand the tree to the
+      # runner first. A chown also clears the setuid/setgid bits, so this saves
+      # the tree as uid 1000 with /usr/bin/sudo stripped of its bit. The stages
+      # that ship those permissions re-assert them rather than trust the
+      # restore: build_sudo pins sudo's owner and bit, and build_iso pins the
+      # whole tree before it is packaged.
+      - name: Make the build tree readable by the cache
+        if: always()
+        run: |
+          if [ -e iso/work ]; then
+            sudo chown -R "$(id -u):$(id -g)" iso/work
+          fi
+
+      # Save the work tree even on failure so the next run resumes the
+      # stages that already finished (kernel build is ~7 min).
+      - name: Cache build tree (save)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: iso/work
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
+
       # ---- the systemd flavour, built AFTER the default ISO ----------------
       # This is what makes CI answer "is the migration real" rather than just
       # "does the default image still build". `build_systemd` swaps PID 1 in
@@ -232,28 +287,3 @@ jobs:
           name: copper-iso-systemd
           path: iso/out/copper.iso
           retention-days: 14
-
-      # The stages run under sudo, so iso/work is root-owned, and the cache
-      # action tars it as the unprivileged runner: tar exits 2 on the first
-      # file it cannot read (etc/shadow, the apt lock dirs, ssl/private), which
-      # left the tree uncached and made every run cold. Hand the tree to the
-      # runner first. A chown also clears the setuid/setgid bits, so this saves
-      # the tree as uid 1000 with /usr/bin/sudo stripped of its bit. The stages
-      # that ship those permissions re-assert them rather than trust the
-      # restore: build_sudo pins sudo's owner and bit, and build_iso pins the
-      # whole tree before it is packaged.
-      - name: Make the build tree readable by the cache
-        if: always()
-        run: |
-          if [ -e iso/work ]; then
-            sudo chown -R "$(id -u):$(id -g)" iso/work
-          fi
-
-      # Save the work tree even on failure so the next run resumes the
-      # stages that already finished (kernel build is ~7 min).
-      - name: Cache build tree (save)
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
