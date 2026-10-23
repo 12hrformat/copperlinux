@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Fifteen gates: smoke.sh always; startxfce-gate.sh, charge.sh,
+# Seventeen gates: smoke.sh always; startxfce-gate.sh, charge.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees, the hotfix database,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
@@ -15,6 +15,9 @@
 # kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
 # the shipped require_kernel_config() against synthetic configs rather than
 # building a kernel.
+# font-gate.sh is unprivileged too: it reads the shipped console font (a PSF1
+# binary), the fastfetch config and copper-init.c, and needs python3 to walk
+# the font's unicode table.
 # xprobe-gate.sh needs a C
 # compiler and python3, which CI and the build VM have, and skips cleanly where
 # neither exists; starthyprland-gate.sh needs python3 for one case and skips the
@@ -335,6 +338,24 @@ if out=$(bash tests/kernel-gate-sabotage.sh 2>&1); then
 else
     record kernel-gate-sabotage.sh bad "the gate missed a planted defect"
     printf '%s\n' "$out" | grep -E '^  FAIL|^BROKEN' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/font-gate.sh: the console font and the glyphs Copper draws ---"
+# No root. The console has ONE bitmap font and no fallback, so a codepoint it
+# lacks is a question mark -- the same fastfetch separator that renders in
+# xfce4-terminal. Reads the font's real unicode table (python3) and the real
+# fastfetch config, so a renamed font, a dropped package or a config that
+# starts printing emoji goes red here rather than on a user's tty1.
+if ! command -v python3 >/dev/null 2>&1; then
+    record font-gate.sh skipped "no python3 on this host"
+elif out=$(bash tests/font-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record font-gate.sh ok "$n checks"
+else
+    record font-gate.sh bad "a console-font check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------

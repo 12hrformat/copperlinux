@@ -1274,6 +1274,45 @@ static void splash_stop(void) {
    see console_main(). */
 static int g_console_only = 0;
 
+/* Give the console a font that can draw what the tools print.
+
+   The kernel console is one bitmap font and zero fallback: a codepoint whose
+   glyph is missing from the font's unicode table is rendered as a literal
+   question mark. The built-in face is CP437, so on tty1 every fastfetch
+   separator (U+2500) was a row of "?" -- in xfce4-terminal the same bytes
+   looked fine, because VTE falls back through fontconfig and the console
+   cannot. That is the whole bug.
+
+   Uni2-VGA16 is the 512-glyph console font in the image (see
+   /usr/share/doc/copper-console-font/README): box drawing, blocks, arrows,
+   Greek and Cyrillic. It cannot also carry braille -- 256 of the 512 slots --
+   and does not need to: btop looks at its controlling tty, sees /dev/tty1 and
+   switches itself to its ASCII "tty" graphs before it draws anything.
+
+   setfont is a busybox applet (build.sh asserts CONFIG_SETFONT), so this
+   works on the console-only boot that has no glibc and no X. Best effort:
+   no font file, no /dev/tty1 or a serial console just leaves the default
+   face alone. */
+static void load_console_font(void) {
+    static const char font[] = "/usr/share/consolefonts/Uni2-VGA16.psf";
+    static const char tty[] = "/dev/tty1";
+    int st;
+    pid_t p;
+
+    if (access(font, R_OK) != 0 || access(tty, W_OK) != 0)
+        return;
+    p = fork();
+    if (p == 0) {
+        execl("/bin/busybox", "busybox", "setfont", "-C", tty, font,
+              (char *)NULL);
+        _exit(127);
+    }
+    if (p < 0)
+        return;
+    while (waitpid(p, &st, 0) < 0 && errno == EINTR)
+        ;
+}
+
 /* The wizard, the session user, and the shell that waits for them.
 
    Everything from "is the wizard done?" down to the loop that respawns the
@@ -1289,6 +1328,10 @@ static void run_session(void) {
        UTF-8 too; the glibc half of it is in libc-bin, which build_gui now
        stages. Overwrite 0: a LANG inherited from the caller wins. */
     setenv("LANG", "C.UTF-8", 0);
+
+    /* Also before anything draws: the console has no per-glyph fallback, so
+       whatever face is loaded now is the one the tools will be judged on. */
+    load_console_font();
 
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
