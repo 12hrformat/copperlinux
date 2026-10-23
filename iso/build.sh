@@ -526,7 +526,7 @@ require_bb_config() {
       MOUNT UMOUNT SWITCH_ROOT HOSTNAME \
       BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP \
-      CHPASSWD FEATURE_SHADOWPASSWDS ; do
+      CHPASSWD FEATURE_SHADOWPASSWDS SETFONT ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -569,6 +569,11 @@ build_busybox() {
     set_bb_config FEATURE_ADDUSER_TO_GROUP
     set_bb_config FEATURE_SHADOWPASSWDS
     set_bb_config FEATURE_INSTALLER
+    # setfont: copper-init loads the console font with this applet before it
+    # spawns the shell. The kernel console has no font fallback, so the default
+    # VGA face is the difference between fastfetch's box drawing and a screen
+    # of question marks on tty1.
+    set_bb_config SETFONT
     # the tc applet needs CBQ traffic-class kernel UAPI (TCA_CBQ_* and
     # struct tc_cbq_*) that newer kernel headers removed, so it fails to
     # compile against the runner's headers. Copper ships no traffic
@@ -1428,10 +1433,20 @@ build_gui() {
   #
   # fonts: DejaVu is Latin and little else. The terminal tools draw out of the
   # rest of Unicode -- btop's graphs and fastfetch's separators are braille,
-  # block elements and dingbats -- and a font that lacks them is a tofu box.
-  # Noto carries the scripts and symbols, Symbola the monochrome emoji, Noto
-  # Color Emoji the coloured ones VTE can draw, Powerline the prompt glyphs,
-  # and Font Awesome the set the Hyprland config asks for by name.
+  # block elements and dingbats -- and a font that lacks them is a tofu box in
+  # the terminal or a question mark on the console. Noto carries the scripts
+  # and symbols, Symbola the monochrome emoji, Noto Color Emoji the coloured
+  # ones VTE can draw, Powerline the prompt glyphs, and Font Awesome the set
+  # the Hyprland config asks for by name. Hack, JetBrains Mono, Fira Code and
+  # Liberation are the terminal faces themselves: they carry box drawing and
+  # the powerline-adjacent shapes at one advance width, which is what the
+  # desktop's font picker is looking for when it offers "more fonts".
+  #
+  # fontconfig (the package -- the library arrives with GTK) is the one that
+  # ships fc-cache and fc-match. --no-install-recommends drops it, so the font
+  # cache step in startxfce/starthyprland found no fc-cache to run, silently
+  # skipped, and left the live image rescanning every font directory on every
+  # glyph lookup.
   #
   # libc-bin is not desktop, but it owns /usr/lib/locale/C.utf8. The session
   # sets LANG=C.UTF-8 and glibc refuses a locale whose files are absent, so
@@ -1443,8 +1458,9 @@ build_gui() {
          adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs \
          libc-bin \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
-         fonts-noto-color-emoji fonts-symbola fonts-powerline \
-         fonts-font-awesome
+         fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \
+         fonts-hack fonts-jetbrains-mono fonts-firacode fonts-liberation \
+         fontconfig
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   apt-get \

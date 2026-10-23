@@ -47,3 +47,12 @@ init text eol=lf
 *.target text eol=lf
 *.link text eol=lf
 *.network text eol=lf
+
+# The console font in iso/rootfs-overlay/usr/share/consolefonts is a PSF1
+# bitmap, the one binary that has to reach the kernel byte-for-byte: its glyph
+# data is the difference between fastfetch's box drawing and a screen of "?".
+# `text=auto` already sees the NUL in the header and leaves it alone, but an
+# EOL rule applied to a bitmap is the same class of bug as the destroyed
+# plymouth zip, so -- like *.png above -- the intent is written down here and
+# the cost is one line of git config.
+*.psf binary
