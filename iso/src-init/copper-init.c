@@ -1278,10 +1278,12 @@ static int g_console_only = 0;
 
    The kernel console is one bitmap font and zero fallback: a codepoint whose
    glyph is missing from the font's unicode table is rendered as a literal
-   question mark. The built-in face is CP437, so on tty1 every fastfetch
-   separator (U+2500) was a row of "?" -- in xfce4-terminal the same bytes
-   looked fine, because VTE falls back through fontconfig and the console
-   cannot. That is the whole bug.
+   question mark. Until a font is loaded it also has a default unicode map
+   that only knows U+0000-U+00FF -- the built-in VGA face is drawn from those
+   bytes and nothing maps the rest -- so on tty1 every fastfetch separator
+   (U+2500) came out as "?" while its Latin text was perfect. In
+   xfce4-terminal the same bytes looked fine, because VTE falls back through
+   fontconfig and the console cannot. That is the whole bug.
 
    Uni2-VGA16 is the 512-glyph console font in the image (see
    /usr/share/doc/copper-console-font/README): box drawing, blocks, arrows,
