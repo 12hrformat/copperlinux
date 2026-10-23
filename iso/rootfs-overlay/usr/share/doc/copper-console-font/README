@@ -10,13 +10,13 @@ Why it is in the image
 ----------------------
 
 The kernel console draws every character from one bitmap font and has no
-per-glyph fallback: a codepoint whose glyph is not in the font's unicode
-table comes out as a question mark. The built-in VGA face is CP437, so on tty1
-fastfetch's box-drawing separator (U+2500), its colors circles and every arrow
-and shade were question marks. btop notices the console and switches itself to
-ASCII, which is why its graphs survived. Nothing in a terminal emulator shows
-the bug at all, because VTE does fall back through fontconfig; the console
-cannot.
+per-glyph fallback. Until something loads a font, it also has a default unicode
+map that only knows U+0000-U+00FF, so a codepoint outside it -- fastfetch's
+U+2500 separator, a block, an arrow -- has no glyph to fall back to and comes
+out as a literal question mark. Latin text was fine, which is why this read as
+"the fonts are broken" rather than "the console cannot draw". Nothing in a
+terminal emulator shows the bug at all, because VTE does fall back through
+fontconfig; the console cannot.
 
 A console font tops out at 512 glyphs (PSF1), and braille alone is 256 of
 them, so no font can carry both braille and a full Latin set. The 1990s are
