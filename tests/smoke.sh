@@ -72,6 +72,46 @@ check "grep"         "multi line two" "$out"
 check "basename"     "copper"       "$out"
 check "dirname"      "/usr/bin"     "$out"
 
+# copper-sh reads /etc/copperrc and ~/.copperrc before the first prompt. Point
+# HOME at an empty directory so the developer's own rc file cannot change any
+# answer above, then give the shell one of ours.
+rc_home=${TMPDIR:-/tmp}/copper-smoke.$$
+mkdir -p "$rc_home"
+trap 'rm -rf "$rc_home"' EXIT
+HOME=$rc_home
+export HOME
+
+cat > "$rc_home/.copperrc" <<'RC'
+# what an installer writes, more or less
+export COPPER_SMOKE_RC=loaded
+export COPPER_SMOKE_PATH=$HOME/.opencode/bin:$PATH
+RC
+
+out=$($SH <<'EOF'
+echo "rc=${COPPER_SMOKE_RC}"
+echo "brace=${COPPER_SMOKE_RC}"
+echo 'single=$COPPER_SMOKE_RC'
+echo "literal=\$COPPER_SMOKE_RC"
+echo "path=$COPPER_SMOKE_PATH"
+env | grep COPPER_SMOKE_RC
+EOF
+)
+
+check "rc expansion"   "rc=loaded"              "$out"
+check "rc braces"      "rc=loaded"              "$out"
+check "single quotes"  "single=\$COPPER_SMOKE_RC" "$out"
+check "escaped dollar" "literal=\$COPPER_SMOKE_RC" "$out"
+check "rc PATH"        "$rc_home/.opencode/bin:" "$out"
+check "export to child" "COPPER_SMOKE_RC=loaded" "$out"
+
+# Installers ask which shell to edit; nothing used to answer. Unset SHELL for
+# this run so the fallback has to come from the passwd entry.
+out=$(env -u SHELL "$SH" <<'EOF'
+echo "shell=$SHELL"
+EOF
+)
+check "SHELL fallback" "shell=/" "$out"
+
 if [ "$fails" -gt 0 ]; then
     echo "$fails check(s) failed"
     exit 1

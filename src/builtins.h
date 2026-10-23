@@ -39,6 +39,7 @@ int b_chmod(int argc, char **argv);
 int b_type(int argc, char **argv);
 int b_which(int argc, char **argv);
 int b_env(int argc, char **argv);
+int b_export(int argc, char **argv);
 
 struct builtin {
     const char *name;

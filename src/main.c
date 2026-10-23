@@ -71,6 +71,7 @@ static const struct builtin btable[] = {
     { "type",    b_type,    "is a command builtin or external?" },
     { "which",   b_which,   "show where a command lives on PATH" },
     { "env",     b_env,     "print the environment" },
+    { "export",  b_export,  "put NAME=value in the environment" },
     { NULL, NULL, NULL },
 };
 
@@ -337,6 +338,11 @@ static char *short_pwd(char *buf, size_t n) {
  * A leading ~ is expanded only when it starts an unquoted word. That covers
  * ~, ~/x and ~someone/x, and leaves "~ is a tilde" and '~/x' alone, which is
  * what a shell is expected to do.
+ *
+ * $NAME and ${NAME} expand to environment variables, in unquoted words and
+ * inside double quotes, exactly like every other shell. Single quotes keep
+ * them literal, which is the one thing people actually rely on: an rc file
+ * full of "export PATH=$HOME/bin:$PATH" must survive being written down.
  */
 static const char *home_for_user(const char *name) {
     if (!name || !*name) return getenv("HOME");
@@ -344,11 +350,48 @@ static const char *home_for_user(const char *name) {
     return (pw && pw->pw_dir) ? pw->pw_dir : NULL;
 }
 
+/* Expand $NAME or ${NAME} at *srcp into *dstp. Returns 1 when it expanded
+   something (and moves *srcp past the name), 0 when this '$' is just a
+   dollar sign, and -1 when the value does not fit in the buffer. */
+static int expand_at(const char **srcp, char **dstp, char *end) {
+    const char *p = *srcp + 1;
+    int brace = 0;
+    if (*p == '{') { brace = 1; p++; }
+
+    char name[128];
+    size_t n = 0;
+    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_'))
+        return 0;    /* $1, $? and a bare $ are not variable names here */
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+           (*p >= '0' && *p <= '9') || *p == '_') {
+        if (n + 1 < sizeof name) name[n++] = *p;
+        p++;
+    }
+    if (brace) {
+        if (*p != '}') return 0;    /* "${HOME" is a typo, not an expansion */
+        p++;
+    }
+    name[n] = '\0';
+
+    const char *val = getenv(name);
+    if (val) {
+        char *d = *dstp;
+        for (; *val; val++) {
+            if (d >= end) return -1;
+            *d++ = *val;
+        }
+        *dstp = d;
+    }
+    *srcp = p;      /* an unset variable expands to nothing, as in sh */
+    return 1;
+}
+
 static char **tokenize_line(const char *line, char *out, size_t outcap, int *count) {
     static char *argv[256];
     int n = 0, inw = 0;
     char *dst = out;
     char *const end = out + outcap - 1;   /* leave room for the final NUL */
+    const char *src = line;
 
 #define PUTC(ch) do { \
         if (dst >= end) { \
@@ -358,12 +401,20 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
         } \
         *dst++ = (ch); \
     } while (0)
+#define TRY_EXPAND(r) do { \
+        (r) = expand_at(&src, &dst, end); \
+        if ((r) < 0) { \
+            fprintf(stderr, "copper-sh: line too long after expansion\n"); \
+            *count = 0; \
+            return argv; \
+        } \
+    } while (0)
 
-    for (const char *src = line;; src++) {
+    while (*src) {
         char c = *src;
-        if (!c) break;
         if (c == ' ' || c == '\t') {
             if (inw) { PUTC('\0'); inw = 0; }
+            src++;
             continue;
         }
         if (c == '#' && !inw) break;  /* a comment starts a line, not a word */
@@ -387,7 +438,7 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
                 const char *home = home_for_user(k ? name : NULL);
                 if (home) {
                     for (const char *p = home; *p; p++) PUTC(*p);
-                    src += k;           /* skip the name we just consumed */
+                    src += k + 1;       /* skip the ~ and the name after it */
                     continue;
                 }
                 /* No such user, or no HOME. Leave the ~ as a literal rather
@@ -395,17 +446,46 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
                    meaning of the command. */
             }
         }
-        if (c == '\\' && src[1]) { PUTC(src[1]); src++; continue; }
-        if (c == '\'' || c == '"') {     /* strip quotes */
-            for (src++; *src && *src != c; src++) PUTC(*src);
+        if (c == '\\' && src[1]) { PUTC(src[1]); src += 2; continue; }
+        if (c == '\'') {                 /* single quotes: nothing expands */
+            src++;
+            while (*src && *src != '\'') PUTC(*src++);
+            if (*src) src++;
             continue;
         }
+        if (c == '"') {
+            src++;
+            while (*src && *src != '"') {
+                if (*src == '\\' && (src[1] == '"' || src[1] == '\\' ||
+                                     src[1] == '$')) {
+                    PUTC(src[1]);
+                    src += 2;
+                    continue;
+                }
+                if (*src == '$') {
+                    int r;
+                    TRY_EXPAND(r);
+                    if (r > 0) continue;
+                }
+                PUTC(*src++);
+            }
+            if (*src) src++;
+            continue;
+        }
+        if (c == '$') {
+            int r;
+            TRY_EXPAND(r);
+            if (r > 0) continue;
+        }
+
         PUTC(c);
+        src++;
     }
     if (inw) PUTC('\0');
     argv[n] = NULL;
     *count = n;
 #undef PUTC
+#undef TRY_EXPAND
     return argv;
 }
 
@@ -633,10 +713,76 @@ int b_history(int argc, char **argv) {
 
 /* ---------------------------------------------------------------- */
 
+/*
+ * Read one rc file. /etc/copperrc goes first (the distro's defaults, which
+ * arrive with the image) and ~/.copperrc after it (the user's, which lives
+ * with the home). Both are fed through the same tokenizer and parser as the
+ * prompt, so anything you can type works, and nothing has to be taught twice.
+ *
+ * A missing file is normal: a fresh home has no ~/.copperrc until the wizard
+ * seeds one, and older homes were seeded before this existed.
+ */
+static void read_rc_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    char line[EDIT_BUF_SIZE];
+    while (fgets(line, sizeof line, f)) {
+        if (!strchr(line, '\n') && !feof(f)) {
+            int c;
+            while ((c = fgetc(f)) != '\n' && c != EOF) ;   /* drain the rest */
+            fprintf(stderr, "copper-sh: %s: line too long, skipped\n", path);
+            continue;
+        }
+        size_t len = strlen(line);
+        while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+        if (!len) continue;
+
+        char *toks = malloc(EDIT_BUF_SIZE * 2);
+        if (!toks) break;
+        int argc;
+        char **argv = tokenize_line(line, toks, EDIT_BUF_SIZE * 2, &argc);
+        if (argc > 0) {
+            struct cmdseg *cmds = NULL;
+            int nsegs = 0;
+            if (parse_line(argv, argc, &cmds, &nsegs) == 0) {
+                run_segments(cmds, nsegs);
+                free_cmds(cmds, nsegs);
+            }
+        }
+        free(toks);
+    }
+    fclose(f);
+}
+
+static void read_rc(void) {
+    read_rc_file("/etc/copperrc");
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof path, "%s/.copperrc", home);
+        read_rc_file(path);
+    }
+}
+
+/* ---------------------------------------------------------------- */
+
 int main(void) {
     signal(SIGINT, SIG_IGN);             /* ctrl-c must not kill the shell */
     resolve_prompt_identity();
     puts("\033[37mWelcome to \033[32mCopper Linux!\033[0m");
+
+    /* Nothing ever set SHELL here, and installers ask the environment which
+       shell to edit -- the OpenCode one then dies on its own `set -u` right
+       after writing the binary, before it can say where it put it. The passwd
+       entry is the truth; overwrite 0 keeps a value from the caller. */
+    if (!getenv("SHELL")) {
+        struct passwd *pw = getpwuid(getuid());
+        setenv("SHELL", (pw && pw->pw_shell && *pw->pw_shell)
+                            ? pw->pw_shell : "/usr/bin/copper-sh", 0);
+    }
+    read_rc();
 
     if (enable_raw_mode() == 0)
         atexit(disable_raw_mode);
