@@ -1,0 +1,14 @@
+# System-wide copper-sh startup file, read before ~/.copperrc.
+#
+# Every line here is a command, and copper-sh runs it through the same parser
+# as the prompt: `export NAME=value` sets a variable, $NAME and ${NAME} expand,
+# ~ is your home, and anything else runs like you typed it.
+#
+# Installers that keep their binary under $HOME cannot edit an rc file they
+# have never heard of -- the OpenCode one writes ~/.opencode/bin and then
+# appends a PATH line to whatever shell it thinks you use. Put the usual
+# per-user directories on PATH here instead, once, for everyone: a user's
+# private tools work on first login, and an installer that fails to find the
+# right rc file still leaves a working command behind.
+
+export PATH=$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$PATH

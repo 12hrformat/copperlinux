@@ -294,6 +294,14 @@ static void drop_to_session(const struct session *s) {
     setenv("HOME", s->home, 1);
     setenv("USER", s->name, 1);
     setenv("LOGNAME", s->name, 1);
+    /* Installers ask the environment which shell to edit. Nothing ever set
+       SHELL, so the OpenCode installer's "set -u" killed the process on the
+       next line and took the install with it -- the binary was written, then
+       the script died before telling anyone where it was. The passwd entry is
+       the truth here (the wizard writes /usr/bin/copper-sh into it). */
+    struct passwd *pw = getpwuid(s->uid);
+    setenv("SHELL", (pw && pw->pw_shell && *pw->pw_shell)
+                        ? pw->pw_shell : "/usr/bin/copper-sh", 1);
 }
 
 /* Hand the X server's device nodes to the session user.

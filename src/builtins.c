@@ -678,3 +678,38 @@ int b_env(int argc, char **argv) {
     for (char **e = environ; *e; e++) puts(*e);
     return 0;
 }
+
+/*
+ * export NAME=value, in the one place where a shell can actually change its
+ * own environment: a builtin, running in this process. A forked `env` could
+ * never do it, which is why every installer that ends with
+ * "export PATH=$HOME/.opencode/bin:$PATH" used to fail here and look like it
+ * had installed nothing.
+ *
+ * `export NAME` (no '=') only checks that NAME exists; there is no shell
+ * variable table, so there is nothing else to mark as exported.
+ */
+int b_export(int argc, char **argv) {
+    if (argc == 1) {
+        for (char **e = environ; *e; e++) puts(*e);
+        return 0;
+    }
+    int rc = 0;
+    for (int i = 1; i < argc; i++) {
+        char *eq = strchr(argv[i], '=');
+        if (!eq) {
+            if (!getenv(argv[i])) {
+                fprintf(stderr, "export: %s: not set\n", argv[i]);
+                rc = 1;
+            }
+            continue;
+        }
+        *eq = '\0';
+        if (setenv(argv[i], eq + 1, 1)) {
+            perror("export");
+            rc = 1;
+        }
+        *eq = '=';      /* the token buffer is the caller's; leave it as found */
+    }
+    return rc;
+}

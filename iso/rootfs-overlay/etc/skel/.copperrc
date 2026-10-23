@@ -1,3 +1,11 @@
-# copper-sh startup file — sourced when the shell's history/rc support lands.
-# For now: a greeting.
-echo "Welcome to Copper Linux."
+# Your own copper-sh startup file, read after /etc/copperrc.
+#
+# Lines are commands, the same ones you would type at the prompt:
+#
+#   export EDITOR=nano          put a variable in the environment
+#   cd ~/projects               start in one place
+#   echo "$USER is here"        $NAME and ${NAME} expand
+#
+# Something you put here lasts for this shell only; /etc/copperrc has the
+# defaults that ship with the image (including the PATH entries for per-user
+# tools such as ~/.opencode/bin).
