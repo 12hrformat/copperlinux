@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Copper Theme Installer
+GenericName=Desktop Theme Installer
+Comment=Review and install GTK, icon, cursor, XFWM4 and font themes
+Exec=copper-theme-installer %f
+TryExec=copper-theme-installer
+Icon=copper-theme-installer
+Terminal=false
+StartupNotify=true
+Categories=Settings;DesktopSettings;GTK;
+Keywords=theme;themes;gtk;icons;cursors;xfwm4;fonts;install;
+# Archive types this application can inspect.  It is deliberately NOT the
+# default handler: the desktop's own archive manager keeps that role, and this
+# entry only appears under "Open With".  Formats the inspector refuses (7z,
+# RAR, ...) are not listed.
+MimeType=application/zip;application/x-tar;application/x-compressed-tar;application/x-bzip-compressed-tar;application/x-xz-compressed-tar;
