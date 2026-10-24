@@ -65,7 +65,15 @@ base_prefixes='libgtk-3|libgdk-3|libglib2.0|libgio-2.0|libgobject-2.0|libgmodule
 
 pkgs=""
 for lib in $(ldd "$app/$name" | awk '/=> \// {print $3}'); do
-    owner=$(dpkg -S "$lib" 2>/dev/null | head -1 | cut -d: -f1) || owner=""
+    # On usrmerged Ubuntu, ldd names /lib/... while the dpkg database records
+    # /usr/lib/...; ask about the resolved path too, or every library looks
+    # unowned and the payload comes out empty.
+    real=$(readlink -f "$lib" 2>/dev/null || printf '%s' "$lib")
+    owner=""
+    for path in "$lib" "$real"; do
+        owner=$(dpkg -S "$path" 2>/dev/null | head -1 | cut -d: -f1) || owner=""
+        [ -n "$owner" ] && break
+    done
     [ -n "$owner" ] || continue
     case "$owner" in
         libc6|libc6-dev|gcc-*-base|libgcc-s1) continue ;;
