@@ -139,7 +139,7 @@ need a display, root, or network.
 ## Packaging for Ingot
 
 ```sh
-./build-theme-installer-pkg.sh 0.1.0
+sh ./build-theme-installer-pkg.sh 0.1.0
 ```
 
 The script builds on Ubuntu 24.04 (it refuses other distributions by default
