@@ -743,6 +743,19 @@ static unsigned input_device_tags(const char *dir) {
             if (cap_test(&key, b)) found = 1;
         for (unsigned b = KEY_ALS_TOGGLE; b < BTN_TRIGGER_HAPPY && !found; b++)
             if (cap_test(&key, b)) found = 1;
+        /* Also treat common letter/symbol ranges as a keyboard signal */
+        if (!found) {
+            for (unsigned b = 16; b < 40 && !found; b++)
+                if (cap_test(&key, b)) found = 1; /* 'q' starts around 16 */
+            if (!found) {
+                for (unsigned b = 1; b < 0x60 && !found; b++)
+                    if (cap_test(&key, b)) found = 1;
+            }
+            if (!found) {
+                for (unsigned b = 0x80; b < 0xa0 && !found; b++)
+                    if (cap_test(&key, b)) found = 1;
+            }
+        }
         if (found) {
             tags |= TAG_KEY;
             is_key = 1;
@@ -754,6 +767,13 @@ static unsigned input_device_tags(const char *dir) {
         if ((key.word[0] & 0xFFFFFFFEULL) == 0xFFFFFFFEULL) {
             tags |= TAG_KEYBOARD;
             is_key = 1;
+        } else if (tags & TAG_KEY) {
+            /* If it has any key below BTN_MISC and isn't clearly a pointer-only
+               device, treat it as a keyboard for libinput's sake. */
+            if (!is_pointer || (tags & TAG_POINTINGSTICK)) {
+                tags |= TAG_KEYBOARD;
+                is_key = 1;
+            }
         }
     }
 
@@ -761,6 +781,25 @@ static unsigned input_device_tags(const char *dir) {
     if (!is_pointer && !is_key && cap_test(&ev, EV_REL)
         && (cap_test(&rel, REL_WHEEL) || cap_test(&rel, REL_HWHEEL)))
         tags |= TAG_KEY;
+
+    /* If we still haven't tagged a device that has keyboard keys and no
+       pointer role, be permissive: tag it as KEY+KEYBOARD so libinput accepts it.
+       This helps on some VM/PS2/USB keyboard layouts where capability bits differ. */
+    if (!is_key && !is_pointer && cap_test(&ev, EV_KEY)) {
+        int has_any_key = 0;
+        for (unsigned b = 1; b < 255; b++) {
+            if (cap_test(&key, b)) { has_any_key = 1; break; }
+        }
+        if (!has_any_key) {
+            for (unsigned b = KEY_OK; b < BTN_DPAD_UP; b++) {
+                if (cap_test(&key, b)) { has_any_key = 1; break; }
+            }
+        }
+        if (has_any_key) {
+            tags |= TAG_KEY | TAG_KEYBOARD;
+            is_key = 1;
+        }
+    }
 
     if (cap_test(&ev, EV_SW))
         tags |= TAG_SWITCH;
