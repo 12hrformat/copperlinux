@@ -521,6 +521,101 @@ gets `systemctl` links and a busybox tree gets busybox's applets and the
 wrapper. Sabotage case 25 plants the opposite defect — `power_links()` blind
 to the tree's init — and the gate catches it.
 
+### The eighth push: an audit of phase 1, and what it found
+
+The systemd image had been booted once and the gate set was green, so the
+next step was to read the phase 1 code with fresh eyes rather than to wait
+for the next boot. Six things were found. Three were live defects a boot
+would have hit; the other three were gaps in the gate that would have let a
+defect through.
+
+**The DHCP unit named an interface that is a name, not a fact.**
+`copper-network.service` ran `udhcpc -i eth0`. eth0 holds only for as long
+as eth0 is the first NIC the kernel enumerates. A box with no wired NIC has
+no eth0, udhcpc exits non-zero on the missing device, the unit has no
+`Restart=`, and the machine boots with no network and an unexplained
+`[FAILED]` on the tty the wizard is drawing on -- bug 47's corruption, one
+unit over.
+
+The busybox image never had this problem, because copper-init asks sysfs which
+interface is real (`first_nonloop_iface()`: ARPHRD_ETHER, then
+ARPHRD_IEEE80211_RADIOTAP, skipping the tunnel interfaces some built-in
+drivers invent). The systemd flavour asks the same question now: the unit
+runs `/usr/bin/copper-dhcp`, a helper that does the same discovery
+copper-init does, waits out the couple of seconds a late-attaching NIC needs,
+and execs udhcpc on what it finds.
+
+**The wizard and getty both wanted tty1.** systemd's own
+`getty@tty1.service` claims `/dev/tty1` -- the real noble `getty@.service`
+sets `TTYPath=/dev/%I` -- and nothing ordered it against the Copper units:
+getty.target wants getty@tty1, getty.target is wanted by multi-user.target,
+and multi-user.target also wants copper.target, which wants the wizard. So
+both started, both wrote to the console, and the user got a login banner
+drawn across the middle of the form they were filling in.
+
+`Conflicts=getty@tty1.service` was already on `copper-console.service` -- but
+the wizard runs BEFORE the console service (`Before=copper-console.service`),
+so the console's own conflict never covered the window the wizard was on
+screen. The wizard unit has the conflict now.
+
+What a conflict actually does was measured rather than assumed, because the
+intuitive answer is the wrong one: with `Conflicts=` and no ordering between
+the two units, systemd **drops** the conflicting unit's start job rather
+than starting it and stopping it afterwards, so the banner is never printed
+at all. Checked against a live systemd, with a stand-in victim unit, because
+the answer decides whether the fix is one line or two.
+
+**The stage's stamp did not cover the helpers it installs.** The systemd stage
+skips itself when its inputs still hash the same. The two scripts in
+`iso/systemd/` -- `copper-tty-clear` and `copper-dhcp` -- are inputs in
+exactly that sense, because a unit execs each of them, and they were not in
+the input list. So editing a helper did not invalidate the stamp: the stage
+said "already staged, skipping" and the ISO shipped the **previous** helper.
+A stale artifact with a green light, which is the entire failure mode the
+stamp exists to prevent. Both helpers are stamp inputs now.
+
+**The stage could not see a command the image was missing.** Inside the
+chrooted `systemd-analyze verify` the tree IS the machine, so "Command X is
+not executable" is a real defect there -- the image is missing a binary a
+Copper unit names, and that unit can never start. The filter treated that
+shape as host noise, because the same expression has to run against the
+build host as well, where it really is noise: the host has none of Copper's
+binaries. The chroot now has its own, narrower rule, and the stage asserts
+that the commands the units name -- `/usr/bin/copper-dhcp`, `/sbin/udhcpc`,
+`/bin/sh` -- are in the tree.
+
+**A Documentation= pointing at nothing.** `Documentation=man:udhcpc(1)` and
+`Documentation=man:seatd(1)` pointed at man pages this image does not ship:
+the gui closure pulls in no man-db and nothing else installs one. This
+document removed the `Documentation=file:` lines for exactly that reason
+("a unit that documents itself with a file nobody can open is worse than one
+that does not") and kept the `man:` ones on the premise that "a real distro
+has those man pages". This image is not that distro: it has no man and no man
+pages, so the reference is dead the same way, and systemd-analyze says so out
+loud on every build. Both are gone.
+
+**And three gaps in the gate, which is why none of the above was caught.**
+The gate never looked at `getty` at all, so the load-bearing `Conflicts=`
+line was unguarded -- removing it left the gate green. The gate's ordering
+transaction did not include the units that are real participants in the boot
+graph (`getty@tty1.service`, `getty.target`, `multi-user.target`): the same
+"a fixture that models its input wrongly certifies the wrong code" trap this
+project has now hit three times, and the fourth one would have been the
+getty conflict itself. And the gate never checked the stage's stamp inputs at
+all, so a helper that had quietly fallen out of the input list was invisible.
+
+So the gate grew fourteen checks and the sabotage suite grew nine cases: a
+green test proves nothing until it has been seen to fail, and each new check
+needed a planted defect to prove it can still go red. The suite is now
+thirty-four cases.
+
+**Still NOT verified, and this is the honest gap:** none of the above has
+been booted. The fixes are covered by the gate and by the sabotage suite, and
+the gate says the pieces are coherent -- but every one of these fixes is
+unbooted code, and the one boot this image has had found four defects that
+every green gate had missed. The next boot is what closes this section, the
+same way the boot closed the sixth and the seventh.
+
 ## Remaining work (phase 2+)
 
 - **Boot it again**, with the fixes for bugs 47-50 in it. The first boot found

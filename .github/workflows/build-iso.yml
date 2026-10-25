@@ -76,7 +76,8 @@ jobs:
           # tests that would have told us something more useful.
           for s in tests/*.sh iso/live/init \
                    iso/rootfs-overlay/usr/share/udhcpc/default.script \
-                   iso/systemd/copper-tty-clear; do
+                   iso/systemd/copper-tty-clear \
+                   iso/systemd/copper-dhcp; do
             bash -n "$s" || { echo "::error::syntax:$s"; bad=1; }
           done
           exit $bad

@@ -24,7 +24,9 @@
 # handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper seat daemon (seatd)
-Documentation=man:seatd(1)
+# No Documentation= here, for the same reason copper-network.service has none:
+# this image ships no man and no man pages, so a Documentation=man:seatd(1)
+# points at something nothing can open.
 ConditionPathExists=|/usr/bin/seatd
 ConditionPathExists=|/usr/sbin/seatd
 After=systemd-udev-settle.service

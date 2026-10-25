@@ -150,8 +150,20 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     # The check is deliberately NOT scoped to a unit name: systemd decides
     # which job it drops when it breaks a cycle, so the message can name any
     # unit in the loop.
+    #
+    # The transaction also carries the units that are REAL participants in the
+    # boot graph and are not Copper's: getty@tty1.service (spawned by
+    # systemd's getty generator, claiming /dev/tty1 with TTYPath=/dev/%I --
+    # the same tty the wizard and the console draw on), getty.target, and
+    # multi-user.target (which wants copper.target, which wants the Copper
+    # units). Leaving them out means the graph this check walks is not the
+    # graph the boot builds, and that is exactly how an ordering cycle shipped
+    # once already: the udevd unit was missing from the fixture, and the
+    # fixture was what the cycle had to be found in. They come from the host's
+    # own unit path, which is the real noble 255 set on the CI runner.
     out=$(SYSTEMD_UNIT_PATH="$UPATH" systemd-analyze verify \
-              "$UD"/*.service "$UD"/*.target 2>&1 || true)
+              "$UD"/*.service "$UD"/*.target \
+              getty@tty1.service getty.target multi-user.target 2>&1 || true)
     if printf '%s\n' "$out" | grep -qiE "$CYC_RE"; then
         bad "the units form no ordering cycle" \
             "$(printf '%s' "$out" | grep -iE 'cycle|cyclic' | tr '\n' '|')"
@@ -177,7 +189,7 @@ mkdir -p "$WORK" "$DL"
 mknod -m 666 "$TGT/dev/null" c 1 3 2>/dev/null \
     || cp -a /dev/null "$TGT/dev/null" 2>/dev/null || true
 for b in usr/bin/copper-init usr/bin/copper-firstboot usr/bin/copper-sh \
-         usr/bin/seatd sbin/udhcpc; do
+         usr/bin/seatd sbin/udhcpc bin/sh; do
     printf '#!/bin/sh\nexit 0\n' > "$TGT/$b"; chmod 0755 "$TGT/$b"
 done
 printf '#!/bin/sh\nexit 0\n' > "$TGT/sbin/shutdown"; chmod 0755 "$TGT/sbin/shutdown"
@@ -583,6 +595,94 @@ else
         "$(grep -E '033|tty1' "$TGT/usr/bin/copper-tty-clear" 2>&1 | tr '\n' '|')"
 fi
 
+# ---- the console owns tty1 -------------------------------------------------
+# Two Copper units claim /dev/tty1: the wizard and the console. systemd's own
+# getty@tty1.service claims it too -- the real noble getty@.service sets
+# TTYPath=/dev/%I -- and nothing orders it against the Copper units, so
+# without a conflict getty starts alongside them and draws a login banner
+# over the wizard's form.
+#
+# Measured, not assumed: with Conflicts= and no ordering between the two
+# units, systemd drops the conflicting unit's start job outright, so the
+# banner is never printed at all. Without the conflict, both start and both
+# write to the tty. (That was checked against a live systemd, with a stand-in
+# victim unit, precisely because the other answer -- "getty starts and is
+# stopped afterwards" -- is the one people believe and the one that is wrong.)
+#
+# The console unit had the conflict and the wizard unit did not, and the
+# wizard runs FIRST (Before=copper-console.service), so the console's own
+# conflict never covered the window the wizard is on screen.
+for u in copper-firstboot.service copper-console.service; do
+    if grep -qE '^Conflicts=.*getty@tty1\.service' \
+            "$TGT/etc/systemd/system/$u"; then
+        ok "$u claims tty1 from getty"
+    else
+        bad "$u claims tty1 from getty" \
+            "no Conflicts= against getty@tty1.service; getty would draw over the console"
+    fi
+done
+
+# ---- the DHCP interface is discovered, not assumed -------------------------
+# The unit used to name eth0 literally. eth0 is a NAME, not a fact: it holds
+# only while eth0 is the first NIC the kernel enumerates. A box with no wired
+# NIC has no eth0, udhcpc exits non-zero on the missing device, and with no
+# Restart= that is the end of it -- the machine boots with no network and an
+# unexplained [FAILED] on the tty the wizard is drawing on.
+#
+# The busybox image never had that problem, because copper-init asks sysfs
+# which interface is real (first_nonloop_iface: ARPHRD_ETHER, then
+# ARPHRD_IEEE80211_RADIOTAP, skipping the tunnel interfaces some built-in
+# drivers invent). The systemd flavour has to ask the same question, and the
+# helper that asks it has to be in the tree and be the thing the unit execs.
+if [ -x "$TGT/usr/bin/copper-dhcp" ]; then
+    ok "dhcp helper installed executable at /usr/bin/copper-dhcp"
+else
+    bad "dhcp helper installed executable at /usr/bin/copper-dhcp" \
+        "$(ls -l "$TGT/usr/bin/copper-dhcp" 2>&1)"
+fi
+if grep -qE '^ExecStart=/usr/bin/copper-dhcp$' \
+        "$TGT/etc/systemd/system/copper-network.service"; then
+    ok "copper-network.service execs the discovery helper"
+else
+    bad "copper-network.service execs the discovery helper" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-network.service" 2>&1 | tr '\n' '|')"
+fi
+# And the unit must not name an interface itself. A literal interface in the
+# ExecStart is the bug, wherever it sits.
+if grep -qE '^ExecStart=.*[[:space:]]-i[[:space:]]' \
+        "$TGT/etc/systemd/system/copper-network.service"; then
+    bad "copper-network.service does not name an interface itself" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-network.service" 2>&1 | tr '\n' '|')"
+else
+    ok "copper-network.service does not name an interface itself"
+fi
+# The helper has to actually ask sysfs: a helper that names eth0 inside itself
+# has moved the bug rather than fixed it. The link-layer types are the point
+# -- ARPHRD_ETHER for the wire, ARPHRD_IEEE80211_RADIOTAP for the radio --
+# because that is what copper-init's first_nonloop_iface() asks for, and a
+# helper that looked for some other type would find nothing.
+if grep -q 'iface_type()' "$TGT/usr/bin/copper-dhcp" \
+   && grep -q 'ether_type=1' "$TGT/usr/bin/copper-dhcp" \
+   && grep -q 'radiotap_type=801' "$TGT/usr/bin/copper-dhcp"; then
+    ok "the dhcp helper discovers the interface from sysfs"
+else
+    bad "the dhcp helper discovers the interface from sysfs" \
+        "$(grep -E 'iface_type|ether_type|radiotap_type' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
+fi
+
+# ---- no Documentation= the image cannot open --------------------------------
+# The image ships no man and no man pages: the gui closure pulls in no man-db
+# and nothing else installs one. So a Documentation=man:... points at a page
+# nothing on this machine can open -- the same dead reference the migration
+# document removed when it dropped the Documentation=file: lines, and
+# systemd-analyze says so out loud on every build.
+if grep -qE '^Documentation=' "$TGT/etc/systemd/system/copper-"*.service 2>/dev/null; then
+    bad "the Copper units carry no Documentation= the image cannot open" \
+        "$(grep -H '^Documentation=' "$TGT/etc/systemd/system/copper-"*.service 2>&1 | tr '\n' '|')"
+else
+    ok "the Copper units carry no Documentation= the image cannot open"
+fi
+
 # The build-time verifier must not be left in the image. It is copied into the
 # tree to be run chrooted and removed again; a leftover is the build host's
 # libc riding into the ISO.
@@ -704,6 +804,69 @@ if grep -q "grep -E \"$VF_RE\"" "$BUILD"; then
 else
     bad "the stage's verify filter is the allow-list this gate tests" \
         "build_systemd no longer filters verify output with the allow-list regex"
+fi
+
+# ---- the stage stamps on the helpers it installs ---------------------------
+# The stage skips itself when its inputs still hash the same. The two scripts
+# in iso/systemd/ are inputs in exactly that sense -- a unit execs each of
+# them -- and they were not in the list. So editing a helper did not
+# invalidate the stamp: the stage said "already staged, skipping" and the ISO
+# shipped the PREVIOUS helper. A stale artifact with a green light, which is
+# the entire failure mode the stamp exists to prevent.
+#
+# Read the input list out of the source rather than guessing at it: the block
+# is read from the file, so a helper dropped from the list is a change in the
+# thing under test, not in a copy of it.
+sdin_block() { sed -n '/^  local sdin=/,/^  done$/p' "$BUILD"; }
+SB=$(sdin_block)
+for h in copper-tty-clear copper-dhcp; do
+    if printf '%s\n' "$SB" | grep -q "systemd/$h"; then
+        ok "the systemd stage stamps on $h"
+    else
+        bad "the systemd stage stamps on $h" \
+            "iso/systemd/$h is installed by the stage but is not one of its stamp inputs"
+    fi
+done
+
+# ---- the stage asserts the commands the units name are in the tree ---------
+# A unit with an ExecStart that does not exist is the seatd failure all over
+# again, one unit over, and it is silent: the unit simply never starts. The
+# stage asserts copper-init, the seatd binary and the clear helper; these are
+# the rest of what the units name.
+#
+# Read the loop out of the source rather than grepping the file for the
+# names: the names also appear in the comment above the loop, so a grep for
+# them would pass on a stage that had stopped asserting one of them. And read
+# it out of build_systemd, because build.sh has other `for cmd in` loops (the
+# power commands) that have nothing to do with this assertion.
+STAGE_EXEC_LOOPS=$(extract build_systemd | grep -oE 'for cmd in [^;]+;')
+for c in usr/bin/copper-dhcp sbin/udhcpc bin/sh; do
+    if printf '%s\n' "$STAGE_EXEC_LOOPS" | grep -qF "$c"; then
+        ok "the stage asserts $c is in the tree"
+    else
+        bad "the stage asserts $c is in the tree" \
+            "build_systemd's assertion loop does not cover $c: $STAGE_EXEC_LOOPS"
+    fi
+done
+if grep -qF '[ ! -x "$TGT/$cmd" ]' "$BUILD"; then
+    ok "the stage's assertion loop checks that the command is executable"
+else
+    bad "the stage's assertion loop checks that the command is executable" \
+        "build_systemd does not test that the command is executable"
+fi
+
+# ---- and inside the chroot, a missing command is a defect ------------------
+# The allow-list filter above is shared with the host-side parse check, where
+# "Command X is not executable" really is noise: the build host has none of
+# Copper's binaries, so every Copper unit would "fail" there. Inside the
+# chroot the tree IS the machine, so the same shape means the image is
+# missing a binary a unit names -- and that unit can never start. The stage
+# needs its own rule for that, or a missing ExecStart target ships.
+if grep -qF 'notexec="is not executable"' "$BUILD"; then
+    ok "the stage fails on a command the image does not have"
+else
+    bad "the stage fails on a command the image does not have" \
+        "build_systemd's chrooted verify does not treat 'is not executable' as a defect"
 fi
 
 # ---- and the stage checks for an ORDERING CYCLE, in one transaction -------
