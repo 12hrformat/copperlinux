@@ -846,7 +846,7 @@ local SRC="$ROOT/../src"
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
         "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
-        "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
+        "$ROOT/copper.sh"
   then
     echo "copper: already built, skipping"; return
   fi
@@ -867,9 +867,6 @@ local SRC="$ROOT/../src"
      "$ROOT/x11/probe/xprobe.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
 
-  # hotfix tools — copper charge and copper rollback
-  install -m 0755 "$ROOT/copper-charge.sh" "$TGT/usr/bin/copper-charge"
-  install -m 0755 "$ROOT/copper-rollback.sh" "$TGT/usr/bin/copper-rollback"
   install -m 0755 "$ROOT/copper.sh" "$TGT/usr/bin/copper"
 
   # The XFCE launcher. It ships now, before XFCE does, because what it is for
@@ -901,7 +898,7 @@ local SRC="$ROOT/../src"
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
            usr/bin/startxfce usr/bin/starthyprland usr/bin/xprobe sbin/shutdown \
-           usr/bin/copper-charge usr/bin/copper-rollback usr/bin/copper; do
+           usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
       exit 1
@@ -921,7 +918,7 @@ local SRC="$ROOT/../src"
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
     "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
-    "$ROOT/copper-charge.sh" "$ROOT/copper-rollback.sh" "$ROOT/copper.sh"
+    "$ROOT/copper.sh"
 }
 
 # ---------------------------------------------------------------
@@ -1021,7 +1018,7 @@ build_rootfs() {
   assert_no_empty_files
   assert_commands_reachable
   assert_shell_scripts_parse
-  assert_hotfix_db_readable
+  # assert_hotfix_db_readable  # removed
 }
 
 # ---------------------------------------------------------------
@@ -1128,7 +1125,7 @@ assert_commands_reachable() {
       adduser addgroup chpasswd \
       ip ifconfig route ping wget nslookup \
       mount umount switch_root \
-      copper copper-charge copper-rollback startxfce starthyprland \
+      copper startxfce starthyprland \
       vi ; do
 
     found=""
@@ -1229,7 +1226,7 @@ assert_shell_scripts_parse() {
 
   if [ -n "$posix" ]; then
     local n_posix=0
-    for f in iso/copper.sh iso/copper-charge.sh iso/copper-rollback.sh \
+    for f in iso/copper.sh \
              iso/rootfs-overlay/usr/bin/ingot \
              iso/systemd/copper-tty-clear iso/systemd/copper-dhcp; do
       [ -f "$REPO/$f" ] || {
@@ -1266,7 +1263,7 @@ assert_shell_scripts_parse() {
 #
 # So this does not test a copy of the parser. It runs the real script and
 # compares what comes out against what is in the file.
-assert_hotfix_db_readable() {
+assert_hotfix_db_readable_disabled() {
   # $ROOT is iso/, not the repository root, so "$ROOT/iso/..." is iso/iso/...
   # and the gate died with "no such file" while printing an explanation about
   # the parser. Check the path first and say which of the two it actually is.
@@ -1457,7 +1454,8 @@ build_gui() {
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs \
-         libc-bin \
+         libc-bin curl make nano fastfetch \
+         firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
          fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \
          fonts-hack fonts-jetbrains-mono fonts-firacode fonts-liberation \
