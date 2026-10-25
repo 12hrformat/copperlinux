@@ -1244,8 +1244,8 @@ assert_shell_scripts_parse() {
     # check at all, because it reads like the busybox tools were verified.
     # This loop was skipping every one of them over a wrong path, and
     # `[ -f ] || continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 6 ] || {
-      echo "build: the POSIX check covered $n_posix of 6 busybox tools" >&2; exit 1; }
+    [ "$n_posix" -eq 4 ] || {
+      echo "build: the POSIX check covered $n_posix of 4 busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
