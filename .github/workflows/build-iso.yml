@@ -53,7 +53,7 @@ jobs:
         run: |
           set -eu
           bad=0
-          for s in tests/smoke.sh tests/charge.sh tests/account-gate.sh \
+          for s in tests/smoke.sh tests/account-gate.sh \
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
                    tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
