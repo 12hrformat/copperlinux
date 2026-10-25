@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Seventeen gates: smoke.sh always; startxfce-gate.sh, charge.sh,
+# Gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees, the hotfix database,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
@@ -167,20 +167,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-echo
-echo "--- tests/charge.sh: covers hotfix charge/rollback ---"
-if [ "$ROOT" -ne 1 ]; then
-    record charge.sh skipped "needs root; CI runs it with sudo"
-elif out=$(bash tests/charge.sh 2>&1); then
-    record charge.sh ok "passed"
-else
-    nfail=$(printf '%s\n' "$out" | grep -c '^ *FAIL ' || true)
-    # This used to carry a known-signature arm for the missing hotfix logic.
-    # The feature is in the tree now and the test passes, so there is nothing
-    # left to classify: a failure here is a regression, and it goes red.
-    record charge.sh bad "exit $? with $nfail failed assertions"
-    printf '%s\n' "$out" | grep '^ *FAIL ' | head -10 | sed 's/^/    /'
-fi
+# tests/charge.sh removed with hotfix tools
 
 # ---------------------------------------------------------------------------
 echo
