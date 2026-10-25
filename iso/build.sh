@@ -1454,7 +1454,7 @@ build_gui() {
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs \
-         libc-bin curl make nano fastfetch \
+         libc-bin curl make nano \
          firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
          fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \
