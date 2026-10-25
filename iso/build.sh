@@ -1230,7 +1230,8 @@ assert_shell_scripts_parse() {
   if [ -n "$posix" ]; then
     local n_posix=0
     for f in iso/copper.sh iso/copper-charge.sh iso/copper-rollback.sh \
-             iso/rootfs-overlay/usr/bin/ingot; do
+             iso/rootfs-overlay/usr/bin/ingot \
+             iso/systemd/copper-tty-clear iso/systemd/copper-dhcp; do
       [ -f "$REPO/$f" ] || {
         echo "build: $f is missing, so the POSIX check cannot run on it" >&2
         bad=1; continue; }
@@ -1244,10 +1245,10 @@ assert_shell_scripts_parse() {
     [ "$bad" -eq 0 ] || exit 1
     # A check that looked at nothing and reported success is worse than no
     # check at all, because it reads like the busybox tools were verified.
-    # This loop was skipping all three over a wrong path, and `[ -f ] ||
-    # continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 4 ] || {
-      echo "build: the POSIX check covered $n_posix of 4 busybox tools" >&2; exit 1; }
+    # This loop was skipping every one of them over a wrong path, and
+    # `[ -f ] || continue` is precisely the construct that hides that.
+    [ "$n_posix" -eq 6 ] || {
+      echo "build: the POSIX check covered $n_posix of 6 busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
@@ -2391,8 +2392,20 @@ build_systemd() {
   # missing pattern (there is no *.network file today) does not hand
   # stamped_skip the literal string "…*.network", which would hash a filename
   # that does not exist and silently change what "already staged" means.
+  #
+  # The two SCRIPTS in this directory count as unit files for this purpose.
+  # copper-tty-clear.service execs copper-tty-clear, and copper-network.service
+  # execs copper-dhcp, so editing either of them changes what the image does.
+  # They were not in this list, and that was a live bug rather than a
+  # theoretical one: the stage skips itself when its inputs still hash the
+  # same, so a helper that is not one of the inputs did not invalidate the
+  # stamp. Edit the helper, re-run the build, and the stage said "already
+  # staged, skipping" and the ISO shipped the PREVIOUS helper -- a stale
+  # artifact with a green light, which is the entire failure mode the stamp
+  # exists to prevent.
   local sdin=("$SELF" "$ROOT/systemd"/*.service "$ROOT/systemd"/*.target)
-  for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network; do
+  for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network \
+           "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp"; do
     [ -e "$p" ] && sdin+=("$p")
   done
   if [ -e "$TGT/lib/systemd/systemd" ] \
@@ -2569,12 +2582,15 @@ build_systemd() {
   # added to the directory and just work.
   install -m 0644 "$ROOT/systemd"/*.service "$TGT/etc/systemd/system/"
   install -m 0644 "$ROOT/systemd"/*.target  "$TGT/etc/systemd/system/"
-  # The console-clear helper is a SCRIPT, not a unit, and it is the one file in
-  # iso/systemd/ that has to be executable and to live on PATH (its unit runs it
-  # as /usr/bin/copper-tty-clear). 0755 here, not 0644 like the units: a unit
-  # systemd reads is data, a program systemd execs is not.
+  # The helpers are SCRIPTS, not units, and they are the files in this
+  # directory that have to be executable and to live on PATH (their units run
+  # them as /usr/bin/copper-tty-clear and /usr/bin/copper-dhcp). 0755 here,
+  # not 0644 like the units: a unit systemd reads is data, a program systemd
+  # execs is not.
   install -D -m 0755 "$ROOT/systemd/copper-tty-clear" \
           "$TGT/usr/bin/copper-tty-clear"
+  install -D -m 0755 "$ROOT/systemd/copper-dhcp" \
+          "$TGT/usr/bin/copper-dhcp"
   for f in "$ROOT/systemd"/*.conf; do
     [ -e "$f" ] || continue
     install -m 0644 "$f" "$TGT/etc/systemd/"
@@ -2765,6 +2781,27 @@ build_systemd() {
     echo "systemd: /usr/bin/copper-init is missing; copper-console.service needs it" >&2
     exit 1
   fi
+  # Every other command the units name has to be in the tree too, for the same
+  # reason. Each of these is an ExecStart, or something an ExecStart runs:
+  #
+  #   /usr/bin/copper-dhcp   copper-network.service's ExecStart
+  #   /sbin/udhcpc           what copper-dhcp execs
+  #   /bin/sh                copper-seatd.service's ExecStart (/bin/sh -c '…')
+  #
+  # The unit verify below cannot see these on its own: it runs chrooted, but
+  # its filter treats "Command X is not executable" as host noise, because the
+  # SAME expression runs against the build host, where that shape really is
+  # noise. In the chroot the tree IS the machine, so the shape is a real
+  # defect there -- the image is missing a binary a Copper unit names, and
+  # that unit can never start. That is the seatd bug again, one unit over:
+  # the unit named a path the image did not have, and nothing here said so.
+  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh; do
+    if [ ! -x "$TGT/$cmd" ]; then
+      echo "systemd: $cmd is missing or not executable; a Copper unit names it" >&2
+      echo "          and that unit would fail to start on every boot" >&2
+      exit 1
+    fi
+  done
 
   # systemd-analyze is the parser that will read these units on the booted
   # machine, so let it read them. It must run INSIDE a chroot into $TGT: run
@@ -2866,6 +2903,10 @@ build_systemd() {
         exit 1
       fi
 
+      # The pattern is named ONCE, so there is exactly one place where it can
+      # be wrong -- and the gate can point at that place instead of at a
+      # string it happens to find somewhere in the file.
+      notexec="is not executable"
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service \
                 copper-tty-clear.service; do
@@ -2903,6 +2944,25 @@ build_systemd() {
         if [ "$left" != 0 ]; then
           echo "systemd: systemd-analyze rejected $ul:" >&2
           printf '%s\n' "$out" | sed 's/^/     /' >&2
+          while IFS= read -r f; do [ -n "$f" ] && rm -f "$TGT$f"; done < "$added"
+          exit 1
+        fi
+        # In the chroot the tree IS the machine, so "Command X is not
+        # executable" is not host noise here: it means the image is missing a
+        # binary this unit names, and the unit can never start. The allow-list
+        # above is deliberately silent about that shape, because the SAME
+        # expression has to run against the build host as well -- that is where
+        # the gate's parse check uses it, and there the shape really is noise,
+        # because the host has none of Copper's binaries. So the chroot gets
+        # its own, narrower rule.
+        gone=$(printf '%s\n' "$out" \
+          | grep -E "$notexec" \
+          | grep -F "$ul" \
+          | grep -c . || true)
+        if [ "$gone" != 0 ]; then
+          echo "systemd: $ul names a command the image does not have:" >&2
+          printf '%s\n' "$out" | grep -F "$ul" | grep -E "$notexec" \
+            | sed 's/^/     /' >&2
           while IFS= read -r f; do [ -n "$f" ] && rm -f "$TGT$f"; done < "$added"
           exit 1
         fi

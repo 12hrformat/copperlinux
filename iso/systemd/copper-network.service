@@ -1,4 +1,4 @@
-# Copper Linux — one-shot DHCP client for the wired interface.
+# Copper Linux — one-shot DHCP client for the machine's real interface.
 #
 # This is the busybox udhcpc that copper-init used to launch, as a unit: same
 # binary, same lease script, same pid file location. The migration is moving
@@ -7,38 +7,68 @@
 # on a booted machine and both are new, neither is easy to find. networkd is
 # a later step (SYSTEMD-MIGRATION.md, "not in this phase").
 #
-# Type=simple and the binary's own -b: udhcpc runs in the foreground, obtains
+# Type=simple and the client's own -b: udhcpc runs in the foreground, obtains
 # a lease, then daemonises itself with -b and leaves a short-lived parent.
 # systemd tracks the parent, and once it exits the unit is "dead" -- which is
 # correct for a one-shot lease, and is why there is no Restart= here. A lease
 # that later expires is udhcpc's own business (it re-acquires), not systemd's.
 #
+# There is no Restart= on purpose, and it is worth saying why, because the
+# obvious fix for a failed DHCP client is to add one: systemd prints [FAILED]
+# for every failed start, and those lines land on the tty the first-boot
+# wizard is drawing its form on. A unit that retries on the console corrupts
+# the form exactly the way the seatd unit did before it was fixed (bug 47).
+# So this unit does not retry. It waits, it tries once, and if it cannot get a
+# lease it says so and stays out of the way.
+#
 # After=network.target is not enough on its own -- nothing else defines
 # network.target meaningfully in this image -- so the unit also waits for udev
-# to have settled the interfaces, which is what makes "first non-loopback
+# to have settled the interfaces, which is what makes "the first real
 # interface" a stable answer.
 #
 # handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper DHCP client (busybox udhcpc)
-Documentation=man:udhcpc(1)
+# No Documentation= here, and that is a decision rather than an omission.
+# This image ships no man at all -- the gui closure pulls in no man-db and
+# nothing else installs one -- so a Documentation=man:udhcpc(1) points at a
+# page this machine cannot open. The migration document removed the
+# Documentation=file: lines for exactly that reason ("a unit that documents
+# itself with a file nobody can open is worse than one that does not") and
+# kept the man: ones on the premise that "a real distro has those man pages".
+# This image is not that distro: it has no man and no man pages, so the
+# reference is dead the same way the file: ones were, and systemd-analyze
+# says so out loud ("Can't show udhcpc(1)") on every build.
 After=systemd-udev-settle.service
 Wants=systemd-udev-settle.service
 Before=copper-console.service
 
 [Service]
 Type=simple
-# The interface list comes from /sys, and the applet is in /sbin. PATH matters:
-# udhcpc passes its environment to the lease script and never sets PATH
-# itself, and the script runs ip(8) (copper-init.c's start_dhcp says the same
-# thing, for the same reason).
+# PATH matters: udhcpc passes its environment to the lease script and never
+# sets PATH itself, and the script runs ip(8) (copper-init.c's start_dhcp says
+# the same thing, for the same reason). The helper sets it for itself; this
+# is the unit's own copy, so the lease script gets it either way.
 Environment=PATH=/sbin:/usr/sbin:/bin:/usr/bin
-# -i eth0 is deliberately literal. systemd's Predictable Network Interface
-# Names would rename the VMware NIC to ens33, and the console's own
-# documentation, the DHCP pid file and every command a user is told to type
-# all say eth0. 99-default.link (staged by build_systemd) keeps the kernel's
-# names, so eth0 is what a Copper machine has.
-ExecStart=/sbin/udhcpc -i eth0 -b -p /run/udhcpc.eth0.pid
+# The interface is NOT named here. This unit used to say
+#
+#     ExecStart=/sbin/udhcpc -i eth0 -b -p /run/udhcpc.eth0.pid
+#
+# and eth0 is a name, not a fact: it holds only while eth0 is the first NIC
+# the kernel enumerates. A box with no wired NIC has no eth0, udhcpc exits
+# non-zero on the missing device, and -- with no Restart= -- the machine boots
+# with no network and no explanation.
+#
+# So the helper does what copper-init's bring_up_network() does for the
+# busybox image: it asks sysfs which interface has a real link layer (wired
+# first, wireless second, skipping the tunnel interfaces some built-in
+# drivers invent), waits a couple of seconds for one to turn up, and then
+# execs udhcpc on it. The same rule, so the two flavours behave the same way.
+#
+# 99-default.link (staged by build_systemd) keeps the kernel's names anyway,
+# so on a Copper machine the helper still finds something called eth0 -- it
+# just no longer depends on that being true.
+ExecStart=/usr/bin/copper-dhcp
 # Nothing to stop: udhcpc's own lifetime is the lease's.
 RemainAfterExit=no
 

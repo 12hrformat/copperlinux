@@ -275,8 +275,8 @@ fi
 #     Planting it in the stage's own assertion instead would prove nothing --
 #     the assertion is the thing that catches this.
 run_case "seatd binary missing from the tree" "tests/systemd-gate.sh" \
-    '         usr/bin/seatd sbin/udhcpc; do' \
-    '         sbin/udhcpc; do' \
+    '         usr/bin/seatd sbin/udhcpc bin/sh; do' \
+    '         sbin/udhcpc bin/sh; do' \
     "no seatd binary at /usr/bin/seatd or /usr/sbin/seatd"
 
 # 17. The _seatd group is missing. build_gui appends it, build_rootfs' second
@@ -406,6 +406,105 @@ run_case "power_links blind to the tree's init" "$B" \
     'if [ "$(init_flavour "$root")" = systemd ]; then' \
     'if false; then' \
     "power_links on a systemd tree"
+
+# 26. The WIZARD stops claiming tty1 from getty. This is the bug the first
+#     real systemd boot could have had and no gate saw: the console unit
+#     claimed tty1 and the wizard unit did not, and the wizard runs FIRST
+#     (Before=copper-console.service), so getty@tty1.service drew its login
+#     banner over the form the user was filling in. The conflict line is
+#     load-bearing and it was unguarded -- removing it left the gate green.
+run_case "copper-firstboot.service no longer claims tty1 from getty" \
+    "$U/copper-firstboot.service" \
+    'Conflicts=getty@tty1.service
+' \
+    '#Conflicts=getty@tty1.service
+' \
+    "FAIL.*claims tty1 from getty"
+
+# 27. The CONSOLE stops claiming tty1 from getty. The other half of the same
+#     pair, and the one that was in the tree before this suite existed.
+run_case "copper-console.service no longer claims tty1 from getty" \
+    "$U/copper-console.service" \
+    'Conflicts=getty@tty1.service
+' \
+    '#Conflicts=getty@tty1.service
+' \
+    "FAIL.*claims tty1 from getty"
+
+# 28. The DHCP unit goes back to naming eth0 literally. eth0 is a name, not a
+#     fact: a box with no wired NIC has no eth0, udhcpc exits non-zero on the
+#     missing device, and with no Restart= the machine boots with no network
+#     and an unexplained [FAILED] on the tty the wizard is drawing on.
+run_case "copper-network.service names an interface again" \
+    "$U/copper-network.service" \
+    'ExecStart=/usr/bin/copper-dhcp' \
+    'ExecStart=/sbin/udhcpc -i eth0 -b -p /run/udhcpc.eth0.pid' \
+    "FAIL.*execs the discovery helper"
+
+# 29. The stage stops installing the discovery helper. The unit then names a
+#     command the image does not have, and the unit never starts -- silently,
+#     because a unit whose ExecStart is missing is not a crash.
+run_case "the stage stops installing the dhcp helper" \
+    "$B" \
+    '  install -D -m 0755 "$ROOT/systemd/copper-dhcp" \
+          "$TGT/usr/bin/copper-dhcp"
+' \
+    '' \
+    "FAIL.*dhcp helper installed executable"
+
+# 30. The stage stops stamping on the helper it installs. The stage skips
+#     itself when its inputs still hash the same, so a helper that is not one
+#     of the inputs does not invalidate the stamp: edit the helper, re-run the
+#     build, and the stage said "already staged, skipping" and the ISO shipped
+#     the PREVIOUS helper. A stale artifact with a green light.
+run_case "the stage stops stamping on the dhcp helper" \
+    "$B" \
+    '           "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp"; do' \
+    '           "$ROOT/systemd/copper-tty-clear"; do' \
+    "FAIL.*stamps on copper-dhcp"
+
+# 31. The stage stops asserting that a command the units name is in the tree.
+#     /sbin/udhcpc is what the helper execs, and /bin/sh is what the seatd
+#     unit's ExecStart runs. Either one missing means a unit that can never
+#     start, and the verify filter treats "not executable" as host noise.
+run_case "the stage stops asserting sbin/udhcpc is in the tree" \
+    "$B" \
+    'for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh; do' \
+    'for cmd in usr/bin/copper-dhcp bin/sh; do' \
+    "FAIL.*asserts sbin/udhcpc is in the tree"
+
+# 32. The stage's chrooted verify stops treating a missing command as a
+#     defect. The allow-list filter is shared with the host-side parse check,
+#     where "Command X is not executable" really is noise; inside the chroot
+#     the tree IS the machine, so the same shape means the image is missing a
+#     binary a unit names.
+run_case "the stage stops failing on a command the image does not have" \
+    "$B" \
+    'notexec="is not executable"' \
+    'notexec="is nothing at all"' \
+    "FAIL.*fails on a command the image does not have"
+
+# 33. A Documentation= comes back. The image ships no man and no man pages,
+#     so a Documentation=man:... points at something nothing can open -- the
+#     same dead reference the migration document removed when it dropped the
+#     Documentation=file: lines.
+run_case "a Copper unit documents itself with something unreadable" \
+    "$U/copper-network.service" \
+    'Description=Copper DHCP client (busybox udhcpc)' \
+    'Description=Copper DHCP client (busybox udhcpc)
+Documentation=man:udhcpc(1)' \
+    "FAIL.*carry no Documentation="
+
+# 34. The helper stops looking for a real link layer. The types are the
+#     point: ARPHRD_ETHER for the wire and ARPHRD_IEEE80211_RADIOTAP for the
+#     radio are what copper-init's first_nonloop_iface() asks for, and a
+#     helper that looked for some other type would find nothing and skip DHCP
+#     on every machine.
+run_case "the dhcp helper stops asking for ARPHRD_ETHER" \
+    "$U/copper-dhcp" \
+    'ether_type=1' \
+    'ether_type=2' \
+    "FAIL.*discovers the interface from sysfs"
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -1,0 +1,134 @@
+#!/bin/sh
+# Copper Linux -- find the interface worth handing to DHCP, and run the client
+# on it.
+#
+# This is the systemd flavour's answer to copper-init's bring_up_network()
+# (iso/src-init/copper-init.c), which does the same job for the busybox image:
+# work out which interface is real, and start udhcpc on it.
+#
+# Why a helper, and not a literal in the unit: the unit used to say
+#
+#     ExecStart=/sbin/udhcpc -i eth0 -b -p /run/udhcpc.eth0.pid
+#
+# and eth0 is a NAME, not a fact. The kernel names interfaces eth0, eth1, ...
+# only for as long as eth0 is the first NIC it enumerates. A box with no wired
+# NIC at all -- a laptop on WiFi, a guest with a wireless-only profile -- has
+# no eth0 to find, and udhcpc on a missing interface exits non-zero with
+# "can't open '/dev/eth0'". The unit had no Restart=, so that was the end of
+# it: the machine booted with no network and no explanation, and the unit's
+# [FAILED] landed on the tty the first-boot wizard was drawing its form on --
+# which is the same corruption bug 47 was about, one unit over.
+#
+# The busybox image never had this problem, because copper-init asked sysfs
+# which interface was real instead of assuming a name. So the rule here is the
+# rule copper-init uses: ask sysfs what the interface actually is, and only
+# take something with a real link layer. Wired first, wireless second -- a box
+# with both should use the wire.
+#
+# The link-layer types are the ARPHRD_* numbers from linux/if_arp.h, and they
+# are ABI: /sys/class/net/<if>/type prints that number in decimal.
+#
+# POSIX sh, not bash: this runs under busybox ash on the live image, where
+# `local`, arrays and [[ ]] do not exist. See assert_shell_scripts_parse() in
+# iso/build.sh, which checks this file against a POSIX shell.
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+
+# To the screen, and to the serial port when there is one -- the same two
+# places the boot scripts elsewhere in this image speak to.
+say() {
+    echo "copper-dhcp: $*"
+    if [ -c /dev/ttyS0 ]; then
+        echo "copper-dhcp: $*" > /dev/ttyS0 2>/dev/null || true
+    fi
+}
+
+# ARPHRD_ETHER, then ARPHRD_IEEE80211_RADIOTAP.
+ether_type=1
+radiotap_type=801
+
+# The link-layer type of an interface, or nothing if sysfs has no answer.
+iface_type() {
+    cat "/sys/class/net/$1/type" 2>/dev/null
+}
+
+# The first interface with the wanted link-layer type.
+#
+# Not simply the first name in the directory: with MODULES=n every driver is
+# built into this kernel, and several of them invent an interface at boot
+# before the real NIC has finished probing. The sit module's sit0 is one, and
+# handing DHCP a tunnel means broadcasting DISCOVER into nowhere. So the type
+# is what decides, exactly as it does in copper-init.c.
+find_iface() {
+    want_type=$1
+    for d in /sys/class/net/*; do
+        [ -e "$d" ] || continue
+        n=${d##*/}
+        [ "$n" = "lo" ] && continue
+        [ "$(iface_type "$n")" = "$want_type" ] || continue
+        echo "$n"
+        return 0
+    done
+    return 1
+}
+
+# The interface to use: wired if there is one, wireless if there is not.
+pick_iface() {
+    for t in "$ether_type" "$radiotap_type"; do
+        n=$(find_iface "$t") || continue
+        [ -n "$n" ] || continue
+        echo "$n"
+        return 0
+    done
+    return 1
+}
+
+# The kernel is done probing before systemd starts this unit, but a freshly
+# attached NIC can land a moment later. Give the bus a couple of seconds
+# before deciding this machine has no network -- the same window
+# copper-init's bring_up_network() waits out, for the same reason (a VMware
+# guest's NIC can arrive after the kernel has started).
+#
+# busybox's sleep counts whole seconds -- its duration parser truncates a
+# fraction rather than rounding it -- so the window is taken in two whole
+# second steps instead of twenty tenths. Same two seconds, and no dependency
+# on a fractional sleep existing.
+tries_left=2
+while [ "$tries_left" -gt 0 ]; do
+    ifname=$(pick_iface) || ifname=""
+    [ -n "$ifname" ] && break
+    ifname=""
+    tries_left=$((tries_left - 1))
+    [ "$tries_left" -gt 0 ] && sleep 1
+done
+
+# No interface is not a failure. copper-init says "no network interface,
+# skipping DHCP" and carries on, and so does this: a box with no NIC yet is
+# a box to keep booting, and a failed unit here would print [FAILED] onto the
+# tty the wizard is drawing on.
+if [ -z "$ifname" ]; then
+    say "no network interface, skipping DHCP"
+    exit 0
+fi
+
+# The device node has to be there before udhcpc is asked to use it. sysfs can
+# name an interface whose /dev entry has not been created yet, and udhcpc
+# exits non-zero on a missing device rather than waiting for one.
+if [ ! -e "/dev/$ifname" ]; then
+    say "$ifname has no device node yet, skipping DHCP"
+    exit 0
+fi
+
+# Raise the link before the client tries to use it, the way copper-init's
+# link_up() does. Best effort: the lease script's deconfig branch runs
+# `ip link set dev <if> up` too, so this is belt and braces rather than the
+# only thing doing it. A failure here is not fatal -- udhcpc raises the link
+# itself -- so it is not worth failing the boot over.
+ip link set dev "$ifname" up 2>/dev/null || true
+
+say "$ifname is up, asking DHCP for an address"
+
+# exec, so this process IS udhcpc: the unit tracks the client, and a signal
+# to the unit reaches the client rather than a shell wrapper.
+exec /sbin/udhcpc -i "$ifname" -b -p "/run/udhcpc.$ifname.pid"

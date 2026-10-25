@@ -30,6 +30,26 @@ ConditionPathExists=!/etc/copper-firstboot.done
 Wants=copper-seatd.service
 After=copper-seatd.service copper-network.service
 Before=copper-console.service
+# The console. The wizard draws its whole form on tty1, and systemd's own
+# getty@tty1.service wants the same tty: getty.target wants getty@tty1, and
+# getty.target is wanted by multi-user.target -- which also wants copper.target,
+# which wants this unit. Nothing orders those two branches against each other,
+# so without a conflict both start together and both write to /dev/tty1: the
+# user gets a login banner drawn across the middle of the form they are
+# filling in.
+#
+# Conflicts= alone stops it, and it stops it properly: systemd drops
+# getty@tty1's start job outright rather than starting it and stopping it
+# afterwards, so the banner is never printed at all. (That was measured, not
+# assumed: with a conflict and no ordering between the two units, the
+# conflicting unit's job is dropped; the ordering only decides which one
+# wins when both are wanted, and there is no ordering here.)
+#
+# This is the same tty conflict copper-console.service already handles, one
+# unit earlier. The wizard runs BEFORE the console service -- Before=
+# copper-console.service -- so the console's own Conflicts= never covered this
+# window: on a first boot the banner landed on the form.
+Conflicts=getty@tty1.service
 # The wizard formats the persistence disk, so it needs the block devices udev
 # has finished discovering, not a half-populated /dev.
 After=systemd-udev-settle.service
