@@ -139,8 +139,10 @@ press Enter when prompted, it's waiting for input.
 - The DHCP lease script is tested on its own: every valid netmask, the
   malformed ones, and a full run of each lease state against a stub `ip`.
   `HANDOFF.md` lists what that caught.
-- Ethernet + DHCP has never seen a real DHCP server. Neither has the boot
-  path — `grub.cfg`, the initramfs `init` and the overlay are all still
-  unrun. That's the next thing to try, and `ping 1.1.1.1` in the shell is
-  the test.
+- `tests/boot-gate.sh` boots the built ISO in QEMU and asserts, from the
+  serial console, that `grub.cfg`, the kernel, the initramfs `init` and the
+  overlay reached copper-init and that it brought an interface up. It stops
+  where the first-boot wizard takes the console and waits for a person; the
+  wizard itself is driven by `tests/account.sh`. Ethernet + DHCP against a
+  real server is still unproven — `ping 1.1.1.1` in the shell is that test.
 - WiFi, Bluetooth and a desktop are still to do.

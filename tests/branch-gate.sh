@@ -3,7 +3,7 @@
 #
 # Gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
-# root, because they exercise sockets, staged rootfs trees, the hotfix database,
+# root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
 # calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
@@ -30,10 +30,13 @@
 # over from `untested`, and on the old `gui` tree two of its tests failed
 # describing work that branch never had. Those were classified by their exact
 # output signatures so a real regression still went red -- and when the port
-# landed (the hotfix feature and the 902-line wizard are in this tree now) and
-# both tests passed, the classifications were deleted rather than kept as
-# permanent excuses. That was the deal the file stated from the start. Any
-# failure from here on is a regression, and it is red.
+# landed and both tests passed, the classifications were deleted rather than
+# kept as permanent excuses. That was the deal the file stated from the start.
+# Any failure from here on is a regression, and it is red.
+#
+# boot-gate.sh is deliberately not in this list: it needs a built ISO and a
+# QEMU, so the workflow runs it beside the build rather than on every host
+# that has a checkout.
 #
 # Run as root:  sudo tests/branch-gate.sh
 # Non-root runs smoke.sh only, and says so.
