@@ -840,12 +840,17 @@ require_toolchain() {
 build_copper() {
 local SRC="$ROOT/../src"
   require_toolchain
+  # This input list and the one stamp_set hashes at the end of the function
+  # must name the same files in the same order: the stamp is a hash of their
+  # concatenation, so one file out of place makes it never match and the
+  # stage rebuild on every run. starthyprland.sh was missing here.
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
      && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$ROOT/startxfce.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
+        "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh" \
+        "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
         "$ROOT/copper.sh"
   then
     echo "copper: already built, skipping"; return
