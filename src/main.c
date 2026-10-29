@@ -116,8 +116,15 @@ static void refresh_line(const char *prompt) {
     int n = snprintf(seq, sizeof seq, "\r\033[K%s%s\r\033[%dC",
                      prompt, edit_buf,
                      (int)(strlen(prompt) + edit_pos));
-    if (n > 0)
-        write(STDOUT_FILENO, seq, (size_t)n);
+    /* snprintf returns the length it *would* have written, which exceeds
+       sizeof seq when prompt+edit_buf overflow the buffer. write() with that
+       value reads past the end of seq (a stack overread: the prompt alone can
+       reach PATH_MAX + user + host). Clamp to what the buffer really holds. */
+    if (n > 0) {
+        size_t w = (size_t)n;
+        if (w > sizeof seq) w = sizeof seq;
+        write(STDOUT_FILENO, seq, w);
+    }
 }
 
 static void edit_insert(char c) {
@@ -419,6 +426,14 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
         }
         if (c == '#' && !inw) break;  /* a comment starts a line, not a word */
         if (!inw) {
+            /* argv is a fixed 256-slot array; "a a a ... " fits hundreds of
+               words inside one 4096-byte line, and the unbounded n++ wrote
+               straight past it. One slot stays free for the NULL below. */
+            if (n >= (int)(sizeof argv / sizeof *argv) - 1) {
+                fprintf(stderr, "copper-sh: too many words on one line\n");
+                *count = 0;
+                return argv;
+            }
             argv[n++] = dst;
             inw = 1;
             if (c == '~') {
@@ -562,6 +577,15 @@ static int parse_line(char **argv, int n, struct cmdseg **out, int *nsegs) {
         }
     }
 
+    /* A trailing '|' ("echo hi |") leaves this last segment with no tokens at
+       all. It used to become an argv whose argv[0] is NULL, and the child
+       then crashed in builtin_lookup()'s strcmp. Say so instead. */
+    if (tn == 0 && cur > 0) {
+        fprintf(stderr, "copper-sh: no command after '|'\n");
+        free_cmds(cmds, cur + 1);
+        return -1;
+    }
+
     cmds[cur].argv = malloc((size_t)(tn + 1) * sizeof(char *));
     if (!cmds[cur].argv) { perror("malloc"); free_cmds(cmds, cur + 1); return -1; }
     if (tn > 0) memcpy(cmds[cur].argv, tokens, (size_t)tn * sizeof(char *));
@@ -575,6 +599,10 @@ static int parse_line(char **argv, int n, struct cmdseg **out, int *nsegs) {
 
 /* Run one command (builtin or external) in the current process. */
 static int run_one(char **av) {
+    /* An empty segment is not a crash: `> file` with no command is a legal
+       redirect-only line in every other shell, and the file has already been
+       opened/truncated by the caller. */
+    if (!av || !av[0]) return 0;
     const struct builtin *b = builtin_lookup(av[0]);
     if (b) return b->fn(count_argv(av), av);
     execvp(av[0], av);
