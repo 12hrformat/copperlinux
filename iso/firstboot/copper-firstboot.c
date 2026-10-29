@@ -608,9 +608,16 @@ static void read_password(const char *prompt, char *buf, size_t cap,
     char again[256];
     for (;;) {
         ask_password(prompt, buf, cap);
+        /* stdin_eof: an empty password is never acceptable to this loop, so
+           without this check a closed stdin spins here forever printing
+           "Password can't be empty." / "Those didn't match" at full speed.
+           read_line() records the EOF; the main() stdin_eof check then
+           aborts the whole form instead of applying half of it. */
+        if (stdin_eof) return;
 
         if (confirm_prompt) {
             ask_password(confirm_prompt, again, sizeof again);
+            if (stdin_eof) return;
             if (buf[0] && strcmp(buf, again) == 0) return;
             printf("Those didn't match — try again.\n");
             fflush(stdout);
@@ -713,7 +720,10 @@ static void type_into(int idx, const char *status, char *dest, size_t cap) {
 
     for (;;) {
         int c = getchar();
-        if (c == EOF) { dest[n] = '\0'; return; }
+        /* Record the EOF, not just the empty answer: collect()'s retry loops
+           re-ask on an empty/invalid value, and a closed stdin that is not
+           recorded here makes them loop forever. */
+        if (c == EOF) { dest[n] = '\0'; stdin_eof = 1; return; }
         if (c == '\r' || c == '\n') break;
         if (c == 127 || c == 8) {                 /* backspace */
             if (n > 0) { n--; erase_left(1); }
@@ -753,12 +763,18 @@ static void collect(int idx) {
                 fields[idx].has_value = 0;
                 type_into(idx, "Type it once more to be sure",
                           again, sizeof again);
+                /* EOF mid-confirmation: leave the loop with the flag set so
+                   main() refuses to build an account out of half a form.
+                   Without this the secret branch re-asked every 900ms
+                   forever on a stdin that will never answer. */
+                if (stdin_eof) break;
                 if (again[0] && strcmp(again, f->value) == 0) break;
                 f->value[0] = '\0';
                 msleep(900);
                 continue;
             }
             type_into(idx, status, f->value, sizeof f->value);
+            if (stdin_eof) break;   /* same, for the validating fields */
             if (f->ok && !f->ok(f->value)) {
                 f->value[0] = '\0';
                 status = f->reject;
