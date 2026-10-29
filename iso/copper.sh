@@ -14,7 +14,19 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
 
 cmd_version() {
-    echo "Copper Linux v0.1.0-dev"
+    # The image's own identity, not a second copy of the version to keep in
+    # step with os-release. It used to be hardcoded and had already drifted
+    # (v0.1.0-dev against VERSION_ID=0.1). ID gates it: run from a build host
+    # or a checkout, this must not report that machine's distribution.
+    version_name="Copper Linux"
+    if [ -r /etc/os-release ]; then
+        ID= PRETTY_NAME=
+        . /etc/os-release
+        if [ "${ID}" = copper ] && [ -n "${PRETTY_NAME}" ]; then
+            version_name=$PRETTY_NAME
+        fi
+    fi
+    echo "$version_name"
     echo "  shell   /usr/bin/copper-sh"
 }
 
