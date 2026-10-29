@@ -170,9 +170,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# tests/charge.sh removed with hotfix tools
-
-# ---------------------------------------------------------------------------
 echo
 echo "--- tests/account-gate.sh: proves tests/account.sh catches real bugs ---"
 if [ "$ROOT" -ne 1 ]; then
