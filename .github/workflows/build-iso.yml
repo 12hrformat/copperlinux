@@ -40,7 +40,6 @@ jobs:
       # nobody knew they were missing from the tree entirely. That is thirteen
       # minutes of kernel build wasted, and it hid a second, worse problem: the
       # workflow invoked tests/charge.sh, which this branch does not have.
-      #
       # So every script the workflow is about to run is checked for existence
       # and for the executable bit FIRST, and the whole check is one step. A
       # missing test or a lost mode is now a failure in seconds, with a message
@@ -61,7 +60,8 @@ jobs:
                    tests/systemd-gate.sh tests/systemd-gate-sabotage.sh \
                    tests/persist-sabotage.sh \
                    tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \
-                   tests/font-gate.sh tests/boot-gate.sh; do
+                   tests/font-gate.sh tests/boot-gate.sh \
+                   tests/shell-gate.sh tests/firstboot-eof-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1

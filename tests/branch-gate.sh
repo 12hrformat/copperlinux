@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Gates: smoke.sh always; startxfce-gate.sh,
+# Eighteen gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
@@ -343,6 +343,49 @@ elif out=$(bash tests/font-gate.sh 2>&1); then
 else
     record font-gate.sh bad "a console-font check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/shell-gate.sh: copper-sh against the defects the audit found ---"
+# Unprivileged, needs a C compiler. Compiles the real shell and drives it
+# through the crashers: a trailing pipe (NULL argv segfault), a non-octal
+# chmod (used to become mode 0 silently), a 300-word line (argv overflow),
+# and a redirect-only line; plus a static check that refresh_line clamps its
+# write length so the stack overread cannot come back.
+if out=$(sh tests/shell-gate.sh 2>&1); then
+    case "$out" in
+        *SKIPPED*)
+            record shell-gate.sh skipped "no C compiler on this host" ;;
+        *)
+            n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+            record shell-gate.sh ok "$n checks" ;;
+    esac
+else
+    record shell-gate.sh bad "a copper-sh check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/firstboot-eof-gate.sh: the wizard cannot hot-loop on EOF ---"
+# Unprivileged, needs a C compiler and setsid. Runs the real wizard with
+# closed stdin and no controlling tty (so getpass falls back to stdin, the
+# path where the bug lived) and asserts it exits 1 instead of spinning on
+# "Password can't be empty" forever. The apply path shells out to absolute
+# /bin/busybox, absent on any non-Copper host, so a regression cannot touch
+# this machine's accounts.
+if out=$(sh tests/firstboot-eof-gate.sh 2>&1); then
+    case "$out" in
+        *SKIPPED*)
+            record firstboot-eof-gate.sh skipped "no C compiler or setsid here" ;;
+        *)
+            n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+            record firstboot-eof-gate.sh ok "$n checks" ;;
+    esac
+else
+    record firstboot-eof-gate.sh bad "the wizard looped or mis-reported on EOF"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
