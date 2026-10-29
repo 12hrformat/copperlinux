@@ -19,10 +19,6 @@ __pycache__/
 firefox-*.tar.gz
 firefox-pkg-work/
 
-# Theme installer build output and Ingot payload (build-theme-installer-pkg.sh).
-apps/copper-theme-installer/copper-theme-installer
-copper-theme-installer-*.tar.gz
-
 # The bug log. It is a working notebook -- read, appended to and argued with
 # locally -- not part of the tree: nothing in the build reads it, and an entry
 # is worth writing before there is a fix to commit. Keeping it here means the

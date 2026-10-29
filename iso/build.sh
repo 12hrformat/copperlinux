@@ -1018,7 +1018,6 @@ build_rootfs() {
   assert_no_empty_files
   assert_commands_reachable
   assert_shell_scripts_parse
-  # assert_hotfix_db_readable  # removed
 }
 
 # ---------------------------------------------------------------
@@ -1254,42 +1253,7 @@ assert_shell_scripts_parse() {
 }
 
 # ---------------------------------------------------------------
-# 6d. the hotfix database must survive the parser that reads it
-# ---------------------------------------------------------------
-# The parser is hand-written awk, because the live system has no python3. It
-# once concatenated the whole file into a single line, so every field came
-# back as the last entry value and all but the last entry were invisible --
-# which worked perfectly, because the database had exactly one entry.
-#
-# So this does not test a copy of the parser. It runs the real script and
-# compares what comes out against what is in the file.
-assert_hotfix_db_readable_disabled() {
-  # $ROOT is iso/, not the repository root, so "$ROOT/iso/..." is iso/iso/...
-  # and the gate died with "no such file" while printing an explanation about
-  # the parser. Check the path first and say which of the two it actually is.
-  local gate="$REPO/iso/assert-hotfix-db.sh"
-  if [ ! -f "$gate" ]; then
-    # Reported and skipped rather than failed, and deliberately visible in the
-    # build log so it cannot quietly rot.
-    #
-    # The gate travels with the hotfix feature: it runs the same awk parser the
-    # live system uses against hotfixes.json. If this tree ever ships without
-    # the feature, the file goes with it, and skipping here is the honest
-    # answer -- reported, not passed.
-    echo "build: no hotfix gate at $gate -- skipping the database parser check."
-    echo "       This tree has no hotfix feature to check. Not the same as passing."
-    return 0
-  fi
-  ( cd "$REPO" && "$gate" ) || {
-    echo "build: the hotfix database did not survive the parser." >&2
-    echo "       Every entry but the last would be silently ignored on a" >&2
-    echo "       live system, with no error and no change." >&2
-    exit 1
-  }
-}
-
-# ---------------------------------------------------------------
-# 6d2. whose distribution is this
+# 6d. whose distribution is this
 # ---------------------------------------------------------------
 # build_gui copies the display stack out of noble's packages with
 # `cp -a "$STAGE/." "$TGT/"` -- no -n, so the packages win over what rootfs

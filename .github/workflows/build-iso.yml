@@ -60,7 +60,8 @@ jobs:
                    tests/starthyprland-gate.sh tests/plymouth-gate.sh \
                    tests/systemd-gate.sh tests/systemd-gate-sabotage.sh \
                    tests/persist-sabotage.sh \
-                   tests/kernel-gate.sh tests/kernel-gate-sabotage.sh; do
+                   tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \
+                   tests/font-gate.sh tests/boot-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -87,21 +88,13 @@ jobs:
           make -s
           ./tests/smoke.sh
 
-      # Theme installer removed.
-
-      # Runs the rest of the suite and classifies the results. This branch is
-      # `main` plus the display commits, so two of these tests describe
-      # `untested`'s tree and fail here -- correctly, and by their own account:
-      # one wants a hotfix URL fallback that iso/copper.sh does not implement on
-      # this branch, and one wants to sabotage code inside untested's
-      # 902-line wizard against this branch's 240-line one.
-      #
-      # branch-gate.sh asserts the *specific* signature of that known divergence
-      # rather than skipping those tests, so a failure in a different shape --
-      # a real regression -- still fails the build. If a test ever starts
-      # passing it says so, which is the signal to delete its classification
-      # instead of leaving a stale excuse in place.
-      - name: charge / rollback and first-boot account gates
+      # The whole suite: shell, launchers, xprobe, the wizard's account
+      # creation, persistence, ingot, systemd, the console font, and the
+      # sabotage gates that prove each of those can fail. Root, so the
+      # root-gated cases execute; the one contract that needs a non-root
+      # user (ingot refusing to write /) drops privileges itself rather
+      # than being recorded as passed without running.
+      - name: the gate suite
         run: sudo ./tests/branch-gate.sh
 
   # Deliberately NOT `needs: checks`. The checks job and this one run
@@ -199,6 +192,28 @@ jobs:
 
       - name: Make the ISO
         run: sudo bash iso/build.sh iso
+
+      # The one thing the gates in `checks` cannot do: start the image.
+      # Those gates are structural, stubbed, or replayed in a mount namespace,
+      # so they can all be green while the disc does not boot -- GRUB, the
+      # kernel, the initramfs, finding the medium, the overlay and PID 1 only
+      # exist together on the ISO. This boots it and reads the serial console.
+      #
+      # It runs here, on the default flavour and before the systemd swap
+      # below, so what it checks is the default image rather than the one
+      # swapped in afterwards.
+      - name: Install QEMU
+        run: sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: Boot the default ISO
+        run: ./tests/boot-gate.sh iso/out/copper.iso
+
+      # Same image, with ttyS0 as the console, so the first-boot wizard draws
+      # where the gate can see it. This is the only place the wizard is run on
+      # a real boot; tests/account.sh drives the same binary but in a mount
+      # namespace, with a fake /etc.
+      - name: Boot the default ISO to the wizard
+        run: ./tests/boot-gate.sh --serial iso/out/copper.iso
 
       # Only the systemd flavour is published as an artifact.
 

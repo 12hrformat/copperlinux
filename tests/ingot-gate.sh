@@ -480,8 +480,39 @@ if [ "$(id -u)" -ne 0 ]; then
     && note_ok "refused real-/ install wrote nothing" \
     || note_bad "refused install still touched /var/lib/ingot!"
 else
-  note_ok "root gate run: real-/ refusal is covered by the unprivileged WSL runs"
-  note_ok "root gate run: root installing into / is the sudo contract itself"
+  # branch-gate.sh runs this gate through sudo in CI, and root cannot produce
+  # the thing under test: the refusal is what a *non-root* user is told. Two
+  # `ok` lines for root states would mean the contract was never exercised on
+  # the one machine that always runs the suite. Drop to an unprivileged
+  # account for this case instead.
+  drop=
+  if command -v setpriv >/dev/null 2>&1; then
+    nuid=$(id -u nobody 2>/dev/null)
+    ngid=$(id -g nobody 2>/dev/null)
+    [ -n "$nuid" ] && [ -n "$ngid" ] &&
+      drop="setpriv --reuid=$nuid --regid=$ngid --clear-groups --"
+  elif command -v runuser >/dev/null 2>&1 && id nobody >/dev/null 2>&1; then
+    drop="runuser -u nobody --"
+  fi
+  if [ -z "$drop" ]; then
+    note_bad "cannot drop to an unprivileged account (no setpriv/runuser, or no 'nobody'): the real-/ refusal was not exercised"
+  elif ! $drop test -r "$INGOT"; then
+    # A checkout under /root is not reachable by nobody, and the failure would
+    # otherwise read as "the refusal message was unexpected".
+    note_bad "the unprivileged account cannot read $INGOT; run the gate from a world-readable checkout"
+  else
+    # shellcheck disable=SC2086  # $drop is a command and its arguments
+    if out=$( env -u INGOT_ROOT $drop sh "$INGOT" install pinwheel 2>&1 ); then
+      note_bad "install succeeded on the real / as nobody!"
+    else
+      printf '%s' "$out" | grep -q "sudo" \
+        && note_ok "install on real / refused for a non-root user, with a sudo hint" \
+        || note_bad "non-root refusal message unexpected: $out"
+    fi
+    [ ! -e /var/lib/ingot/pinwheel.installed ] \
+      && note_ok "refused real-/ install wrote nothing" \
+      || note_bad "refused non-root install still touched /var/lib/ingot!"
+  fi
 fi
 
 echo "    summary: pass=$pass fail=$fail"
