@@ -664,7 +664,15 @@ int b_ln(int argc, char **argv) {
 
 int b_chmod(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "chmod: usage: chmod MODE FILE\n"); return 1; }
-    long mode = strtol(argv[1], NULL, 8);
+    /* strtol() with no validation turned "chmod xyz file" into mode 0 and
+       silently made the file unwritable -- and into mode 0 for anything past
+       the first bad digit too. Require a pure octal mode in the legal range. */
+    char *end = NULL;
+    long mode = strtol(argv[1], &end, 8);
+    if (end == argv[1] || !end || *end != '\0' || mode < 0 || mode > 07777) {
+        fprintf(stderr, "chmod: %s: invalid mode (octal, e.g. 755)\n", argv[1]);
+        return 1;
+    }
     if (chmod(argv[2], (mode_t)mode)) { perror(argv[2]); return 1; }
     return 0;
 }
