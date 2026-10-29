@@ -1216,8 +1216,9 @@ assert_shell_scripts_parse() {
   # What this does NOT catch: bash builtins that happen to be spelled like
   # ordinary commands. dash -n accepts `[[ -n "$1" ]]`, because to its parser
   # that is a command called "[[" with two arguments, and it only fails when it
-  # runs. Catching those needs a shell that runs the code, not one that reads
-  # it, which is what the charge tests do.
+  # runs. Catching that needs a shell that runs the code, not one that reads
+  # it -- which is why tests/ingot-gate.sh executes ingot rather than only
+  # parsing it.
   local posix=""
   for c in dash ash busybox; do
     command -v "$c" >/dev/null 2>&1 && { posix="$c"; break; }
