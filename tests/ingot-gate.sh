@@ -496,22 +496,30 @@ else
   fi
   if [ -z "$drop" ]; then
     note_bad "cannot drop to an unprivileged account (no setpriv/runuser, or no 'nobody'): the real-/ refusal was not exercised"
-  elif ! $drop test -r "$INGOT"; then
-    # A checkout under /root is not reachable by nobody, and the failure would
-    # otherwise read as "the refusal message was unexpected".
-    note_bad "the unprivileged account cannot read $INGOT; run the gate from a world-readable checkout"
   else
-    # shellcheck disable=SC2086  # $drop is a command and its arguments
-    if out=$( env -u INGOT_ROOT $drop sh "$INGOT" install pinwheel 2>&1 ); then
-      note_bad "install succeeded on the real / as nobody!"
+    # CI checks out under /home/runner, which nobody cannot traverse, so the
+    # script is copied to a 0755 scratch directory first. Same bytes, same
+    # contract; the path is the only thing that changes.
+    probe=$(mktemp -d "${TMPDIR:-/tmp}/ingot-gate.XXXXXX" 2>/dev/null) || probe=
+    if [ -z "$probe" ] || ! cp "$INGOT" "$probe/ingot" \
+       || ! chmod 0755 "$probe" "$probe/ingot"; then
+      note_bad "cannot stage a readable copy of ingot for the unprivileged check"
+    elif ! $drop test -r "$probe/ingot"; then
+      note_bad "the unprivileged account cannot read $probe/ingot even after a 0755 copy"
     else
-      printf '%s' "$out" | grep -q "sudo" \
-        && note_ok "install on real / refused for a non-root user, with a sudo hint" \
-        || note_bad "non-root refusal message unexpected: $out"
+      # shellcheck disable=SC2086  # $drop is a command and its arguments
+      if out=$( env -u INGOT_ROOT $drop sh "$probe/ingot" install pinwheel 2>&1 ); then
+        note_bad "install succeeded on the real / as nobody!"
+      else
+        printf '%s' "$out" | grep -q "sudo" \
+          && note_ok "install on real / refused for a non-root user, with a sudo hint" \
+          || note_bad "non-root refusal message unexpected: $out"
+      fi
+      [ ! -e /var/lib/ingot/pinwheel.installed ] \
+        && note_ok "refused non-root install wrote nothing" \
+        || note_bad "refused non-root install still touched /var/lib/ingot!"
     fi
-    [ ! -e /var/lib/ingot/pinwheel.installed ] \
-      && note_ok "refused real-/ install wrote nothing" \
-      || note_bad "refused non-root install still touched /var/lib/ingot!"
+    [ -n "$probe" ] && rm -rf "$probe"
   fi
 fi
 
