@@ -624,9 +624,10 @@ same way the boot closed the sixth and the seventh.
 - Network: `udhcpc` -> `systemd-networkd` (+ the lease/resolver files).
 - Seat: `seatd` -> `logind`, which is what makes
   `XDG_RUNTIME_DIR`/`pam_systemd` real and retires `prepare_session_dirs`.
-- Plymouth: `build_plymouth` deliberately drops plymouth's units, so the splash
-  needs a Copper unit (or an attach-mode decision) under systemd.
-- `wpa_supplicant.service`.
+- Plymouth: done under systemd in this phase: `copper-plymouth.service` owns
+  the daemon during sysinit and `copper-plymouth-quit.service` hands the console
+  back before the wizard or the login shell draws (the Copper unit that was
+  once a "needs a Copper unit" note has landed).
 - First-boot contract: move the wizard's own questions onto journal-first
   logging (`systemctl status`, `journalctl`) instead of the console dialogue.
 - Image size: measure the real growth and decide.

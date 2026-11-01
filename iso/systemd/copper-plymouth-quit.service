@@ -1,0 +1,27 @@
+# Copper Linux — hand the boot splash back to the console.
+#
+# Ordered after copper-plymouth.service (and after the network, because the
+# no-systemd init used the DHCP beat to hold the splash up and wait for a lease;
+# here the ordering takes over that job) and before anything that draws on tty1
+# for real: the first-boot wizard, the login shell, the boot-text clear.
+#
+# The clear helper is deliberately NOT in this unit's Before= -- it erases the
+# kernel's boot text ahead of sysinit, before the splash is even up, and adding
+# the edge here closes an ordering cycle the boot would refuse to start.
+#
+# Without this unit the splash under systemd would run until shutdown: the
+# daemon has no one to tell it to quit and no owner that will, and the console
+# the wizard draws on stays hidden behind a plymouthd that is still attached.
+[Unit]
+Description=Copper Linux boot splash -- hand the console back
+DefaultDependencies=no
+After=copper-plymouth.service copper-network.service
+Before=copper-firstboot.service copper-console.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/plymouth --quit
+
+[Install]
+WantedBy=copper.target

@@ -1,0 +1,43 @@
+# Copper Linux — the boot splash, owned by the service manager now.
+#
+# The splash used to be started from PID 1 (copper-init's splash_start) and
+# quit from the same process right before handing the console over. After the
+# systemd swap the half of that code that answered "something else is PID 1"
+# ran only for the console/wizard half -- which is exactly the half that quits
+# the splash -- and the start had no owner left at all. The machine booted to
+# plain text: the splash never drew, and nobody was ever asked to start it.
+#
+# This unit is that owner. It is wanted by sysinit.target rather than by the
+# session target, so it is up before the first status line of any kind, instead
+# of arriving half a boot late.
+#
+# Type=forking: plymouthd daemonises itself and writes the pid file the console
+# half later waits on, so the start job settles once the daemon is up. The
+# pid file lives under /run/plymouth, which RuntimeDirectory= creates -- the
+# console half only ever sees that directory through a running daemon.
+#
+# The switches are Copper's, not the package's defaults: grub.cfg asks for
+# "splash", plymouth.ignore-udev keeps the daemon off a device enumeration this
+# image never runs, plymouth.ignore-serial-consoles keeps it from reading the
+# serial console as the display, and copper-init used to pass both itself. The
+# unit passes them too, so the splash does not depend on a command line a user
+# happens to have left behind.
+#
+# DefaultDependencies=no keeps it out of the automatic dependency edges the same
+# way copper-tty-clear.service keeps itself out of, see that unit for the
+# reasoning.
+[Unit]
+Description=Copper Linux boot splash
+DefaultDependencies=no
+After=systemd-vconsole-setup.service
+Before=copper-network.service copper-firstboot.service copper-console.service copper-tty-clear.service
+
+[Service]
+Type=forking
+RuntimeDirectory=plymouth
+PIDFile=/run/plymouth/pid
+ExecStart=/usr/sbin/plymouthd --mode=boot --pid-file=/run/plymouth/pid --ignore-serial-consoles
+ExecStartPost=-/usr/bin/plymouth --show-splash
+
+[Install]
+WantedBy=sysinit.target

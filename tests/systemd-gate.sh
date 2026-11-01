@@ -193,6 +193,9 @@ for b in usr/bin/copper-init usr/bin/copper-firstboot usr/bin/copper-sh \
          usr/bin/seatd sbin/udhcpc bin/sh; do
     printf '#!/bin/sh\nexit 0\n' > "$TGT/$b"; chmod 0755 "$TGT/$b"
 done
+for b in usr/sbin/plymouthd usr/bin/plymouth; do
+    printf '#!/bin/sh\nexit 0\n' > "$TGT/$b"; chmod 0755 "$TGT/$b"
+done
 printf '#!/bin/sh\nexit 0\n' > "$TGT/sbin/shutdown"; chmod 0755 "$TGT/sbin/shutdown"
 # the loader PID 1 will name as its interpreter
 if [ -e /lib64/ld-linux-x86-64.so.2 ]; then
@@ -474,8 +477,15 @@ for want in \
     copper.target.wants/copper-console.service \
     copper.target.wants/copper-seatd.service \
     copper.target.wants/copper-network.service \
+    copper.target.wants/copper-plymouth-quit.service \
+    sysinit.target.wants/copper-plymouth.service \
     multi-user.target.wants/copper.target \
-    sysinit.target.wants/systemd-udevd.service
+    sysinit.target.wants/systemd-udevd.service \
+    getty.target.wants/getty@tty2.service \
+    getty.target.wants/getty@tty3.service \
+    getty.target.wants/getty@tty4.service \
+    getty.target.wants/getty@tty5.service \
+    getty.target.wants/getty@tty6.service
 do
     if [ -L "$TGT/etc/systemd/system/$want" ]; then
         ok "wired $want"
@@ -484,10 +494,41 @@ do
     fi
 done
 
+# The boot splash has to have an OWNER under systemd: the daemon runs during
+# sysinit (before the first status line, before anything can scroll the splash
+# away), and the quit hand-back runs before the first thing that draws on the
+# console for real. Both have to be wired, and the ordering between them and the
+# console units has to be the hand-off direction.
+if [ -L "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service" ]; then
+    ok "wired sysinit.target.wants/copper-plymouth.service (splash starts at sysinit)"
+else
+    bad "wired sysinit.target.wants/copper-plymouth.service" "not a symlink; the splash has no owner"
+fi
+if [ -L "$TGT/etc/systemd/system/copper.target.wants/copper-plymouth-quit.service" ]; then
+    ok "wired copper.target.wants/copper-plymouth-quit.service (splash quits before the console)"
+else
+    bad "wired copper.target.wants/copper-plymouth-quit.service" "not a symlink; the splash never gets told to quit"
+fi
+if grep -qE '^Before=.*copper-firstboot\.service' \
+     "$TGT/etc/systemd/system/copper-plymouth-quit.service"; then
+    ok "copper-plymouth-quit.service is ordered before the wizard"
+else
+    bad "copper-plymouth-quit.service is ordered before the wizard" \
+        "$(grep Before "$TGT/etc/systemd/system/copper-plymouth-quit.service" 2>&1 | tr '\n' '|')"
+fi
+if grep -qE '^Before=.*copper-console\.service' \
+     "$TGT/etc/systemd/system/copper-plymouth-quit.service"; then
+    ok "copper-plymouth-quit.service is ordered before the console"
+else
+    bad "copper-plymouth-quit.service is ordered before the console" \
+        "$(grep Before "$TGT/etc/systemd/system/copper-plymouth-quit.service" 2>&1 | tr '\n' '|')"
+fi
+
 # The units must be present as real files at mode 644 -- a unit installed 0777
 # is one systemd reads with a warning, and the source tree is 777 on Windows.
 for u in copper.target copper-tty-clear.service copper-firstboot.service \
-         copper-console.service copper-seatd.service copper-network.service; do
+         copper-console.service copper-seatd.service copper-network.service \
+         copper-plymouth.service copper-plymouth-quit.service; do
     f="$TGT/etc/systemd/system/$u"
     if [ ! -f "$f" ]; then
         bad "installed $u" "missing"

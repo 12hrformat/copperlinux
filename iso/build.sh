@@ -984,6 +984,43 @@ build_rootfs() {
   fi
   mv -f "$new" "$old"
 
+  # The wifi stack was reverted out of the source, but a build cache only ever
+  # adds: a tree staged before the revert still holds copper-wifi, wpa_supplicant
+  # and the radio firmware, and the next ISO built on top of it shipped every
+  # one of them. That is exactly how copper-wifi came back in a downloaded
+  # image after the revert. Delete them by name here, every run, before any
+  # later stage can re-pack the tree; build_iso refuses to write a disc that
+  # still has them, so a missed path fails the build instead of the boot.
+  local stale
+  for stale in \
+      usr/bin/copper-wifi \
+      usr/sbin/wpa_supplicant usr/sbin/wpa_cli usr/sbin/wpa_passphrase \
+      sbin/wpa_supplicant sbin/wpa_cli sbin/wpa_passphrase \
+      etc/wpa_supplicant \
+      usr/share/doc/linux-firmware usr/share/doc/wireless-regdb \
+      usr/lib/systemd/system/wpa_supplicant.service \
+      usr/lib/systemd/system/wpa_supplicant@.service \
+      lib/systemd/system/wpa_supplicant.service \
+      lib/systemd/system/wpa_supplicant@.service ; do
+    rm -rf "$TGT/$stale"
+  done
+  local fw
+  for fw in "$TGT/lib/firmware" "$TGT/usr/lib/firmware"; do
+    [ -d "$fw" ] || continue
+    rm -rf "$fw/ath9k_htc" "$fw/ath10k" "$fw/ath11k" "$fw/ath12k" \
+           "$fw/rtlwifi" "$fw/rtw88" "$fw/rtw89" "$fw/brcm" \
+           "$fw/mediatek" "$fw/mrvl" "$fw/zd1211" "$fw/intel/iwlwifi"
+    ( cd "$fw" && rm -f iwlwifi-*.ucode.zst iwlwifi-*.pnvm.zst \
+        rt2561.bin* rt2561s.bin* rt2661.bin* rt2860.bin* rt2870.bin* \
+        rt3070.bin* rt3071.bin* rt3090.bin* rt3290.bin* rt73.bin* \
+        mt7601u.bin* ar5523.bin* carl9170-1.fw* atmel_at76c50*.bin* \
+        regulatory.db regulatory.db.p7s ) 2>/dev/null || true
+  done
+  # The man pages and the old front end's completion if a package brought one.
+  rm -rf "$TGT/usr/share/man/man8/wpa_supplicant.8.gz" \
+         "$TGT/usr/share/man/man5/wpa_supplicant.conf.5.gz" \
+         "$TGT/usr/share/bash-completion/completions/copper-wifi" 2>/dev/null || true
+
   # usr/share/mime/icons is a zero-byte legacy mapping that update-mime-database
   # emits, and the gui and hypr stages each prune it after they run. A cache
   # restore can still hold one from a build before those prunes existed, and the
@@ -2607,6 +2644,12 @@ build_systemd() {
   # added to the directory and just work.
   install -m 0644 "$ROOT/systemd"/*.service "$TGT/etc/systemd/system/"
   install -m 0644 "$ROOT/systemd"/*.target  "$TGT/etc/systemd/system/"
+  # The boot splash now has units of its own, and an owner: the daemon during
+  # sysinit, the quit hand-back before anything that draws on the console. The
+  # splash used to have no unit at all under systemd, which is exactly why it
+  # never drew.
+  ln -sf /etc/systemd/system/copper-plymouth.service \
+         "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service"
   # The helpers are SCRIPTS, not units, and they are the files in this
   # directory that have to be executable and to live on PATH (their units run
   # them as /usr/bin/copper-tty-clear and /usr/bin/copper-dhcp). 0755 here,
@@ -2632,7 +2675,7 @@ build_systemd() {
   done
   ln -sf /etc/systemd/system/copper.target \
          "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"
-  for u in copper-seatd.service copper-network.service; do
+  for u in copper-seatd.service copper-network.service copper-plymouth-quit.service; do
     ln -sf "/etc/systemd/system/$u" \
            "$TGT/etc/systemd/system/copper.target.wants/$u"
   done
@@ -2675,6 +2718,23 @@ build_systemd() {
   # first, so the link that is left answers the question directly instead of
   # pointing through /sbin/shutdown.
   power_links "$TGT"
+
+  # ---- the spare virtual consoles get a login prompt -----------------------
+  # Ctrl+Alt+F2/F3 and friends have to work on a Copper box, not just the
+  # console the session lives on. The session's own unit (copper-console) owns
+  # tty1 -- it Conflicts= the stock getty there and runs the wizard/login shell
+  # instead -- but the spare VTs had no owner at all in this image: nothing
+  # enabled getty@ttyN instances, so switching there gave a VT with a blinking
+  # cursor and no process reading it: you could not type, and there was nothing
+  # to log in on. Enable the standard spare instances explicitly; enabling an
+  # instance of getty@ (a template) is the same operation systemctl enable does,
+  # and an instance systemd would have made itself does not stop it making the
+  # same one, so nothing is doubled up.
+  local vt
+  for vt in tty2 tty3 tty4 tty5 tty6; do
+    ln -sf /lib/systemd/system/getty@.service \
+           "$TGT/etc/systemd/system/getty.target.wants/getty@$vt.service"
+  done
 
   # ---- ldconfig: mask a unit that cannot succeed here ----------------------
   # systemd ships ldconfig.service as ExecStart=/sbin/ldconfig -X, and this
@@ -2730,7 +2790,8 @@ build_systemd() {
   # the feature not existing.
   local want uf
   for uf in copper.target copper-tty-clear.service copper-firstboot.service \
-            copper-console.service copper-seatd.service copper-network.service; do
+            copper-console.service copper-seatd.service copper-network.service \
+            copper-plymouth.service copper-plymouth-quit.service; do
     if [ ! -f "$TGT/etc/systemd/system/$uf" ]; then
       echo "systemd: unit $uf did not install" >&2
       exit 1
@@ -2741,6 +2802,8 @@ build_systemd() {
               copper.target.wants/copper-console.service \
               copper.target.wants/copper-seatd.service \
               copper.target.wants/copper-network.service \
+              copper.target.wants/copper-plymouth-quit.service \
+              sysinit.target.wants/copper-plymouth.service \
               multi-user.target.wants/copper.target; do
     if [ ! -L "$TGT/etc/systemd/system/$want" ]; then
       echo "systemd: $want is not a symlink; the unit would not start" >&2
@@ -2820,7 +2883,7 @@ build_systemd() {
   # defect there -- the image is missing a binary a Copper unit names, and
   # that unit can never start. That is the seatd bug again, one unit over:
   # the unit named a path the image did not have, and nothing here said so.
-  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh; do
+  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth; do
     if [ ! -x "$TGT/$cmd" ]; then
       echo "systemd: $cmd is missing or not executable; a Copper unit names it" >&2
       echo "          and that unit would fail to start on every boot" >&2
@@ -2916,7 +2979,8 @@ build_systemd() {
       local vlist=""
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service \
-                copper-tty-clear.service copper.target; do
+                copper-tty-clear.service copper.target \
+                copper-plymouth.service copper-plymouth-quit.service; do
         vlist="$vlist /etc/systemd/system/$ul"
       done
       out=$(chroot "$TGT" "$sa" verify $vlist 2>&1 || true)
@@ -2934,7 +2998,8 @@ build_systemd() {
       notexec="is not executable"
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service \
-                copper-tty-clear.service; do
+                copper-tty-clear.service copper-plymouth.service \
+                copper-plymouth-quit.service; do
         out=$(chroot "$TGT" "$sa" verify "/etc/systemd/system/$ul" 2>&1 || true)
         # A message counts only if it is ABOUT this unit AND is a real defect.
         #
@@ -3097,6 +3162,41 @@ build_iso() {
     exit 1
   fi
   echo "  iso: the image identifies itself as $(sed -n 's/^PRETTY_NAME=//p' "$TGT/etc/os-release" | head -n1)"
+
+  # This image has no wireless stack: no copper-wifi, no wpa_supplicant, no
+  # radio firmware. build_rootfs deletes what a pre-revert cache restored;
+  # this is the last chance to notice that the deletion missed something,
+  # before a disc that says "no wifi" ships with it anyway. Checked by path
+  # and by name because the package layout differs between /lib and usr/lib.
+  local wrelic
+  wrelic=$( cd "$TGT" && find . \
+      \( -name 'copper-wifi' -o -name 'wpa_supplicant*' -o -name 'wpa_cli' \
+         -o -name 'wpa_passphrase' -o -name 'iwlwifi-*' \
+         -o -name 'regulatory.db*' -o -name 'rt2561*' -o -name 'rt2561s*' \
+         -o -name 'rt2661*' -o -name 'rt2860*' -o -name 'rt2870*' \
+         -o -name 'rt3070*' -o -name 'rt3071*' -o -name 'rt3090*' \
+         -o -name 'rt3290*' -o -name 'rt73.bin*' -o -name 'mt7601u*' \
+         -o -name 'ar5523*' -o -name 'carl9170-1.fw*' \
+         -o -name 'atmel_at76c50*' \) -print 2>/dev/null | head -n 20 )
+  if [ -n "$wrelic" ]; then
+    echo "iso: this image is not supposed to carry a wireless stack, but the" >&2
+    echo "iso: staged tree still has:" >&2
+    printf '%s\n' "$wrelic" | sed 's/^/iso:   /' >&2
+    echo "iso: build_rootfs should have deleted these; a cache restore or a" >&2
+    echo "iso: package that brought them back is the likely cause" >&2
+    exit 1
+  fi
+  for wrelic in etc/wpa_supplicant lib/firmware/ath9k_htc lib/firmware/ath10k \
+                lib/firmware/ath11k lib/firmware/ath12k lib/firmware/rtlwifi \
+                lib/firmware/rtw88 lib/firmware/rtw89 lib/firmware/brcm \
+                lib/firmware/mediatek lib/firmware/mrvl lib/firmware/zd1211 \
+                lib/firmware/intel/iwlwifi \
+                usr/share/doc/linux-firmware usr/share/doc/wireless-regdb ; do
+    if [ -e "$TGT/$wrelic" ]; then
+      echo "iso: the image still carries $wrelic; it must not" >&2
+      exit 1
+    fi
+  done
 
   # Fold this script into the stamp as well as the tree. The ISO is produced
   # by grub-mkrescue plus the xorriso filter below; without $SELF here, a

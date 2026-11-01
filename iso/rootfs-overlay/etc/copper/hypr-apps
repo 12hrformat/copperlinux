@@ -34,4 +34,9 @@ hypridle            /usr/bin/hypridle            image
 hyprsunset          /usr/bin/hyprsunset          image
 hyprpicker          /usr/bin/hyprpicker          image
 hyprpolkitagent     /usr/libexec/hyprpolkitagent  image
-hyprland-guiutils   /usr/bin/hyprland-guiutils   image
+# hyprland-guiutils is a package, not a program: it ships hyprland-dialog,
+# hyprland-run, hyprland-welcome and friends, and there is no binary called
+# hyprland-guiutils. Probing the package name made the pre-flight report a
+# missing component on an image that had every one of them installed. Probe one
+# of the real binaries instead.
+hyprland-guiutils   /usr/bin/hyprland-dialog   image

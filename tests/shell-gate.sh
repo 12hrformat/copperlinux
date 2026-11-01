@@ -145,6 +145,35 @@ else
         "no clamp in refresh_line(); snprintf's return is unbounded again"
 fi
 
+# 7. chaining: ';' always, '&&' only on success, '||' only on failure, and
+#    the operators split even with no spaces around them. A success-only
+#    branch on a failing command must stay silent, and vice versa.
+rm -f chain
+printf 'echo one > chain; echo two >> chain\ntrue && echo three >> chain\nfalse && echo WRONG >> chain\nfalse || echo four >> chain\ntrue || echo WRONG >> chain\necho five&&echo six >> chain\n' > in
+run < in
+got=$(tr '\n' ' ' < chain 2>/dev/null)
+if [ "$got" != "one two three four six " ]; then
+    bad "command chaining" "chain file was '$got', wanted 'one two three four six '"
+elif printf '%s' "$out" | grep -q 'WRONG'; then
+    bad "command chaining" "a branch ran when its condition said not to"
+elif ! printf '%s' "$out" | grep -q 'five'; then
+    bad "command chaining" "no-space '&&' swallowed the command before it"
+else
+    ok "; && || chain in order and honour exit status"
+fi
+
+# 8. a missing command must say so and point at ingot. The old message named
+#    the command and stopped there, which on a fresh image is a dead end.
+printf 'definitely-not-a-command\n' > in
+run < in
+if ! printf '%s' "$out" | grep -q 'definitely-not-a-command: not installed or command not found'; then
+    bad "missing command hint" "no 'not installed' diagnostic; out=$out"
+elif ! printf '%s' "$out" | grep -q 'maybe try: sudo ingot install definitely-not-a-command'; then
+    bad "missing command hint" "no ingot suggestion; out=$out"
+else
+    ok "a missing command says so and suggests ingot"
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "shell-gate: all checks passed"

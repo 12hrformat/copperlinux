@@ -4,7 +4,7 @@
  * A tiny POSIX shell. Mostly builtins so it works even before a
  * full coreutils exists on the system.
  *
- * Supports: pipes (|) and < > >> redirection.
+ * Supports: pipes (|), < > >> redirection, and chaining with ; && ||.
  * Line editing: arrow keys, backspace, history navigation.
  *
  * Build:  make
@@ -33,6 +33,7 @@
 
 static char *hist[HIST_MAX];
 static int   hist_n  = 0;
+static int   shell_exit = 0;   /* set by the exit/quit builtin */
 
 static const struct builtin btable[] = {
     { "help",    b_help,    "show this list" },
@@ -425,6 +426,28 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
             continue;
         }
         if (c == '#' && !inw) break;  /* a comment starts a line, not a word */
+        /* ; && || are operators, not words, and they are split out even when
+           the user types them without spaces ("cd /tmp&&ls"). A lone '&' is
+           left alone: this shell runs no background jobs, and swallowing it
+           here would silently change what the line means. A quoted or
+           backslash-escaped operator never reaches this test -- the quote
+           branches consume their own text, and '\\;' is handled below, after
+           this point. */
+        if (c == ';' || c == '|' || (c == '&' && src[1] == '&')) {
+            if (inw) { PUTC('\0'); inw = 0; }
+            if (n >= (int)(sizeof argv / sizeof *argv) - 1) {
+                fprintf(stderr, "copper-sh: too many words on one line\n");
+                *count = 0;
+                return argv;
+            }
+            argv[n++] = dst;
+            PUTC(c);
+            src++;
+            if ((c == '|' && *src == '|') || (c == '&' && *src == '&'))
+                PUTC(*src++);
+            PUTC('\0');
+            continue;
+        }
         if (!inw) {
             /* argv is a fixed 256-slot array; "a a a ... " fits hundreds of
                words inside one 4096-byte line, and the unbounded n++ wrote
@@ -597,6 +620,27 @@ static int parse_line(char **argv, int n, struct cmdseg **out, int *nsegs) {
     return 0;
 }
 
+static int status_of(int st) {
+    if (WIFEXITED(st)) return WEXITSTATUS(st);
+    return 128 + (WTERMSIG(st) & 0x7f);
+}
+
+/* execvp() has already failed. Say what happened in the image's own words.
+   The old one-line "command not found" was true and useless: on a live Copper
+   box the answer to almost every missing command is ingot, and the hint is the
+   difference between a dead end and a fix. A name with a slash is a path, not a
+   package, so it gets the plain message and no install suggestion. */
+static void exec_failed(const char *name) {
+    int e = errno;
+    if (e == ENOENT || e == ENOTDIR) {
+        fprintf(stderr, "copper-sh: %s: not installed or command not found\n", name);
+        if (!strchr(name, '/'))
+            fprintf(stderr, "copper-sh: maybe try: sudo ingot install %s\n", name);
+    } else {
+        fprintf(stderr, "copper-sh: %s: %s\n", name, strerror(e));
+    }
+}
+
 /* Run one command (builtin or external) in the current process. */
 static int run_one(char **av) {
     /* An empty segment is not a crash: `> file` with no command is a legal
@@ -606,36 +650,32 @@ static int run_one(char **av) {
     const struct builtin *b = builtin_lookup(av[0]);
     if (b) return b->fn(count_argv(av), av);
     execvp(av[0], av);
-    fprintf(stderr, "copper-sh: %s: command not found\n", av[0]);
+    exec_failed(av[0]);
     return 127;
 }
 
-static void run_external(char **argv) {
+static int run_external(char **argv) {
     pid_t pid = fork();
-    if (pid < 0) { perror("copper-sh: fork"); return; }
+    if (pid < 0) { perror("copper-sh: fork"); return 1; }
     if (pid == 0) {
         signal(SIGINT, SIG_DFL);
         execvp(argv[0], argv);
-        fprintf(stderr, "copper-sh: %s: command not found\n", argv[0]);
+        exec_failed(argv[0]);
         _exit(127);
     }
     int st;
-    waitpid(pid, &st, 0);
-}
-
-static int status_of(int st) {
-    if (WIFEXITED(st)) return WEXITSTATUS(st);
-    return 128 + (WTERMSIG(st) & 0x7f);
+    if (waitpid(pid, &st, 0) < 0) return 1;
+    return status_of(st);
 }
 
 /* Run the parsed line: plain commands in-process, pipelines via fork. */
 static int run_segments(struct cmdseg *cmds, int n) {
     /* plain single command: keep it in-process so cd/history work */
     if (n == 1 && !cmds[0].in && !cmds[0].out) {
+        if (!cmds[0].argv[0]) return 0;
         const struct builtin *b = builtin_lookup(cmds[0].argv[0]);
         if (b) return b->fn(count_argv(cmds[0].argv), cmds[0].argv);
-        run_external(cmds[0].argv);
-        return 0;
+        return run_external(cmds[0].argv);
     }
 
     int (*pipesd)[2] = NULL;
@@ -714,6 +754,68 @@ static int run_segments(struct cmdseg *cmds, int n) {
 }
 
 /* ---------------------------------------------------------------- */
+/*  chaining: ; runs the next command, && runs it on success, || on failure */
+
+enum chain_mode { CHAIN_ALWAYS, CHAIN_ON_SUCCESS, CHAIN_ON_FAILURE };
+
+static int is_operator(const char *t) {
+    return t && (!strcmp(t, ";") || !strcmp(t, "&&") || !strcmp(t, "||"));
+}
+
+/* Walk a tokenized line and run each pipeline according to the operator
+   before it. The token array survives the whole call, so parse_line can take
+   a slice of it directly: the redirect file names it stores point back into
+   argv, and nothing here moves or frees them. Returns the status of the last
+   pipeline that actually ran, which is what && and || test. */
+static int run_line(char **argv, int n) {
+    int status = 0;
+    int start = 0;
+    enum chain_mode mode = CHAIN_ALWAYS;
+
+    for (int i = 0; i <= n; i++) {
+        if (i < n && !is_operator(argv[i])) continue;
+
+        int len = i - start;
+        if (len == 0) {
+            if (i < n) {
+                fprintf(stderr, "copper-sh: syntax error near '%s'\n", argv[i]);
+                return 2;
+            }
+            /* a trailing ';' is legal; a trailing && or || is not */
+            if (start == n && n > 0 && is_operator(argv[n - 1]) &&
+                strcmp(argv[n - 1], ";")) {
+                fprintf(stderr, "copper-sh: syntax error: no command after '%s'\n",
+                        argv[n - 1]);
+                return 2;
+            }
+            break;
+        }
+
+        int run = (mode == CHAIN_ALWAYS) ||
+                  (mode == CHAIN_ON_SUCCESS && status == 0) ||
+                  (mode == CHAIN_ON_FAILURE && status != 0);
+        if (run) {
+            struct cmdseg *cmds = NULL;
+            int nsegs = 0;
+            if (parse_line(argv + start, len, &cmds, &nsegs) == 0) {
+                status = run_segments(cmds, nsegs);
+                free_cmds(cmds, nsegs);
+            } else {
+                status = 2;
+            }
+        }
+
+        if (i < n) {
+            if (!strcmp(argv[i], "&&"))      mode = CHAIN_ON_SUCCESS;
+            else if (!strcmp(argv[i], "||")) mode = CHAIN_ON_FAILURE;
+            else                             mode = CHAIN_ALWAYS;
+        }
+        start = i + 1;
+    }
+    return status;
+}
+
+/* ---------------------------------------------------------------- */
 
 int b_help(int argc, char **argv) {
     (void)argc; (void)argv;
@@ -722,6 +824,7 @@ int b_help(int argc, char **argv) {
         printf("  %-10s %s\n", b->name, b->desc);
     puts("");
     puts("pipes (|) and redirects (<, >, >>) work too.");
+    puts("chain commands with ; (always), && (on success) and || (on failure).");
     puts("anything else runs as an external command (vi, top...)");
     return 0;
 }
@@ -729,6 +832,7 @@ int b_help(int argc, char **argv) {
 int b_exit(int argc, char **argv) {
     (void)argc; (void)argv;
     puts("bye");
+    shell_exit = 1;   /* the main loop leaves after this line finishes */
     return 0;
 }
 
@@ -771,14 +875,8 @@ static void read_rc_file(const char *path) {
         if (!toks) break;
         int argc;
         char **argv = tokenize_line(line, toks, EDIT_BUF_SIZE * 2, &argc);
-        if (argc > 0) {
-            struct cmdseg *cmds = NULL;
-            int nsegs = 0;
-            if (parse_line(argv, argc, &cmds, &nsegs) == 0) {
-                run_segments(cmds, nsegs);
-                free_cmds(cmds, nsegs);
-            }
-        }
+        if (argc > 0)
+            run_line(argv, argc);
         free(toks);
     }
     fclose(f);
@@ -811,6 +909,7 @@ int main(void) {
                             ? pw->pw_shell : "/usr/bin/copper-sh", 0);
     }
     read_rc();
+    shell_exit = 0;   /* an rc file may say exit; that must not close the shell */
 
     if (enable_raw_mode() == 0)
         atexit(disable_raw_mode);
@@ -850,22 +949,10 @@ char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
         char **argv = tokenize_line(line, toks, EDIT_BUF_SIZE * 2, &argc);
         if (argc == 0) { free(toks); free(line); continue; }
 
-        struct cmdseg *cmds = NULL;
-        int nsegs = 0;
-        if (parse_line(argv, argc, &cmds, &nsegs) != 0) {
-            free(toks); free(line); continue;
-        }
-
-        int bye = 0;
-        if (nsegs == 1 && !cmds[0].in && !cmds[0].out &&
-            (!strcmp(cmds[0].argv[0], "exit") || !strcmp(cmds[0].argv[0], "quit")))
-            bye = 1;
-
-        run_segments(cmds, nsegs);
-        free_cmds(cmds, nsegs);
+        run_line(argv, argc);
         free(toks);
 
-        if (bye) { free(line); break; }
+        if (shell_exit) { free(line); break; }
         free(line);
     }
 
