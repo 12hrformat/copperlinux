@@ -61,8 +61,8 @@ Environment=PATH=/sbin:/usr/sbin:/bin:/usr/bin
 #
 # So the helper does what copper-init's bring_up_network() does for the
 # busybox image: it asks sysfs which interface has a real link layer (wired
-# first, wireless second, skipping the tunnel interfaces some built-in
-# drivers invent), waits a couple of seconds for one to turn up, and then
+# only, skipping the tunnel interfaces some built-in drivers invent), waits a
+# couple of seconds for one to turn up, and then
 # execs udhcpc on it. The same rule, so the two flavours behave the same way.
 #
 # 99-default.link (staged by build_systemd) keeps the kernel's names anyway,

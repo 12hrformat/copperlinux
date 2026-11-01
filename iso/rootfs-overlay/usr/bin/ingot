@@ -136,7 +136,7 @@ draw_bar() {
 }
 
 # download_once <file> <url> <total> -- one wget attempt. On a terminal with a
-# known size it runs wget in the background and repaints a pacman-style bar
+# known size it runs wget in the background and repaints a live progress bar
 # from the growing file. Polling uses stat -c %s (busybox and GNU) which is
 # metadata only -- NOT wc -c, which reads the whole payload every second, and
 # NOT wc -c's `SIZE filename` output shape. Off a terminal, or with no size
@@ -281,7 +281,7 @@ cmd_install() { # cmd_install <name> [force] — force installs over an existing
   fi
 
   # The real payload, from the REAL url in the JSON. A size in the page makes
-  # dl draw a live progress bar on a terminal (pacman-style); without it the
+  # dl draw a live progress bar on a terminal; without it the
   # same download just runs quietly.
   payload="/tmp/$name.payload.$$"
   size=$(jget size "$meta")

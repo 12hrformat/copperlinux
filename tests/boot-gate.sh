@@ -85,7 +85,7 @@ done
     exit 2
 }
 command -v "$QEMU" >/dev/null 2>&1 || {
-    echo "boot-gate: $QEMU is not installed (Debian: qemu-system-x86)" >&2
+    echo "boot-gate: $QEMU is not installed (install qemu-system-x86)" >&2
     exit 2
 }
 case "$TIMEOUT" in

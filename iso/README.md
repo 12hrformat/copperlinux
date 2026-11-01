@@ -116,7 +116,7 @@ Two things in the build exist purely to catch trouble early:
 
 1. Download the `copper-iso` artifact from the build, save as `copper.iso`.
 2. VMware Workstation / Player → **New Virtual Machine** → *Custom*.
-3. Guest OS: **Linux → Ubuntu 64-bit** (just a generic x86_64 baseline).
+3. Guest OS: **Linux → Other Linux 6.x kernel 64-bit** (a generic x86_64 baseline).
 4. Memory 2 GB, disk 20 GB. The wizard takes a spare disk automatically and
    reboots into it, so the session is kept — add it as **NVMe** (a SCSI disk is
    invisible: the kernel has no VMware SCSI host driver).
@@ -145,4 +145,4 @@ press Enter when prompted, it's waiting for input.
   where the first-boot wizard takes the console and waits for a person; the
   wizard itself is driven by `tests/account.sh`. Ethernet + DHCP against a
   real server is still unproven — `ping 1.1.1.1` in the shell is that test.
-- WiFi, Bluetooth and a desktop are still to do.
+- Bluetooth and a desktop are still to do.

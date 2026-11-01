@@ -460,7 +460,7 @@ else
     #     it relative motion on every Linux guest, tools or not.
     #   - The "VMware Virtual USB Mouse" is an absolute-pointer tablet. It is
     #     only fed when the guest speaks the vmmouse protocol, whose X driver
-    #     package was retired from Ubuntu in 2018 (xenial) -- so it will never
+    #     package was retired from the archive in 2018 (xenial) -- so it will never
     #     report here. Sorting later in sysfs, its generic "*mouse" name used
     #     to beat the real mouse under last-match-wins.
     #

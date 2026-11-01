@@ -249,8 +249,8 @@ systemd: /lib/systemd/systemd did not arrive from the packages
 ```
 
 This one was not a wording problem; it was the migration reading its own input
-wrong. Ubuntu's `systemd` deb ships PID 1 at **`/usr/lib/systemd/systemd`**, not
-`/lib/systemd/systemd` — every Debian-family tree since bookworm is **merged-usr**,
+wrong. The `systemd` deb this image stages ships PID 1 at **`/usr/lib/systemd/systemd`**,
+not `/lib/systemd/systemd` — the tree these debs are built in is **merged-usr**,
 where `/lib` *is* `/usr/lib` written as a top-level symlink, so the packages only
 ever write the `/usr/lib` name. Copper's tree is **not** merged-usr: `/lib` here
 is a real directory holding the musl loader and busybox. So the packages landed
@@ -267,7 +267,7 @@ content; only PID 1 itself has to also answer at `/lib`.
 **Why the gate was green here and red on the runner is the useful part.** The
 gate stubs `dpkg-deb` with `tar`, so the "package" it feeds the stage is whatever
 the fixture says — and the fixture put its fake PID 1 at
-`payload/lib/systemd/systemd`, a layout no Debian-family deb has produced since
+`payload/lib/systemd/systemd`, a layout no merged-usr deb has produced since
 merged-usr. The stage's own `[ -x $TGT/lib/systemd/systemd ]` gate then passed
 against the *fixture*, certifying a stage that cannot handle a real deb. A test
 that models its input wrongly certifies the wrong code. The fixture is now
@@ -302,8 +302,8 @@ earlier stage, or by a cached tree — makes it skip, and PID 1 is then never
 linked into place. Three candidate causes were checked against the real inputs
 before touching the code:
 
-1. **The deb does not ship `usr/lib/systemd`.** Ruled out: the noble deb
-   `systemd_255.4-1ubuntu8.18_amd64.deb` was downloaded and unpacked, and it
+1. **The deb does not ship `usr/lib/systemd`.** Ruled out: the noble `systemd`
+   255.4 deb was downloaded and unpacked, and it
    ships `./usr/lib/systemd/systemd`; the whole 39-package closure unpacks PID 1
    *only* under `usr/lib`.
 2. **`cp -a -n` refuses to merge into an existing `usr/lib`.** Ruled out by
@@ -400,7 +400,7 @@ project has been bitten by a check that was green against its own fixture: the
 gate's fixture modelled systemd's udevd unit as `Description=udev` with no
 ordering in it, so the graph the stage walked was not the graph the boot
 builds. The fixture now models the **real** unit, read out of the noble
-`udev_255.4-1ubuntu8.18_amd64.deb` the image unpacks:
+`udev` 255.4 deb the image unpacks:
 
 ```
 [Unit]
@@ -538,9 +538,9 @@ no eth0, udhcpc exits non-zero on the missing device, the unit has no
 unit over.
 
 The busybox image never had this problem, because copper-init asks sysfs which
-interface is real (`first_nonloop_iface()`: ARPHRD_ETHER, then
-ARPHRD_IEEE80211_RADIOTAP, skipping the tunnel interfaces some built-in
-drivers invent). The systemd flavour asks the same question now: the unit
+interface is real (`first_nonloop_iface()`: ARPHRD_ETHER, skipping the tunnel
+interfaces some built-in drivers invent). The systemd flavour asks the same
+question now: the unit
 runs `/usr/bin/copper-dhcp`, a helper that does the same discovery
 copper-init does, waits out the couple of seconds a late-attaching NIC needs,
 and execs udhcpc on what it finds.

@@ -12,15 +12,15 @@
 
 ---
 
-Copper is our distro. Not a Debian or Arch rebrand — built from source, with a small, curated set of packages. It's designed to be a daily driver for Linux nerds, coders, and students who want something that feels like theirs. It's small, fast, and has a minimal base so you can add what you want. It has a GUI, but the default is a shell — so you can learn Linux without being forced into a desktop environment. It's built to be simple, but not simplistic.
+Copper is our distro. Built from source, with a small, curated set of packages. It's designed to be a daily driver for Linux nerds, coders, and students who want something that feels like theirs. It's small, fast, and has a minimal base so you can add what you want. It has a GUI, but the default is a shell — so you can learn Linux without being forced into a desktop environment. It's built to be simple, but not simplistic.
 
 Copper has a twin: **Deadlight linux**, a cybersecurity-focused distro by the
-same team. Same base, different goal — basically a reskin, but with the useful
+same team. Same base, different goal — a sibling build with the useful
 tools already on it.
 
 Copper linux is a work in progress. It's not ready for production use yet, but it's usable and fun to play with. The team is small, but we're working hard to make it better every day. Wanna contribute?
 
-Copper linux also has its own package manager, **ingot**, which is hosted on GitHub Pages. It's not pacman, but it works. It fetches packages from a JSON index on Pages, downloads the payload from the real URL, verifies the hash, and installs it. It's designed to be simple and fast.
+Copper linux also has its own package manager, **ingot**, which is hosted on GitHub Pages. It fetches packages from a JSON index on Pages, downloads the payload from the real URL, verifies the hash, and installs it. It's designed to be simple and fast.
 
 ---
 

@@ -1,7 +1,7 @@
 Console font: Uni2-VGA16
 =======================
 
-This is the Uni2 console font from Debian's console-setup package
+This is the Uni2 console font originally from Debian's console-setup package
 (/usr/share/consolefonts/Uni2-VGA16.psf.gz). It is shipped decompressed: the
 busybox setfont applet can read a gzip stream, but only when its gzip reader is
 compiled in, and 6 KB is not worth a conditional.

@@ -37,7 +37,7 @@ DefaultDependencies=no
 #
 # After=sysinit.target here is an ORDERING CYCLE, and the boot does not survive
 # it. systemd's own systemd-udevd.service carries `Before=sysinit.target` --
-# read out of the noble 255.4 udev package this image unpacks, not guessed --
+# read out of Copper's udev package this image unpacks, not guessed --
 # so these three lines close a loop:
 #
 #     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service

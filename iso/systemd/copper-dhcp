@@ -12,7 +12,7 @@
 #
 # and eth0 is a NAME, not a fact. The kernel names interfaces eth0, eth1, ...
 # only for as long as eth0 is the first NIC it enumerates. A box with no wired
-# NIC at all -- a laptop on WiFi, a guest with a wireless-only profile -- has
+# NIC at all -- a thin client, a guest whose NIC turns up late -- has
 # no eth0 to find, and udhcpc on a missing interface exits non-zero with
 # "can't open '/dev/eth0'". The unit had no Restart=, so that was the end of
 # it: the machine booted with no network and no explanation, and the unit's
@@ -22,8 +22,8 @@
 # The busybox image never had this problem, because copper-init asked sysfs
 # which interface was real instead of assuming a name. So the rule here is the
 # rule copper-init uses: ask sysfs what the interface actually is, and only
-# take something with a real link layer. Wired first, wireless second -- a box
-# with both should use the wire.
+# take something with a real link layer. Wired only -- this image ships no
+# wireless stack.
 #
 # The link-layer types are the ARPHRD_* numbers from linux/if_arp.h, and they
 # are ABI: /sys/class/net/<if>/type prints that number in decimal.
@@ -44,9 +44,8 @@ say() {
     fi
 }
 
-# ARPHRD_ETHER, then ARPHRD_IEEE80211_RADIOTAP.
+# ARPHRD_ETHER, the wired link layer.
 ether_type=1
-radiotap_type=801
 
 # The link-layer type of an interface, or nothing if sysfs has no answer.
 iface_type() {
@@ -73,15 +72,9 @@ find_iface() {
     return 1
 }
 
-# The interface to use: wired if there is one, wireless if there is not.
+# The interface to use: the first wired NIC.
 pick_iface() {
-    for t in "$ether_type" "$radiotap_type"; do
-        n=$(find_iface "$t") || continue
-        [ -n "$n" ] || continue
-        echo "$n"
-        return 0
-    done
-    return 1
+    find_iface "$ether_type"
 }
 
 # The kernel is done probing before systemd starts this unit, but a freshly

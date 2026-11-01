@@ -1,0 +1,9 @@
+Copper Linux 0.1 (Ingot)
+
+Copper is assembled by its contributors from Copper's own sources and from
+upstream components. Each component keeps its own licence, and the copyright
+and licence text for every installed component is in
+/usr/share/doc/<component>/copyright.
+
+This software is provided as is, without warranty of any kind. Nothing in
+this notice replaces the licence of any component.

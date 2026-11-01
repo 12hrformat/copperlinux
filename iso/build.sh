@@ -709,9 +709,9 @@ init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
 # ---------------------------------------------------------------
 # The merged-usr bridge: /lib/systemd is a NAME for /usr/lib/systemd
 # ---------------------------------------------------------------
-# The systemd flavour needs one directory to answer at two names. Ubuntu's
-# systemd deb ships PID 1 at /usr/lib/systemd/systemd, because every
-# Debian-family tree since bookworm is merged-usr -- /lib IS /usr/lib.
+# The systemd flavour needs one directory to answer at two names. The systemd
+# deb this image stages ships PID 1 at /usr/lib/systemd/systemd, because the
+# tree it is built in is merged-usr -- /lib IS /usr/lib.
 # Copper's tree is NOT merged-usr: /lib here is a real directory holding the
 # musl loader and busybox. So the systemd stage makes lib/systemd a symlink
 # to ../usr/lib/systemd (build_systemd), and PID 1 is reachable at the name
@@ -1268,8 +1268,8 @@ assert_shell_scripts_parse() {
 # (stage 6) and the overlay already put there. base-files is in that closure,
 # and base-files is what owns /etc/os-release, /etc/lsb-release, /etc/issue and
 # /usr/lib/os-release. The moment the packages land, the image stops being
-# Copper and becomes "Ubuntu 24.04.5 LTS" with LOGO=ubuntu-logo -- which is
-# what fastfetch then draws on a Copper machine (bug 41, the Ubuntu logo).
+# Copper and becomes whatever base-files says the distro is, with that
+# distro's LOGO -- which is what fastfetch then draws on a Copper machine.
 #
 # Nothing in the build reads those files, which is why it stayed invisible.
 # Put Copper's back here, still from iso/rootfs-overlay so there is one source
@@ -1279,18 +1279,19 @@ assert_shell_scripts_parse() {
 # was written by whatever ran last.
 #
 # Both /etc/os-release and /usr/lib/os-release are plain files on this image
-# (on a normal Debian the first is a symlink to the second), and a reader may
-# open either, so both are written and then compared.
+# (on most merged-usr systems the first is a symlink to the second), and a
+# reader may open either, so both are written and then compared.
 copper_identity() {
   local rel id
-  for rel in etc/os-release etc/lsb-release etc/issue; do
+  for rel in etc/os-release etc/lsb-release etc/issue etc/issue.net etc/legal; do
     if [ ! -f "$ROOT/rootfs-overlay/$rel" ]; then
       echo "gui: iso/rootfs-overlay/$rel is missing; without it the image" >&2
-      echo "     identifies itself as Ubuntu to every tool that asks" >&2
+      echo "     identifies itself as something else to every tool that asks" >&2
       exit 1
     fi
     install -D -m 0644 "$ROOT/rootfs-overlay/$rel" "$TGT/$rel"
   done
+  # ensure /usr/lib/os-release exists as a copy for tools that look there
   install -D -m 0644 "$ROOT/rootfs-overlay/etc/os-release" "$TGT/usr/lib/os-release"
 
   id=$(sed -n 's/^ID=//p' "$TGT/etc/os-release" | head -n1)
@@ -1349,7 +1350,7 @@ build_gui() {
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then
     echo "gui: already staged, skipping"
     # Skipping the packages must not skip their repair: a cached tree written
-    # before this existed still calls itself Ubuntu. Cheap and idempotent.
+    # before this existed still calls itself something else. Cheap and idempotent.
     copper_identity
     return
   fi
@@ -1685,7 +1686,7 @@ build_gui() {
 #
 # The compositor and its ecosystem come from ppa:cppiber/hyprland for noble.
 # noble packages no Hyprland at all, and this PPA is the source ML4W's own
-# Ubuntu setup uses and is built for noble's glibc 2.39, so nothing else in the
+# setup uses and is built for noble's glibc 2.39, so nothing else in the
 # desktop stage has to move. The closure is computed exactly the way build_gui
 # computes XFCE's: apt against an EMPTY dpkg status file with --download-only
 # --no-install-recommends, so every library counts as missing and nothing
@@ -1764,7 +1765,7 @@ build_hypr() {
   if ! curl -fsSL --retry 3 --retry-all-errors \
        "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPR_PPA_FPR" \
        -o "$asc"; then
-    echo "hypr: could not fetch the PPA archive key from keyserver.ubuntu.com" >&2
+    echo "hypr: could not fetch the PPA archive key from the keyserver" >&2
     exit 1
   fi
   fpr=$(gpg --show-keys --with-colons "$asc" 2>/dev/null \
@@ -2440,7 +2441,7 @@ build_systemd() {
   echo "==> systemd as PID 1 (migration, opt-in)"
   local DS="$DL/systemd" STAGE="$WORK/systemd-root" deb p ndeb
 
-  # The gui/hypr closures call themselves Ubuntu in /etc/os-release; the
+  # The gui/hypr closures bring their own os-release with them; the
   # systemd stage inherits that tree, so re-assert Copper's identity as the
   # other stages do before anything reads it.
   copper_identity
@@ -2489,11 +2490,11 @@ build_systemd() {
   cp -a -n "$STAGE"/. "$TGT"/
 
   # ---- merged-usr, for the systemd subtree only -----------------------------
-  # Ubuntu's systemd deb ships PID 1 at /usr/lib/systemd/systemd, because every
-  # Debian-family tree since bookworm is merged-usr: /lib IS /usr/lib, spelled
-  # as a symlink at the top level. Copper's tree is NOT merged-usr -- /lib here
-  # is a real directory holding the musl loader and busybox -- so the deb's
-  # files land at $TGT/usr/lib/systemd/... and NOTHING lands at
+  # The systemd deb this image stages ships PID 1 at /usr/lib/systemd/systemd,
+  # because the tree these debs are built in is merged-usr: /lib IS /usr/lib,
+  # spelled as a symlink at the top level. Copper's tree is NOT merged-usr --
+  # /lib here is a real directory holding the musl loader and busybox -- so
+  # the deb's files land at $TGT/usr/lib/systemd/... and NOTHING lands at
   # $TGT/lib/systemd/... . That is what the second real CI run found: 39
   # packages unpacked (58M), and then `/lib/systemd/systemd did not arrive`,
   # because the gate at the end of this stage looks at the path the KERNEL and
@@ -3088,7 +3089,7 @@ build_iso() {
   # this after it copies base-files in (see copper_identity), and this is the
   # last look before the ISO is produced, so a stage that runs after gui and
   # brings its own os-release with it -- the Hyprland PPA closure is the
-  # candidate -- cannot ship a Copper ISO that calls itself Ubuntu.
+  # candidate -- cannot ship a Copper ISO that calls itself something else.
   local osid; osid=$(sed -n 's/^ID=//p' "$TGT/etc/os-release" 2>/dev/null | head -n1)
   if [ "$osid" != copper ]; then
     echo "iso: the staged tree's /etc/os-release says ID='${osid:-nothing}', not copper" >&2

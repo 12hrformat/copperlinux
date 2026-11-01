@@ -88,11 +88,10 @@ static void say(const char *fmt, ...) {
     }
 }
 
-/* ARPHRD_* link-layer types, from linux/if_arp.h. Spelled out rather than
-   included: this builds against musl, which does not ship the kernel UAPI
-   headers, and two numbers are not worth a build dependency. */
+/* ARPHRD_ETHER, from linux/if_arp.h. Spelled out rather than included: this
+   builds against musl, which does not ship the kernel UAPI headers, and one
+   number is not worth a build dependency. */
 #define ARPHRD_ETHER             1
-#define ARPHRD_IEEE80211_RADIOTAP 801
 
 /* Link-layer type of an interface, or -1 if it cannot be read.
    /sys/class/net/<if>/type is the ARPHRD_* value in decimal. */
@@ -123,10 +122,9 @@ static int iface_type(const char *ifname) {
    before the real NIC has finished probing. The sit module's sit0 is one,
    and handing DHCP a tunnel means broadcasting discover into nowhere. So ask
    sysfs what the interface actually is, and only take something with a real
-   link layer. Wired first, wireless second — a box with both should use the
-   wire. */
+   link layer -- and a wired one, because this image ships no wireless stack. */
 static const char *first_nonloop_iface(void) {
-    static const int prefs[] = { ARPHRD_ETHER, ARPHRD_IEEE80211_RADIOTAP };
+    static const int prefs[] = { ARPHRD_ETHER };
     static char name[IFNAMSIZ];
     struct dirent *ent;
     DIR *dir;
@@ -1213,7 +1211,7 @@ static int plymouth_cmd(const char *cmd) {
 
    It is worth passing because it is an option this plymouthd really has, not
    one assumed from plymouth's git tree: `plymouthd --help` from the packaged
-   build (plymouth 24.004.60-1ubuntu7.2, the one this image stages) lists
+   build (plymouth 24.004.60-1, the one this image stages) lists
    `--ignore-serial-consoles`, and a bogus option makes the same daemon print
    that whole list instead of starting. An option it did not know would leave
    the console on a usage dump and kill the splash outright, which is why this

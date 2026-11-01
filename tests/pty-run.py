@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a command under a pty so its \r-animated progress bar output is
 captured, and print everything it wrote. This is how the ingot gate proves
-the pacman-style download bar renders: a plain pipe would never see it.
+the live download bar renders: a plain pipe would never see it.
 
 Usage: pty-run.py CMD [ARGS...]
 """

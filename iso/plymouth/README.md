@@ -21,8 +21,8 @@ and has been removed.)
 
 ## How it is built
 
-`build_plymouth()` in `iso/build.sh` stages Ubuntu's **prebuilt** Plymouth
-packages rather than building Plymouth from source. Copper's rootfs has no
+`build_plymouth()` in `iso/build.sh` stages **prebuilt** Plymouth packages
+rather than building Plymouth from source. Copper's rootfs has no
 systemd and no udev, and building the current Plymouth (`24.004.60`) without
 udev does not produce a working splash — so the prebuilt binaries are taken and
 the parts that would pull systemd in are simply never used.

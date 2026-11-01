@@ -13,7 +13,7 @@
 # addgroup when the marker existed; under systemd the wizard still does it
 # (copper-firstboot), and this unit only has to start the daemon.
 #
-# The binary's PATH is not fixed, and a boot proved it: noble's seatd package
+# The binary's PATH is not fixed, and a boot proved it: Copper's seatd package
 # installs it at /usr/sbin/seatd, while this unit said /usr/bin/seatd. systemd
 # ran a command that did not exist, the unit failed, Restart=on-failure started
 # it again, and every attempt printed [FAILED] onto the same tty the first-boot

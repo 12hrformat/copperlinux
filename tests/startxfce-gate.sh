@@ -502,7 +502,7 @@ echo
 echo "=== case 10: the PS/2 mouse wins the pointer over a USB tablet ==="
 # Measured on the machine (blocking dd): the emulated ImPS/2 mouse delivers
 # events on VMware, the "Virtual USB Mouse" tablet delivers none (vmmouse is
-# retired from Ubuntu). The matcher must prefer the PS/2 device even though
+# retired from the archive). The matcher must prefer the PS/2 device even though
 # it sorts before the tablet in sysfs.
 reset
 mkdir -p "$TMP/sys/class/input/event1/device" \

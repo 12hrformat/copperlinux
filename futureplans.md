@@ -1,5 +1,5 @@
 # sigh so this are like my um todo list for the future of copper and deadlight linux:
-[x] as of now i dont have a package manager so im building my own (ingot), hosted on github pages, not pacman
+[x] as of now i dont have a package manager so im building my own (ingot), hosted on github pages
 [x] make a gui for copper and deadlight linux
 [x] make a package manager
 [x] update the website and make it (actually) good
@@ -14,9 +14,9 @@
 [x] make a plymouth boot splash for copper (frames and theme are in `iso/plymouth/copper/`)
 [] update: Now that the gui is working make it so gui automatically starts as soon as user enters
 [x] add persistence (bug 20)
-[] add a way to install copper and deadlight linux to a hard drive (like archinstall or debian installer)
+[] add a way to install copper and deadlight linux to a hard drive (guided installer)
 [] add more packages in ingot repo
-[] add a 'archinstall' type installation / debians installer / custom made (<-- preffered)
+[] add a guided system installer / custom made (<-- preffered)
 
 ##### thats it for now i think but ill add things in the future
 ##### list below is made by ai i was busy
@@ -28,8 +28,8 @@
 Ordered by what unblocks the most. This is the short list behind the
 checkboxes above, with the reasoning kept so it doesn't have to be re-derived.
 
-1. **A real installer** — the `install to a hard drive` / `archinstall` lines
-   above (custom-made is the preferred one). Biggest hole: right now Copper is
+1. **A real installer** — the `install to a hard drive` line above
+   (custom-made is the preferred one). Biggest hole: right now Copper is
    a live ISO plus the labelled-disk overlay trick for persistence. A real
    installer also retires bug 15 and bug 20's stopgap — real disk root, real
    space, no 50% tmpfs cap.

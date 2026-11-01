@@ -101,11 +101,12 @@ if command -v systemd-analyze >/dev/null 2>&1; then
         # The filter used to be a deny-list (drop "Command X is not
         # executable", a missing man page, and the host's own noise) and keep
         # "about this unit" via grep -F "$base". That is host-version
-        # dependent, and CI proved it: on ubuntu-24.04's systemd 255 the same
+        # dependent, and CI proved it: on the runner's systemd 255 the same
         # units produce lines that do NOT match the deny-list, so two units
         # reported FAIL for messages that were really about the HOST -- units
-        # this image does not ship (systemd-udev-settle.service is Ubuntu's,
-        # the seatd/udhcpc ExecStart paths only exist inside the image).
+        # this image does not ship (systemd-udev-settle.service ships with the
+        # host's systemd, and the seatd/udhcpc ExecStart paths only exist
+        # inside the image).
         # A gate whose verdict changes with the runner's systemd version is a
         # gate that goes red for green code, so it is an allow-list now.
         #
@@ -249,7 +250,7 @@ chmod 0755 "$STUB/apt-get" "$STUB/dpkg-deb"
 PD="$TMP/payload"; mkdir -p "$PD/usr/lib/systemd/system" "$PD/usr/bin"
 # merged-usr, the way a real noble deb is: PID 1 ships at usr/lib/systemd/systemd
 # and usr/bin/systemd is a symlink THROUGH /lib to it. The fixture used to put
-# the fake PID 1 at payload/lib/systemd/systemd -- a layout no Debian-family deb
+# the fake PID 1 at payload/lib/systemd/systemd -- a layout no merged-usr deb
 # has produced since merged-usr -- so the stage's `[ -x $TGT/lib/systemd/systemd ]`
 # gate passed against the fixture while a real build died with "39 packages
 # unpacked (58M)" and "/lib/systemd/systemd did not arrive". A fixture that
@@ -261,7 +262,7 @@ for u in sysinit.target multi-user.target getty.target; do
     printf '[Unit]\nDescription=%s\n' "$u" > "$PD/usr/lib/systemd/system/$u"
 done
 # systemd's OWN udevd unit, modelled on the real noble 255.4 udev package
-# (udev_255.4-1ubuntu8.18_amd64.deb, unpacked and read). Two lines matter:
+# (the udev deb the image unpacks, read straight out of it). Two lines matter:
 #
 #   DefaultDependencies=no   without it systemd adds an automatic
 #                            After=sysinit.target, which would contradict the
@@ -630,9 +631,9 @@ done
 # unexplained [FAILED] on the tty the wizard is drawing on.
 #
 # The busybox image never had that problem, because copper-init asks sysfs
-# which interface is real (first_nonloop_iface: ARPHRD_ETHER, then
-# ARPHRD_IEEE80211_RADIOTAP, skipping the tunnel interfaces some built-in
-# drivers invent). The systemd flavour has to ask the same question, and the
+# which interface is real (first_nonloop_iface: ARPHRD_ETHER, skipping the
+# tunnel interfaces some built-in drivers invent). The systemd flavour has to
+# ask the same question, and the
 # helper that asks it has to be in the tree and be the thing the unit execs.
 if [ -x "$TGT/usr/bin/copper-dhcp" ]; then
     ok "dhcp helper installed executable at /usr/bin/copper-dhcp"
@@ -657,17 +658,17 @@ else
     ok "copper-network.service does not name an interface itself"
 fi
 # The helper has to actually ask sysfs: a helper that names eth0 inside itself
-# has moved the bug rather than fixed it. The link-layer types are the point
-# -- ARPHRD_ETHER for the wire, ARPHRD_IEEE80211_RADIOTAP for the radio --
-# because that is what copper-init's first_nonloop_iface() asks for, and a
-# helper that looked for some other type would find nothing.
+# has moved the bug rather than fixed it. ARPHRD_ETHER is the point -- that is
+# what copper-init's first_nonloop_iface() asks for, and a helper that looked
+# for some other type would find nothing. The image is wired-only, so a radio
+# type here would only hand DHCP an interface with no supplicant behind it.
 if grep -q 'iface_type()' "$TGT/usr/bin/copper-dhcp" \
    && grep -q 'ether_type=1' "$TGT/usr/bin/copper-dhcp" \
-   && grep -q 'radiotap_type=801' "$TGT/usr/bin/copper-dhcp"; then
+   && ! grep -q 'radiotap' "$TGT/usr/bin/copper-dhcp"; then
     ok "the dhcp helper discovers the interface from sysfs"
 else
     bad "the dhcp helper discovers the interface from sysfs" \
-        "$(grep -E 'iface_type|ether_type|radiotap_type' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
+        "$(grep -E 'iface_type|ether_type|radiotap' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
 fi
 
 # ---- no Documentation= the image cannot open --------------------------------
@@ -738,7 +739,7 @@ fi
 # dependency is checked where it actually lives: the dispatch case in build.sh.
 #
 # This is the check that would have caught the real failure this gate missed.
-# On ubuntu-24.04 the systemd step died at `line 638: CC: unbound variable`
+# On the CI runner the systemd step died at `line 638: CC: unbound variable`
 # after "==> copper built-ins", because `systemd)` did not list build_musl and
 # the runner has no CC of its own. Every other compiling stage lists it; the
 # diff that added `systemd)` left it out. Reading the case arm here means the
@@ -776,7 +777,7 @@ fi
 # This is the second CI failure, and the one the gate's own green run missed:
 # build_systemd's chrooted `systemd-analyze verify` kept any line naming the
 # unit and dropped a DENY-list of known noise. That list was tuned on the dev
-# box's systemd 261 and does not match 255's wording, so on the ubuntu-24.04
+# box's systemd 261 and does not match 255's wording, so on the CI
 # runner a host-artifact line survived and the STAGE exited 1 -- "build_systemd
 # ran" went red in the gate while `bash tests/systemd-gate.sh` was green here.
 #

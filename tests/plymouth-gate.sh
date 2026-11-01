@@ -25,7 +25,7 @@
 #      and test on a box that has never seen plymouth.
 #
 # See bug 25: --ignore-serial-consoles and plymouth.ignore-serial-consoles
-# were both checked against the packaged plymouth 24.004.60-1ubuntu7.2 this
+# were both checked against the packaged plymouth 24.004.60 this
 # image stages, and a bogus option makes that daemon print its whole usage list
 # instead of starting, which is how an accepted option is told from a rejected
 # one. Run: tests/plymouth-gate.sh

@@ -120,8 +120,8 @@ jobs:
       # lives in build.sh so local builds get it too -- this line only makes sure
       # the pinned compiler is actually installed, rather than assuming the
       # runner's default happens to be the right version. The job is pinned to
-      # ubuntu-24.04, whose default gcc is 13; ubuntu-latest moves to Ubuntu 26
-      # on 2026-10-19, and a from-source kernel build that fails only because
+      # the 24.04 runner image, whose default gcc is 13; the latest image moves
+      # to a newer base on 2026-10-19, and a from-source kernel build that fails
       # the base image moved is a failure with nothing to do with the change
       # under test.
 
@@ -174,7 +174,7 @@ jobs:
       - name: Stage the Hyprland session
         run: sudo bash iso/build.sh hypr
 
-      # The boot splash: Ubuntu's prebuilt Plymouth plus the owner's frames,
+      # The boot splash: the prebuilt Plymouth packages plus the owner's frames,
       # unpacked into the rootfs. Its own step for the same reason as gui --
       # it downloads packages at build time, and a failure should name the
       # line that asked for them. rootfs and gui above are stamp-checked and

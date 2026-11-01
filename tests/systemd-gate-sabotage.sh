@@ -216,9 +216,10 @@ run_case "verify filter weakened to a version-specific deny-list" "$B" \
 
 # 13. The merged-usr bridge is gone -- the THIRD CI failure, and the one that
 #     would have made the ISO unbootable rather than merely failing a check.
-#     Ubuntu's systemd deb ships PID 1 at usr/lib/systemd/systemd; Copper's tree
-#     has a real /lib, so without the bridge /lib/systemd/systemd does not
-#     exist and the kernel has nothing to exec. CI said exactly this: "39
+#     The systemd deb this image stages ships PID 1 at
+#     usr/lib/systemd/systemd; Copper's tree has a real /lib, so without the
+#     bridge /lib/systemd/systemd does not exist and the kernel has nothing to
+#     exec. CI said exactly this: "39
 #     packages unpacked (58M)" then "/lib/systemd/systemd did not arrive". The
 #     stage's own gate does catch it, but the gate was green locally because the
 #     fixture was wrong -- so the case plants the missing bridge in a stage whose
@@ -495,11 +496,9 @@ run_case "a Copper unit documents itself with something unreadable" \
 Documentation=man:udhcpc(1)' \
     "FAIL.*carry no Documentation="
 
-# 34. The helper stops looking for a real link layer. The types are the
-#     point: ARPHRD_ETHER for the wire and ARPHRD_IEEE80211_RADIOTAP for the
-#     radio are what copper-init's first_nonloop_iface() asks for, and a
-#     helper that looked for some other type would find nothing and skip DHCP
-#     on every machine.
+# 34. The helper stops looking for a real link layer. ARPHRD_ETHER is what
+#     copper-init's first_nonloop_iface() asks for, and a helper that looked
+#     for some other type would find nothing and skip DHCP on every machine.
 run_case "the dhcp helper stops asking for ARPHRD_ETHER" \
     "$U/copper-dhcp" \
     'ether_type=1' \
