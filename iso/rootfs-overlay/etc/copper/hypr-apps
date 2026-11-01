@@ -27,6 +27,7 @@ kitty               /usr/bin/kitty               image
 waybar              /usr/bin/waybar              image
 swaync              /usr/bin/swaync              image
 fuzzel              /usr/bin/fuzzel              image
+rofi                /usr/bin/rofi                image
 hyprpaper           /usr/bin/hyprpaper           image
 hyprlock            /usr/bin/hyprlock            image
 hypridle            /usr/bin/hypridle            image

@@ -85,10 +85,12 @@ mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
 lint_scripts() {
   local s
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
-           "$ROOT/rootfs-overlay/usr/bin/ingot" "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh"; do
+           "$ROOT/rootfs-overlay/usr/bin/ingot" \
+           "$ROOT/rootfs-overlay/usr/lib/copper/hypr-defaults.sh" \
+           "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script, ingot, startxfce and starthyprland parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot, hypr-defaults, startxfce and starthyprland parse clean"
 }
 lint_scripts
 
@@ -1730,10 +1732,16 @@ build_hypr() {
   # seatd unit pointing at a binary that was not there.
   if [ -e "$TGT/usr/bin/Hyprland" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/custom.lua" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/ml4w/settings/statusbar" ] \
+     && [ -e "$TGT/usr/lib/copper/hypr-defaults.sh" ] \
+     && [ -e "$TGT/usr/share/copper/wallpapers/copper-default.png" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/conf/environments/default.lua" ] \
      && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
-     && stamped_skip "$WORK/hypr.stamp" "$SELF"; then
+     && stamped_skip "$WORK/hypr.stamp" "$SELF" \
+        "$ROOT/rootfs-overlay/usr/lib/copper/hypr-defaults.sh" \
+        "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"; then
     echo "hypr: already staged, skipping"; return
   fi
   echo "==> Hyprland session"
@@ -1844,9 +1852,28 @@ build_hypr() {
   #                          decision is logged in HANDOFF.md, Hyprland.
   #   jq                    ML4W reads its own settings with it; without it
   #                          the statusbar and theme scripts fail halfway.
+  #   rofi                  the launcher. ML4W 2.17 picked Walker; noble never
+  #                          got the memo. ml4w-launcher already falls back to
+  #                          rofi when Walker is absent, so bake the fallback
+  #                          and let the setting stop pretending otherwise.
+  #   psmisc procps util-linux   the unglamorous plumbing waybar's launch script
+  #                          assumes: killall and pkill to clear an old bar,
+  #                          flock for its one-at-a-time lock, pgrep for every
+  #                          "is this already running?" check ML4W makes. Skip
+  #                          them and the bar script exits on its first line
+  #                          while everyone insists the bar started.
+  #   playerctl              the media keys, which are the difference between a
+  #                          laptop and a very expensive picture frame.
+  #   bibata-cursor-theme   ML4W sets XCURSOR_THEME to Bibata-Modern-Ice and
+  #                          runs hyprctl setcursor at startup. Without the
+  #                          theme you get a session with no pointer: a cursor
+  #                          bug in theory and a scream in practice.
+  #   tesseract-ocr tesseract-ocr-eng   Super+Alt+A's text extractor. English is
+  #                          both the default language and the fallback when
+  #                          ML4W cannot work out the language list.
   set -- hyprland hypridle hyprlock hyprpaper hyprpicker hyprsunset \
          hyprpolkitagent hyprland-guiutils xdg-desktop-portal-hyprland \
-         waybar fuzzel \
+         waybar fuzzel rofi \
          seatd sway-notification-center kitty lua5.4 wl-clipboard cliphist \
          grim slurp brightnessctl qt6ct \
          fonts-font-awesome libnotify-bin libsecret-1-0 gnome-keyring \
@@ -1855,6 +1882,8 @@ build_hypr() {
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 xwayland \
          libxkbcommon0 libxkbcommon-x11-0 libinput10 \
          inotify-tools imagemagick \
+         psmisc procps util-linux playerctl bibata-cursor-theme \
+         tesseract-ocr tesseract-ocr-eng \
          bash jq
   apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
     >"$WORK/hypr-apt.log" 2>&1 \
@@ -2020,6 +2049,28 @@ build_hypr() {
     exit 1
   fi
 
+  # ---- Copper's defaults over the pinned tree ---------------------------
+  # The tree arrived from upstream with its defaults intact, which is the whole
+  # point of a pin -- and also why it still asks for Quickshell, Walker and
+  # awww. Editing the vendored files would turn every future bump into a merge
+  # argument, so hypr-defaults makes the few changes a Copper image actually
+  # needs. starthyprland runs the same script over a user's home, which means a
+  # tree from the ISO and a tree from the hypr-configs ingot payload get the
+  # same answers instead of two different flavours of "almost works".
+  local defaults="$TGT/usr/lib/copper/hypr-defaults.sh"
+  if [ ! -f "$defaults" ]; then
+    echo "hypr: $defaults is missing from the rootfs overlay" >&2
+    exit 1
+  fi
+  chmod 0755 "$defaults"
+  if ! sh "$defaults" "$TGT/usr/share/copper/hyprland-skel" \
+       >"$WORK/hypr-defaults.log" 2>&1; then
+    echo "hypr: hypr-defaults failed on the shipped configuration tree:" >&2
+    cat "$WORK/hypr-defaults.log" >&2 2>/dev/null || :
+    exit 1
+  fi
+  echo "  Copper defaults applied (waybar bar, rofi launcher, custom.lua)"
+
   # ---- the seat group ---------------------------------------------------
   # seatd's package postinst would create _seatd, and no postinst runs here.
   # copper-init starts seatd -g _seatd and the first-boot wizard puts the user
@@ -2033,12 +2084,15 @@ build_hypr() {
   fi
 
   # ---- gates ------------------------------------------------------------
-  # Every one of these missing means the session cannot start, and each is far
-  # clearer here than as a failed exec on a live tty.
+  # Every one of these missing means the session cannot start -- or starts and
+  # looks like it didn't -- and each is far clearer here than as a failed exec
+  # on a live tty.
   local seatd_bin=""
   for f in usr/bin/Hyprland usr/bin/hyprctl usr/bin/hyprpaper usr/bin/hypridle \
-           usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/swaync \
-           usr/bin/kitty usr/libexec/hyprpolkitagent \
+           usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/rofi \
+           usr/bin/swaync usr/bin/kitty usr/libexec/hyprpolkitagent \
+           usr/lib/copper/hypr-defaults.sh \
+           usr/share/copper/wallpapers/copper-default.png \
            etc/copper/hypr-apps \
            usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua; do
     if [ ! -e "$TGT/$f" ]; then
@@ -2095,7 +2149,9 @@ build_hypr() {
   power_links "$TGT"
 
   echo "  Hyprland session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
-  stamp_set "$WORK/hypr.stamp" "$SELF"
+  stamp_set "$WORK/hypr.stamp" "$SELF" \
+    "$ROOT/rootfs-overlay/usr/lib/copper/hypr-defaults.sh" \
+    "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"
 }
 
 # ---------------------------------------------------------------

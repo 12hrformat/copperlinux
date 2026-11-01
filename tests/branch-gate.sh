@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Eighteen gates: smoke.sh always; startxfce-gate.sh,
+# Nineteen gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
 # calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
-# starthyprland-gate.sh and plymouth-gate.sh do not -- ingot's install lands in
-# a scratch INGOT_ROOT and its repo is served on localhost, starthyprland's
-# compositor is a stub under a private home, and plymouth-gate.sh only reads
-# grub.cfg and copper-init.c -- so all three run unprivileged too.
+# starthyprland-gate.sh, hypr-defaults-gate.sh and plymouth-gate.sh do not --
+# ingot's install lands in a scratch INGOT_ROOT and its repo is served on
+# localhost, starthyprland's compositor is a stub under a private home,
+# hypr-defaults only writes into a scratch tree, and plymouth-gate.sh only reads
+# grub.cfg and copper-init.c -- so all four run unprivileged too.
 # kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
 # the shipped require_kernel_config() against synthetic configs rather than
 # building a kernel.
@@ -147,6 +148,23 @@ elif out=$(sh tests/starthyprland-gate.sh 2>&1); then
     record starthyprland-gate.sh ok "$n checks"
 else
     record starthyprland-gate.sh bad "a Hyprland launcher check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/hypr-defaults-gate.sh: the defaults over the pinned ML4W tree ---"
+# Unprivileged and self-contained. The vendored tree is upstream's, so its
+# defaults still name a full ML4W installation -- Quickshell, Walker, awww --
+# none of which this image carries. This gate proves the rewrite that makes the
+# bar, launcher and wallpaper behave, that a second run is a no-op, and that a
+# choice the user made is never quietly overwritten. It writes only into a
+# scratch tree, so there is nothing here to break.
+if out=$(sh tests/hypr-defaults-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record hypr-defaults-gate.sh ok "$n checks"
+else
+    record hypr-defaults-gate.sh bad "a Hyprland-defaults check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
 fi
 

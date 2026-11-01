@@ -56,7 +56,8 @@ jobs:
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
                    tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
-                   tests/starthyprland-gate.sh tests/plymouth-gate.sh \
+                   tests/starthyprland-gate.sh tests/hypr-defaults-gate.sh \
+                   tests/plymouth-gate.sh \
                    tests/systemd-gate.sh tests/systemd-gate-sabotage.sh \
                    tests/persist-sabotage.sh \
                    tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \

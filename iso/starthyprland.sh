@@ -79,6 +79,11 @@ UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
 APPS=${COPPER_HYPR_APPS:-/etc/copper/hypr-apps}
 INGOT=${COPPER_INGOT:-ingot}
 SUDO=${COPPER_SUDO-sudo}
+# The Copper defaults applied to a user's tree after seeding. The image build
+# runs the same script over the shipped skeleton, so a home seeded from the ISO
+# and one seeded from the hypr-configs ingot payload are made usable the same
+# way. Overridable only so the gate can point it at a scratch tree.
+DEFAULTS=${COPPER_HYPR_DEFAULTS:-/usr/lib/copper/hypr-defaults.sh}
 # Root needs no sudo, and the image may not even have it. "-" (not ":-") so an
 # empty COPPER_SUDO really does disable sudo instead of reviving the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
@@ -180,6 +185,8 @@ Environment, all optional:
   COPPER_INGOT       installer for the components  (default ingot)
   COPPER_SUDO        how to gain root for the install (default sudo; empty
                      means already root or never use it)
+  COPPER_HYPR_DEFAULTS  Copper's defaults for the ML4W tree
+                     (default /usr/lib/copper/hypr-defaults.sh)
   COPPER_DRM_DIR     where DRM nodes live        (default /dev/dri)
   COPPER_SEATD_SOCK  seatd's socket              (default /run/seatd.sock)
   COPPER_INPUT_SYS   where the input devices live (default /sys/class/input)
@@ -377,6 +384,29 @@ else
             say "  require()s; the shipped tree has them, and the session now does)"
         fi
     fi
+fi
+
+# ---- Copper's defaults over the ML4W tree -----------------------------
+# ML4W's tree is vendored exactly as upstream shipped it, which is a virtue
+# right up until the session starts and asks for Quickshell. Quickshell is not
+# here. Neither is Walker. awww is also a stranger. What is here: waybar, rofi,
+# hyprpaper. hypr-defaults makes the introductions, and it only touches a
+# setting that is still the ML4W default, so anyone who has already picked their
+# own bar or launcher keeps it.
+#
+# It runs on every start, not only after seeding, because the hypr-configs ingot
+# payload is the untouched upstream tree: a home filled from it arrives with
+# exactly the defaults that do not work. A missing script is not fatal -- an
+# older image without it still has a compositor -- but it earns a warning,
+# because the desktop will then come up with no bar and a launcher keybind that
+# does a very convincing impression of a dead key.
+if [ -f "$DEFAULTS" ]; then
+    if ! sh "$DEFAULTS" "$HOME" >/dev/null 2>&1; then
+        say "warning: could not apply Copper's Hyprland defaults ($DEFAULTS)"
+    fi
+else
+    say "warning: no hypr-defaults at $DEFAULTS; the bar and launcher will use"
+    say "  ML4W's Quickshell/walker defaults, which this image does not ship"
 fi
 
 # Components. The session is in the image; the apps on top of it are ingot
