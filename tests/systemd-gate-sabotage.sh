@@ -151,7 +151,7 @@ run_case "sbin/init not repointed to systemd" "$B" \
 
 # 5. A unit present but not wired into the target (a service that never starts).
 run_case "copper-seatd.service left unwired" "$B" \
-    'for u in copper-seatd.service copper-network.service; do' \
+    'for u in copper-seatd.service copper-network.service copper-plymouth-quit.service; do' \
     'for u in copper-network.service; do' \
     "wired copper.target.wants/copper-seatd.service"
 
@@ -470,7 +470,7 @@ run_case "the stage stops stamping on the dhcp helper" \
 #     start, and the verify filter treats "not executable" as host noise.
 run_case "the stage stops asserting sbin/udhcpc is in the tree" \
     "$B" \
-    'for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh; do' \
+    'for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth; do' \
     'for cmd in usr/bin/copper-dhcp bin/sh; do' \
     "FAIL.*asserts sbin/udhcpc is in the tree"
 
