@@ -984,13 +984,13 @@ build_rootfs() {
   fi
   mv -f "$new" "$old"
 
-  # The wifi stack was reverted out of the source, but a build cache only ever
-  # adds: a tree staged before the revert still holds copper-wifi, wpa_supplicant
-  # and the radio firmware, and the next ISO built on top of it shipped every
-  # one of them. That is exactly how copper-wifi came back in a downloaded
-  # image after the revert. Delete them by name here, every run, before any
-  # later stage can re-pack the tree; build_iso refuses to write a disc that
-  # still has them, so a missed path fails the build instead of the boot.
+  # The wifi stack got the axe upstream, but a build cache only ever adds: a
+  # tree staged before the revert still held copper-wifi, wpa_supplicant and the
+  # radio firmware, and the next ISO built on top of it shipped all of them.
+  # That's how copper-wifi snuck back into a downloaded image after the revert.
+  # Delete by name here, every run, before any later stage can re-pack the tree.
+  # build_iso refuses to write a disc that still has them, so a miss fails the
+  # build instead of the boot.
   local stale
   for stale in \
       usr/bin/copper-wifi \
@@ -2644,10 +2644,9 @@ build_systemd() {
   # added to the directory and just work.
   install -m 0644 "$ROOT/systemd"/*.service "$TGT/etc/systemd/system/"
   install -m 0644 "$ROOT/systemd"/*.target  "$TGT/etc/systemd/system/"
-  # The boot splash now has units of its own, and an owner: the daemon during
-  # sysinit, the quit hand-back before anything that draws on the console. The
-  # splash used to have no unit at all under systemd, which is exactly why it
-  # never drew.
+  # The splash now has units of its own, and an owner: daemon during sysinit,
+  # quit hand-back before anything that draws on the console. The splash used
+  # to have no unit at all under systemd, which is exactly why it never drew.
   ln -sf /etc/systemd/system/copper-plymouth.service \
          "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service"
   # The helpers are SCRIPTS, not units, and they are the files in this
@@ -2722,14 +2721,13 @@ build_systemd() {
   # ---- the spare virtual consoles get a login prompt -----------------------
   # Ctrl+Alt+F2/F3 and friends have to work on a Copper box, not just the
   # console the session lives on. The session's own unit (copper-console) owns
-  # tty1 -- it Conflicts= the stock getty there and runs the wizard/login shell
+  # tty1 -- Conflicts= the stock getty there and runs the wizard/login shell
   # instead -- but the spare VTs had no owner at all in this image: nothing
-  # enabled getty@ttyN instances, so switching there gave a VT with a blinking
-  # cursor and no process reading it: you could not type, and there was nothing
-  # to log in on. Enable the standard spare instances explicitly; enabling an
-  # instance of getty@ (a template) is the same operation systemctl enable does,
-  # and an instance systemd would have made itself does not stop it making the
-  # same one, so nothing is doubled up.
+  # enabled getty@ttyN, so switching there gave a VT with a blinking cursor and
+  # nobody reading it. Couldn't type, nothing to log in on. Enable the spares
+  # explicitly; enabling an instance of getty@ (a template) is the same op
+  # systemctl enable does, and systemd making one itself won't stop it making
+  # the same one, so nothing doubles up.
   local vt
   for vt in tty2 tty3 tty4 tty5 tty6; do
     ln -sf /lib/systemd/system/getty@.service \
@@ -3164,10 +3162,10 @@ build_iso() {
   echo "  iso: the image identifies itself as $(sed -n 's/^PRETTY_NAME=//p' "$TGT/etc/os-release" | head -n1)"
 
   # This image has no wireless stack: no copper-wifi, no wpa_supplicant, no
-  # radio firmware. build_rootfs deletes what a pre-revert cache restored;
-  # this is the last chance to notice that the deletion missed something,
-  # before a disc that says "no wifi" ships with it anyway. Checked by path
-  # and by name because the package layout differs between /lib and usr/lib.
+  # radio firmware. build_rootfs deletes what a pre-revert cache restored; this
+  # is the last chance to notice the deletion missed something, before a disc
+  # that says "no wifi" ships with it anyway. Checked by path and by name
+  # because the package layout differs between /lib and usr/lib.
   local wrelic
   wrelic=$( cd "$TGT" && find . \
       \( -name 'copper-wifi' -o -name 'wpa_supplicant*' -o -name 'wpa_cli' \

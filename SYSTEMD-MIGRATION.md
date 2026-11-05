@@ -626,8 +626,8 @@ same way the boot closed the sixth and the seventh.
   `XDG_RUNTIME_DIR`/`pam_systemd` real and retires `prepare_session_dirs`.
 - Plymouth: done under systemd in this phase: `copper-plymouth.service` owns
   the daemon during sysinit and `copper-plymouth-quit.service` hands the console
-  back before the wizard or the login shell draws (the Copper unit that was
-  once a "needs a Copper unit" note has landed).
+  back before the wizard or the login shell draws. (Yeah, that "needs a Copper
+  unit" note finally got its unit.)
 - First-boot contract: move the wizard's own questions onto journal-first
   logging (`systemctl status`, `journalctl`) instead of the console dialogue.
 - Image size: measure the real growth and decide.

@@ -145,9 +145,9 @@ else
         "no clamp in refresh_line(); snprintf's return is unbounded again"
 fi
 
-# 7. chaining: ';' always, '&&' only on success, '||' only on failure, and
-#    the operators split even with no spaces around them. A success-only
-#    branch on a failing command must stay silent, and vice versa.
+# 7. chaining: ';' always, '&&' on success, '||' on failure, and the operators
+#    split even with no spaces around them. A success-only branch on a failing
+#    command has to stay quiet, and vice versa.
 rm -f chain
 printf 'echo one > chain; echo two >> chain\ntrue && echo three >> chain\nfalse && echo WRONG >> chain\nfalse || echo four >> chain\ntrue || echo WRONG >> chain\necho five&&echo six >> chain\n' > in
 run < in
@@ -162,8 +162,8 @@ else
     ok "; && || chain in order and honour exit status"
 fi
 
-# 8. a missing command must say so and point at ingot. The old message named
-#    the command and stopped there, which on a fresh image is a dead end.
+# 8. a missing command has to say so and point at ingot. The old message named
+#    the command and stopped there -- on a fresh image that's a dead end.
 printf 'definitely-not-a-command\n' > in
 run < in
 if ! printf '%s' "$out" | grep -q 'definitely-not-a-command: not installed or command not found'; then

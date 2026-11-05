@@ -426,13 +426,13 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
             continue;
         }
         if (c == '#' && !inw) break;  /* a comment starts a line, not a word */
-        /* ; && || are operators, not words, and they are split out even when
-           the user types them without spaces ("cd /tmp&&ls"). A lone '&' is
-           left alone: this shell runs no background jobs, and swallowing it
+        /* ; && || are operators, not words, and they split out even when the
+           user types them with no spaces around them ("cd /tmp&&ls"). A lone
+           '&' is left alone -- this shell runs no background jobs, so eating it
            here would silently change what the line means. A quoted or
-           backslash-escaped operator never reaches this test -- the quote
-           branches consume their own text, and '\\;' is handled below, after
-           this point. */
+           backslash-escaped operator never reaches this test; the quote
+           branches eat their own text, and the '\\;' case is handled after this
+           point. */
         if (c == ';' || c == '|' || (c == '&' && src[1] == '&')) {
             if (inw) { PUTC('\0'); inw = 0; }
             if (n >= (int)(sizeof argv / sizeof *argv) - 1) {
@@ -625,11 +625,11 @@ static int status_of(int st) {
     return 128 + (WTERMSIG(st) & 0x7f);
 }
 
-/* execvp() has already failed. Say what happened in the image's own words.
-   The old one-line "command not found" was true and useless: on a live Copper
-   box the answer to almost every missing command is ingot, and the hint is the
-   difference between a dead end and a fix. A name with a slash is a path, not a
-   package, so it gets the plain message and no install suggestion. */
+/* execvp() already failed. The old one-line "command not found" was true and
+   useless: on a live Copper box the answer to almost every missing command is
+   ingot, and the hint is the difference between a dead end and a fix. A name
+   with a slash is a path, not a package, so it gets the plain message and no
+   install suggestion. */
 static void exec_failed(const char *name) {
     int e = errno;
     if (e == ENOENT || e == ENOTDIR) {
@@ -762,11 +762,11 @@ static int is_operator(const char *t) {
     return t && (!strcmp(t, ";") || !strcmp(t, "&&") || !strcmp(t, "||"));
 }
 
-/* Walk a tokenized line and run each pipeline according to the operator
-   before it. The token array survives the whole call, so parse_line can take
-   a slice of it directly: the redirect file names it stores point back into
-   argv, and nothing here moves or frees them. Returns the status of the last
-   pipeline that actually ran, which is what && and || test. */
+/* Walk a tokenized line, running each pipeline off the operator before it.
+   The token array survives the whole call, so parse_line can take a slice of
+   it directly: the redirect file names it stores point back into argv, and
+   nothing here moves or frees them. Returns the status of the last pipeline
+   that ran -- that's what && and || test. */
 static int run_line(char **argv, int n) {
     int status = 0;
     int start = 0;
@@ -781,7 +781,7 @@ static int run_line(char **argv, int n) {
                 fprintf(stderr, "copper-sh: syntax error near '%s'\n", argv[i]);
                 return 2;
             }
-            /* a trailing ';' is legal; a trailing && or || is not */
+            /* a trailing ';' is fine; a trailing && or || is not */
             if (start == n && n > 0 && is_operator(argv[n - 1]) &&
                 strcmp(argv[n - 1], ";")) {
                 fprintf(stderr, "copper-sh: syntax error: no command after '%s'\n",

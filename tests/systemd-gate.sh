@@ -494,11 +494,10 @@ do
     fi
 done
 
-# The boot splash has to have an OWNER under systemd: the daemon runs during
-# sysinit (before the first status line, before anything can scroll the splash
-# away), and the quit hand-back runs before the first thing that draws on the
-# console for real. Both have to be wired, and the ordering between them and the
-# console units has to be the hand-off direction.
+# The splash needs an owner under systemd: the daemon runs during sysinit (so
+# the first status line can't scroll the splash away), and the quit hand-back
+# runs before the console actually draws for real. Both wired, and the ordering
+# between them and the console units has to be the hand-off direction.
 if [ -L "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service" ]; then
     ok "wired sysinit.target.wants/copper-plymouth.service (splash starts at sysinit)"
 else
