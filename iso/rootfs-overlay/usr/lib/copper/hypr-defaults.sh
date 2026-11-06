@@ -38,8 +38,8 @@
 #   custom.lua    written only when absent. hyprland.lua require()s it when it
 #                 exists, which makes it the documented place for Copper's
 #                 additions: hyprpaper (baked) instead of awww/Quickshell (not),
-#                 and hyprpolkitagent started directly because there is no
-#                 systemd here to run its unit.
+#                 and hyprpolkitagent + xdg-desktop-portal-hyprland started
+#                 directly because there is no systemd here to run their units.
 #
 # Usage: hypr-defaults.sh <home-or-skel-root>
 #
@@ -134,9 +134,9 @@ if [ -f "$hypr/hyprpaper.conf" ] \
 fi
 
 # ---- custom.lua --------------------------------------------------------
-# hyprland.lua loads this when it exists, just before it finishes. Both
-# commands below are one-shot startup work, so the handler is the same event
-# ML4W's own conf/autostart.lua uses.
+# hyprland.lua loads this when it exists, just before it finishes. The commands
+# below are one-shot startup work, so the handler is the same event ML4W's own
+# conf/autostart.lua uses.
 #
 # hyprpaper reads ~/.config/hypr/hyprpaper.conf, which the tree already ships.
 # ML4W's autostart never launches it: its wallpaper path belongs to
@@ -168,6 +168,14 @@ hl.on("hyprland.start", function ()
     -- test keeps a missing binary from complaining on every single start.
     hl.exec_cmd("[ -x /usr/libexec/hyprpolkitagent ] && " ..
                 "exec /usr/libexec/hyprpolkitagent")
+
+    -- No systemd, so ML4W's user units cannot start the portal either. The
+    -- compositor's global shortcuts and screencopy read through it, and the
+    -- image stages xdg-desktop-portal-hyprland in the hypr stage -- so start
+    -- it here, the same way the agent is started. The -x guard keeps a machine
+    -- without it from logging a complaint on every single start.
+    hl.exec_cmd("[ -x /usr/bin/xdg-desktop-portal-hyprland ] && " ..
+                "exec /usr/bin/xdg-desktop-portal-hyprland")
 end)
 CUSTOM_LUA
     [ -s "$hypr/custom.lua" ] || exit 1

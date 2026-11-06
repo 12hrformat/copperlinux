@@ -12,7 +12,7 @@
 #     hyprpaper), and hyprpaper's placeholder path becomes the shipped picture
 #   * waybar-disabled gets out of the way at the same time, or the bar is "on"
 #     and invisible
-#   * custom.lua appears with the two startup commands this image needs
+#   * custom.lua appears with the startup commands this image needs
 #   * a second run changes nothing, because users meet it on every login
 #   * a choice the user made survives -- a different bar, a different launcher,
 #     a wallpaper they picked, a custom.lua they wrote, or a waybar-disabled
@@ -102,7 +102,8 @@ else
     bad "custom.lua is created" "missing or empty"
 fi
 
-for want in 'hl.on("hyprland.start"' 'hyprpaper' 'hyprpolkitagent'; do
+for want in 'hl.on("hyprland.start"' 'hyprpaper' 'hyprpolkitagent' \
+            'xdg-desktop-portal-hyprland'; do
     if grep -qF "$want" "$tree/.config/hypr/custom.lua" 2>/dev/null; then
         ok "custom.lua carries $want"
     else
