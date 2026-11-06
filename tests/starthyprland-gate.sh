@@ -790,6 +790,23 @@ eq "  exit code is 0" 0 "$rc"
 eq "  session type/desktop reach the compositor" \
    "wayland|Hyprland|Hyprland|Hyprland" "$(cat "$TMP/env.txt" 2>/dev/null)"
 
+# The bus is where D-Bus-activated services get their environment, and the
+# portal frontend is one. The identity therefore has to be set before dbus
+# starts, and pushed into an inherited bus's activation environment too.
+ident_line=$(grep -n '^XDG_SESSION_TYPE=wayland' "$SUT" | head -n1 | cut -d: -f1)
+bus_line=$(grep -n 'dbus-launch --sh-syntax' "$SUT" | head -n1 | cut -d: -f1)
+if [ -n "$ident_line" ] && [ -n "$bus_line" ] && [ "$ident_line" -lt "$bus_line" ]; then
+    ok "  the session identity is set before the bus starts"
+else
+    bad "  the session identity is set before the bus starts" \
+        "identity at ${ident_line:-?}, bus at ${bus_line:-?}"
+fi
+if grep -qF 'dbus-update-activation-environment XDG_SESSION_TYPE' "$SUT"; then
+    ok "  pushes the identity into the bus activation environment"
+else
+    bad "  pushes the identity into the bus activation environment" "no call found"
+fi
+
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
 echo

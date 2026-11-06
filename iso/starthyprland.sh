@@ -520,6 +520,21 @@ export XDG_RUNTIME_DIR
 say "runtime directory: $XDG_RUNTIME_DIR"
 mkdir -p /dev/shm 2>/dev/null || :
 
+# Who this session says it is. A compositor started from a bare tty has no
+# display manager to stamp the session, and the readers are not cosmetic:
+# xdg-desktop-portal chooses a backend by XDG_CURRENT_DESKTOP, so without it the
+# Hyprland portal is started and then ignored in favour of the GTK one (no
+# screencopy, no global shortcuts), and toolkits read XDG_SESSION_TYPE to pick
+# Wayland over X11. These describe the session this script is starting, so they
+# are set even if an outer shell carried something else. Set before the session
+# bus below: dbus-daemon is where D-Bus-activated services get their
+# environment, and the portal frontend is one of them.
+XDG_SESSION_TYPE=wayland
+XDG_CURRENT_DESKTOP=Hyprland
+XDG_SESSION_DESKTOP=Hyprland
+DESKTOP_SESSION=Hyprland
+export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
+
 # No package manager runs maintainer scripts on this image, so the caches a
 # postinst would have built are built here, once, when absent. Without the
 # font cache every program that asks fontconfig for a glyph walks the font
@@ -563,6 +578,17 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     fi
 fi
 
+# A bus started above already carries the session identity: this process had it
+# before dbus-daemon forked. A bus inherited from somewhere else may not, and
+# D-Bus-activated services (the portal frontend is the one that matters) read
+# the daemon's environment, not the caller's. Push the identity in when the tool
+# is there. No --systemd: there is no systemd to tell, and the bus is what
+# matters.
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+    dbus-update-activation-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP \
+        XDG_SESSION_DESKTOP DESKTOP_SESSION >/dev/null 2>&1 || :
+fi
+
 # The seat. Without logind, libseat talks to seatd, and seatd is PID 1's to
 # start -- a daemon needs root and this runs as the session user. Its socket
 # path is what libseat reads; make sure the variable points at the default
@@ -597,19 +623,6 @@ if [ "$soft" = 1 ]; then
     export WLR_RENDERER LIBGL_ALWAYS_SOFTWARE
     say "no render node; forcing software rendering (pixman)"
 fi
-
-# Who this session says it is. A compositor started from a bare tty has no
-# display manager to stamp the session, and the readers are not cosmetic:
-# xdg-desktop-portal chooses a backend by XDG_CURRENT_DESKTOP, so without it the
-# Hyprland portal is started and then ignored in favour of the GTK one (no
-# screencopy, no global shortcuts), and toolkits read XDG_SESSION_TYPE to pick
-# Wayland over X11. These describe the session this script is starting, so they
-# are set even if an outer shell carried something else.
-XDG_SESSION_TYPE=wayland
-XDG_CURRENT_DESKTOP=Hyprland
-XDG_SESSION_DESKTOP=Hyprland
-DESKTOP_SESSION=Hyprland
-export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
 
 # Hand the session over. Background first so the launch can be watched: a
 # compositor that dies in the first second -- no seat, no DRM master, a broken
