@@ -90,6 +90,10 @@ run_sut() {
     # case under test.
     SUT_INPUT_SYS=${SUT_INPUT_SYS:-$TMP/no-input}
     SUT_UDEV_DATA=${SUT_UDEV_DATA:-$TMP/no-udevdata}
+    # The compositor's control socket client. Defaults to empty, which lets the
+    # real default through; the cases below point it at a stub to answer the
+    # device query without a daemon that cannot run here.
+    SUT_HYPRCTL=${SUT_HYPRCTL:-}
     # stdin is /dev/null, so the launcher's interactive questions are never put
     # to a terminal here: every case below is deterministic whether or not the
     # person running the gate has one, and the pty case at the end drives the
@@ -103,6 +107,7 @@ run_sut() {
     COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
     COPPER_DRM_DIR="$SUT_DRM" COPPER_SEATD_SOCK="$SUT_SEATD" \
     COPPER_INPUT_SYS="$SUT_INPUT_SYS" COPPER_UDEV_DATA="$SUT_UDEV_DATA" \
+    COPPER_HYPRCTL="$SUT_HYPRCTL" \
     WAIT_TRIES="$tries" sh "$SUT" "$@" < /dev/null 2>&1
 }
 
@@ -647,6 +652,52 @@ else
     bad "  the script arrived executable" \
         "$(ls -l "$TMP/home/.config/ml4w/scripts/" 2>/dev/null | tr '\n' '|')"
 fi
+
+echo
+echo "=== case 26: compositor says it holds a keyboard and a pointer ==="
+setup_cfg_case
+cat > "$TMP/hyprctl" <<'STUBEOF'
+#!/bin/sh
+echo "     1:      type:keyboard"
+echo "     2:      type:pointer"
+STUBEOF
+chmod +x "$TMP/hyprctl"
+SUT_HYPRCTL="$TMP/hyprctl"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SUT_HYPRCTL=
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says the compositor sees a keyboard" "compositor sees a keyboard" "$out"
+has "  says the compositor sees a pointer" "compositor sees a pointer" "$out"
+hasnt "  does not report a keyboardless compositor" "compositor sees no keyboard" "$out"
+hasnt "  does not report a pointerless compositor" "compositor sees no pointer" "$out"
+
+echo
+echo "=== case 27: compositor holds a pointer but no keyboard ==="
+setup_cfg_case
+cat > "$TMP/hyprctl" <<'STUBEOF'
+#!/bin/sh
+echo "     1:      type:pointer"
+STUBEOF
+chmod +x "$TMP/hyprctl"
+SUT_HYPRCTL="$TMP/hyprctl"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SUT_HYPRCTL=
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says no keyboard" "compositor sees no keyboard" "$out"
+has "  says the pointer is there" "compositor sees a pointer" "$out"
+
+echo
+echo "=== case 28: no hyprctl in the image -> the probe degrades instead of dying ==="
+setup_cfg_case
+SUT_HYPRCTL="$TMP/no-hyprctl"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SUT_HYPRCTL=
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says no keyboard when the compositor could not be asked" "compositor sees no keyboard" "$out"
+has "  says no pointer when the compositor could not be asked" "compositor sees no pointer" "$out"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"

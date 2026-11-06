@@ -59,6 +59,10 @@
 set -u
 
 HYPRLAND=${COPPER_HYPRLAND:-/usr/bin/Hyprland}
+# The compositor's own control-socket client (Hyprland ships hyprctl), and the
+# instance socket it talks to. Both default to the real paths; overridable so the
+# gate can point the probe at a stub instead of a daemon it cannot run here.
+HYPRCTL=${COPPER_HYPRCTL:-/usr/bin/hyprctl}
 SKEL=${COPPER_HYPR_SKEL:-/usr/share/copper/hyprland-skel}
 SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/hyprland.log}
 WAIT_TRIES=${WAIT_TRIES:-100}
@@ -628,6 +632,35 @@ done
 
 if [ "$up" = 1 ]; then
     say "Hyprland is up"
+    # The compositor holding input is the last unproved half of the session, and
+    # the one nothing before this could vouch for: the seat was taken, the DRM
+    # master was granted, the config parsed, and still the pointer will not move
+    # and nothing types. Ask the compositor itself over the instance socket the
+    # wait loop found -- the same socket libinput came in through, so the answer
+    # is the compositor's own view of what it holds -- and name the half that came
+    # back empty. A missing half here means the session comes up and cannot be
+    # used at all, which is exactly the shape the seat fixes could not reach (bug
+    # 30).
+    hysock=$(find "$hyprrt" -name .socket.sock -print -quit 2>/dev/null)
+    devs=$("$HYPRCTL" -s "$hysock" devices 2>/dev/null || :)
+    kbd=no
+    ptr=no
+    case "$devs" in
+        *keyboard*) kbd=yes ;;
+    esac
+    case "$devs" in
+        *pointer*)  ptr=yes ;;
+    esac
+    if [ "$kbd" = yes ]; then
+        say "compositor sees a keyboard"
+    else
+        say "compositor sees no keyboard; the session will not type"
+    fi
+    if [ "$ptr" = yes ]; then
+        say "compositor sees a pointer"
+    else
+        say "compositor sees no pointer; the cursor will not move"
+    fi
 else
     # Alive but no socket seen. A compositor that is running and drawing is not
     # something to declare dead, so say what was not found and keep waiting
