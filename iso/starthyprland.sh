@@ -199,7 +199,8 @@ Environment, all optional:
                      /run/user/<uid>, made here when missing)
 
 Exit codes: 0 ok, 20 no Hyprland, 21 no session config, 22 no runtime,
-23 Hyprland exited while starting, 24 usage, 25 no way to ask about components.
+23 Hyprland exited while starting, 24 usage, 25 no way to ask about components,
+26 Hyprland started without a keyboard and was stopped to return to the shell.
 EOF
 }
 
@@ -746,6 +747,19 @@ if [ "$up" = 1 ]; then
         say "compositor sees a pointer"
     elif [ "$ptr" = no ]; then
         say "compositor sees no pointer; the cursor will not move"
+    fi
+
+    # Do not strand the user inside a compositor that cannot accept keyboard
+    # input. Copper has a shell on tty1, not gettys on every VT; leaving
+    # Hyprland alive after this positive failure makes Ctrl-Alt-F3 lead to a
+    # blank screen and leaves no usable way back. Stop it cleanly so this
+    # command returns to the tty1 shell. Unknown input status is not enough to
+    # stop a session: only do this when hyprctl answered and found no keyboard.
+    if [ "$kbd" = no ] && [ "$answered" = yes ]; then
+        say "stopping Hyprland because it has no keyboard; returning to the shell"
+        kill -TERM "$hypid" 2>/dev/null || :
+        wait "$hypid" 2>/dev/null || :
+        exit 26
     fi
 else
     # Alive but no socket seen. A compositor that is running and drawing is not

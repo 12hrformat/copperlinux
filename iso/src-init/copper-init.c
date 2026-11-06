@@ -1074,6 +1074,31 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
+/* A password-protected recovery login on a spare virtual terminal.
+
+   The normal Copper shell is an automatic session on tty1, but a graphical
+   session can leave the user needing another way back. Unlike spawn_tty(),
+   this child must stay root until BusyBox login verifies the account and
+   drops privileges itself. */
+static pid_t spawn_login_tty(int tty) {
+    pid_t pid = fork();
+    if (pid != 0) return pid;
+
+    setsid();
+    char dev[32];
+    snprintf(dev, sizeof dev, "/dev/tty%d", tty);
+    int fd = open(dev, O_RDWR);
+    if (fd < 0) _exit(1);
+    dup2(fd, 0);
+    dup2(fd, 1);
+    dup2(fd, 2);
+    acquire_ctty(fd);
+    if (fd > 2) close(fd);
+    execl("/bin/login", "login", (char *)NULL);
+    execl("/bin/busybox", "busybox", "login", (char *)NULL);
+    _exit(127);
+}
+
 /* Which reboot(2) action an incoming signal means.
 
    These are busybox init's signal names, chosen so the busybox halt /
@@ -1668,6 +1693,8 @@ static void run_session(void) {
         chose_hyprland("/etc/copper-desktop")
             ? "starthyprland for Hyprland (or startxfce for XFCE)"
             : "startxfce for XFCE (or starthyprland for Hyprland)");
+    if (!g_console_only)
+        say("Ctrl-Alt-F3 opens a password-protected login shell");
 
     /* The seat and the system bus, before the shell: Hyprland needs the seat
        the moment starthyprland runs, and the polkit agent that starts with the
@@ -1688,6 +1715,15 @@ static void run_session(void) {
        waitpid(-1) would return on that exit and start a second copper-sh on the
        same tty, so two shells fought over stdin -- typing came out garbled and
        the banner printed twice. */
+    /* tty3 is the recovery login for the busybox-init image. The systemd
+       image already owns tty3 through getty@tty3.service, so do not compete
+       with it when copper-init runs as that service. */
+    pid_t rescue = g_console_only ? -1 : spawn_login_tty(3);
+    if (rescue > 0)
+        say("login prompt ready on tty3 (Ctrl-Alt-F3)");
+    else if (!g_console_only)
+        say("could not start the tty3 login; the main shell remains on tty1");
+
     for (;;) {
         /* The libudev records, before the shell for the same reason the seat
            is: the compositor needs them the moment starthyprland runs. Every
@@ -1721,17 +1757,31 @@ static void run_session(void) {
         grant_devices(&g_session);
         prepare_session_dirs(&g_session);
         pid_t session = spawn_tty(1);
-        int wst;
-        /* EINTR, not a bare wait: the power handler in main() returns when
-           reboot(2) fails, and a returning handler leaves the syscall it
-           interrupted with EINTR. Read as "the session ended" that would
-           spawn a second copper-sh on the same tty -- the two-shells bug
-           described above -- so retry on EINTR and only treat a real reap as
-           the session's end.
-           updated by farcrowx, bug 33, iso/src-init/copper-init.c (main loop) */
-        if (session > 0)
-            while (waitpid(session, &wst, 0) < 0 && errno == EINTR)
-                ;
+        int session_status, rescue_status;
+        while (session > 0) {
+            pid_t got;
+            do {
+                got = waitpid(session, &session_status, WNOHANG);
+            } while (got < 0 && errno == EINTR);
+            if (got == session || (got < 0 && errno != ECHILD))
+                break;
+            if (got < 0 && errno == ECHILD)
+                break;
+
+            /* Keep a login prompt on tty3 after logout, just as a getty
+               respawns after a user exits their shell. */
+            if (rescue > 0) {
+                do {
+                    got = waitpid(rescue, &rescue_status, WNOHANG);
+                } while (got < 0 && errno == EINTR);
+                if (got == rescue || (got < 0 && errno == ECHILD)) {
+                    rescue = spawn_login_tty(3);
+                    if (rescue < 0)
+                        say("could not restart the tty3 login prompt");
+                }
+            }
+            usleep(100 * 1000);
+        }
     }
 }
 

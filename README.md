@@ -38,6 +38,11 @@ machine.
 | `starthyprland` | Starts Hyprland — the optional second desktop — on the tty. |
 | `starthyprland --check` | Reports what's installed and exits, starting nothing. |
 
+On the default Copper-init image, **Ctrl+Alt+F3** opens a password-protected
+login prompt on tty3. Use the account and password created during first boot;
+Ctrl+Alt+F1 returns to the main session. The systemd image provides login
+prompts on tty2 through tty6 as well.
+
 First boot also asks which desktop you want, `xfce` or `hyprland`; XFCE is the
 default and Hyprland is opt-in. Either launcher works from the prompt whatever
 you picked.
