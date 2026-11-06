@@ -88,10 +88,13 @@ run_sut() {
     # case under test.
     SUT_INPUT_SYS=${SUT_INPUT_SYS:-$TMP/no-input}
     SUT_UDEV_DATA=${SUT_UDEV_DATA:-$TMP/no-udevdata}
-    # The compositor's control socket client. Defaults to empty, which lets the
-    # real default through; the cases below point it at a stub to answer the
-    # device query without a daemon that cannot run here.
-    SUT_HYPRCTL=${SUT_HYPRCTL:-}
+    # The compositor's control socket client. Defaults to a path that does not
+    # exist: without that, a case that does not name a stub would silently use
+    # the host's /usr/bin/hyprctl, so the gate would pass or fail depending on
+    # what the machine running it happens to have installed. The cases below
+    # point it at a stub to answer the device query without a daemon that
+    # cannot run here.
+    SUT_HYPRCTL=${SUT_HYPRCTL:-$TMP/no-hyprctl}
     # stdin is /dev/null, so the launcher's interactive questions are never put
     # to a terminal here: every case below is deterministic whether or not the
     # person running the gate has one, and the pty case at the end drives the
@@ -119,6 +122,7 @@ run_sut_pty() { # run_sut_pty <answer-line>
         DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/dummy-bus" \
         COPPER_HYPRLAND="$TMP/Hyprland" COPPER_HYPR_SKEL="$TMP/skel" \
         COPPER_SESSIONLOG="$TMP/hyprland.log" COPPER_HYPR_APPS="$TMP/no-apps" \
+        COPPER_HYPRCTL="${SUT_HYPRCTL:-$TMP/no-hyprctl}" \
         COPPER_INGOT="$TMP/ingot" COPPER_SUDO="" COPPER_DRM_DIR="$TMP/dri" \
         COPPER_SEATD_SOCK="$TMP/no-seatd.sock" WAIT_TRIES=80 \
         script -qec "sh '$SUT'" /dev/null 2>&1
@@ -713,9 +717,11 @@ SUT_HYPRCTL="$TMP/hyprctl"
 out=$(run_sut "$TMP/Hyprland" 80); rc=$?
 SUT_HYPRCTL=
 SKEL=; INGOT_STUB=
-eq "  exit code is 0" 0 "$rc"
+eq "  exit code is 26 (keyboardless session stopped)" 26 "$rc"
 has "  says no keyboard" "compositor sees no keyboard" "$out"
 has "  says the pointer is there" "compositor sees a pointer" "$out"
+has "  returns to the shell instead of stranding the user" \
+    "stopping Hyprland because it has no keyboard" "$out"
 
 echo
 echo "=== case 28: no hyprctl in the image -> say it could not ask, not that input is absent ==="

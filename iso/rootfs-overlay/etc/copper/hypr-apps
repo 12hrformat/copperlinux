@@ -12,16 +12,22 @@
 # one -- a missing "image" component is a broken image, said out loud.
 #
 # The ingot payloads here are the same ones copper-ingot-repo carries (firefox,
-# mousepad, ristretto, xarchiver, xfce4-taskmanager). They are not Hyprland-
-# specific, but they work under Wayland/XWayland and are the ones that exist in
-# the repo. Heavier Hyprland-only apps (if any) are not forced: the desktop
-# should start with what is baked.
+# mousepad, ristretto, xarchiver, xfce4-taskmanager, plus Hyprland's optional
+# GUI utilities). They are not needed for the session to start, but they work
+# under Wayland and are the ones that exist in the repo. Each deb payload
+# carries its full closure, so declining the prompt costs nothing and accepting
+# it downloads a few hundred MB; the session starts either way.
 
 firefox             /usr/bin/firefox             ingot
 mousepad            /usr/bin/mousepad            ingot
 ristretto           /usr/bin/ristretto           ingot
 xarchiver           /usr/bin/xarchiver           ingot
 htop                /usr/bin/htop                ingot
+hyprsysteminfo      /usr/bin/hyprsysteminfo      ingot
+hyprlauncher        /usr/bin/hyprlauncher        ingot
+hyprshutdown        /usr/bin/hyprshutdown        ingot
+# hyprpwcenter is packaged but not offered: it is a PipeWire control centre, and
+# the hypr stage bakes no audio daemon, so it would install into an empty list.
 
 kitty               /usr/bin/kitty               image
 waybar              /usr/bin/waybar              image

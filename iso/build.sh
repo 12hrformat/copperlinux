@@ -1495,10 +1495,27 @@ build_gui() {
     -o APT::Sandbox::User=root \
     --download-only --no-install-recommends -y install "$@"
 
-  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  # Unpack each package on its own first, then merge. bash depends on
+  # base-files, and base-files ships the merged-usr compatibility links
+  # (/bin, /sbin, /lib, /lib64 -> /usr/...). Copper's tree is deliberately
+  # NOT merged-usr: those names are real directories holding busybox and the
+  # musl loader. Unpacking straight into one shared tree makes dpkg-deb fail
+  # with "Cannot create symlink ... File exists" as soon as base-files meets
+  # a directory another package created. Drop the links from the per-package
+  # tree and let Copper's real directories survive the merge; build_gui puts
+  # /lib64/ld-linux-x86-64.so.2 in place itself below.
+  local d="$WORK/gui-deb"
+  rm -rf "$STAGE" "$d"; mkdir -p "$STAGE" "$d"
   for deb in "$DG"/*.deb; do
-    dpkg-deb -x "$deb" "$STAGE"
+    rm -rf "$d"; mkdir -p "$d"
+    dpkg-deb -x "$deb" "$d"
+    local link
+    for link in bin sbin lib lib64; do
+      [ -L "$d/$link" ] && rm -f "$d/$link"
+    done
+    cp -a -n "$d"/. "$STAGE"/
   done
+  rm -rf "$d"
   n=$(ls "$DG"/*.deb | wc -l)
   echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
 
@@ -1519,12 +1536,13 @@ build_gui() {
   # Every glibc ELF names /lib64/ld-linux-x86-64.so.2 as its interpreter, and
   # the kernel resolves that exact path before a single instruction of the
   # program runs. The loader itself did arrive -- it sits under
-  # /usr/lib/x86_64-linux-gnu -- but the symlink that exposes it at /lib64
-  # ships in base-files, which nothing in this closure pulls, and the base
-  # image is musl-built, so it never had a /lib64 of its own. Without the
-  # file exactly there, execve fails with ENOENT and the shell blames the
-  # program instead of the loader: "not found", for a binary sitting right
-  # there under /usr. Copy it to the one path the kernel will look at.
+  # /usr/lib/x86_64-linux-gnu -- but the base image is musl-built, so it never
+  # had a /lib64 of its own. base-files would expose one as a merged-usr
+  # symlink, and that link is stripped above so it cannot replace Copper's
+  # layout. Without the file exactly there, execve fails with ENOENT and the
+  # shell blames the program instead of the loader: "not found", for a binary
+  # sitting right there under /usr. Copy it to the one path the kernel will
+  # look at.
   if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
     if [ -L "$TGT/lib64" ]; then rm -f "$TGT/lib64"; fi
     mkdir -p "$TGT/lib64"
@@ -2213,6 +2231,21 @@ build_hypr() {
     echo "hypr: polkit-agent-helper-1 is mode $(stat -c '%a' "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" 2>/dev/null || echo missing), not 4755; polkit authentication would fail" >&2
     exit 1
   fi
+
+  # The component manifest has to agree with the tree. Every "image" probe is a
+  # file starthyprland expects to be present; if the package that supplies it
+  # renames a binary, the launcher reports a broken image on every start instead
+  # of a boot failure here. "ingot" probes are absent on purpose, so skip those.
+  while read -r cname cprobe corigin; do
+    case "$cname" in ''|\#*) continue ;; esac
+    [ -n "$cprobe" ] || continue
+    [ "$corigin" = image ] || continue
+    if [ ! -e "$TGT/$cprobe" ]; then
+      echo "hypr: manifest lists '$cname' as image but $cprobe is missing" >&2
+      exit 1
+    fi
+  done < "$TGT/etc/copper/hypr-apps"
+
   # seatd has lived in both /usr/bin and /usr/sbin across releases, so find it
   # rather than name a directory. -print -quit: grep -q closes the pipe on its
   # first match and a second write would arrive as SIGPIPE, which under pipefail
