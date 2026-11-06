@@ -296,4 +296,3 @@ The stub `blkid` needs a mode where it answers per-disk, since case 1 and case
 - **Cyber-hygiene note:** the rule "empty or COPPER-labelled" is deliberately
   the narrowest one that removes the VM friction. Widening it to "any single
   non-boot disk" would be one line and would be wrong — see §6.
-
