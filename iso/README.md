@@ -25,7 +25,7 @@ A Copper ISO is a `grub-mkrescue` image. It boots like this:
    what makes a session survive a reboot.
 3. `copper-init` (our PID 1) mounts the basics, applies `/etc/hostname`,
    brings the network up, runs the OOBE wizard once (marker:
-   `/etc/copper-firstboot.done`), then keeps a `copper-sh` login shell
+   `/etc/copper-firstboot.done`), then keeps a Bash login shell
    alive on tty1.
 
 The overlay is why the session is writable even though the ISO is
@@ -75,6 +75,7 @@ wget https://example.com  # DNS and TLS together
 | Linux kernel       | 6.12.10  | kernel.org (pinned LTS; `KREL` overrides)     |
 | musl               | 1.2.5    | musl.libc.org                                 |
 | busybox            | 1.36.1   | busybox.net                                   |
+| Bash               | distro package | interactive login shell                    |
 | coreutils          | 9.5      | ftp.gnu.org                                   |
 | grep               | 3.11     | ftp.gnu.org                                   |
 | sed                | 4.9      | ftp.gnu.org                                   |
@@ -128,7 +129,7 @@ Two things in the build exist purely to catch trouble early:
    from CD (first boot device).
 7. Power on. Pick "Copper Linux" in GRUB. The live session boots, DHCP gets
    the box online while the wizard asks your name / username / hostname /
-   passwords / timezone, and then you land in `copper-sh`.
+   passwords / timezone, and then you land in Bash.
 
 Tip: the screen blanking timer can make the console look unresponsive —
 press Enter when prompted, it's waiting for input.

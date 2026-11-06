@@ -953,6 +953,13 @@ build_rootfs() {
   [ -x "$TGT/usr/bin/ingot" ] || {
     echo "rootfs: ingot is not executable"; exit 1; }
 
+  for f in etc/profile etc/bash.bashrc etc/skel/.bashrc; do
+    if [ ! -f "$TGT/$f" ]; then
+      echo "rootfs: missing Bash startup file /$f" >&2
+      exit 1
+    fi
+  done
+
   # A CR anywhere in this file makes busybox ash fail every line of it, and
   # the machine has no shell to fix that with. Cheap to prove here.
   if LC_ALL=C grep -q $'\r' "$TGT/usr/share/udhcpc/default.script"; then
@@ -1474,7 +1481,7 @@ build_gui() {
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme dmz-cursor-theme librsvg2-common openssl ca-certificates e2fsprogs \
-         libc-bin curl make nano \
+         libc-bin curl make nano bash \
          firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
          fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \
@@ -1500,7 +1507,8 @@ build_gui() {
   # Hyprland's fallback keymap and XFCE's pointer both depend on data files,
   # not just their shared libraries. Catch a missing package payload here so
   # the booted desktop cannot silently have no keymap or an invisible cursor.
-  for f in usr/share/X11/xkb/rules/evdev \
+  for f in usr/bin/bash \
+           usr/share/X11/xkb/rules/evdev \
            usr/share/icons/DMZ-White/cursors/left_ptr; do
     if [ ! -r "$TGT/$f" ]; then
       echo "gui: required keyboard/cursor data is missing: /$f" >&2

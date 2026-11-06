@@ -7,6 +7,10 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # musl treats it as UTF-8, so nothing has to run locale-gen at boot.
 export LANG=C.UTF-8
 
+if [ -n "${BASH_VERSION:-}" ] && [ -r /etc/bash.bashrc ]; then
+    . /etc/bash.bashrc
+fi
+
 if [ -n "$PS1" ]; then
     export PS1='copper:\w\$ '
 fi

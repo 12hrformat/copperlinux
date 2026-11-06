@@ -27,7 +27,7 @@ cmd_version() {
         fi
     fi
     echo "$version_name"
-    echo "  shell   /usr/bin/copper-sh"
+    echo "  shell   /usr/bin/bash"
 }
 
 cmd_help() {

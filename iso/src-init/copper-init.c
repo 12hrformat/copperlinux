@@ -3,7 +3,7 @@
  *
  * No systemd, no init scripts: this IS the init. It mounts the basics
  * (the initramfs already did most of it), applies the hostname, brings the
- * network up, runs the first-boot wizard once, then parks a copper-sh login
+ * network up, runs the first-boot wizard once, then parks a Bash login
  * shell on tty1 and keeps it alive.
  */
 
@@ -297,10 +297,10 @@ static void drop_to_session(const struct session *s) {
        SHELL, so the OpenCode installer's "set -u" killed the process on the
        next line and took the install with it -- the binary was written, then
        the script died before telling anyone where it was. The passwd entry is
-       the truth here (the wizard writes /usr/bin/copper-sh into it). */
+       the truth here (the wizard writes /usr/bin/bash into it). */
     struct passwd *pw = getpwuid(s->uid);
     setenv("SHELL", (pw && pw->pw_shell && *pw->pw_shell)
-                        ? pw->pw_shell : "/usr/bin/copper-sh", 1);
+                        ? pw->pw_shell : "/usr/bin/bash", 1);
 }
 
 /* Hand the X server's device nodes to the session user.
@@ -1070,6 +1070,7 @@ static pid_t spawn_tty(int tty) {
         if (fd > 2) close(fd);
     }
     drop_to_session(&g_session);
+    execl("/usr/bin/bash", "-bash", (char *)NULL);
     execl("/usr/bin/copper-sh", "copper-sh", (char *)NULL);
     execl("/bin/sh", "sh", (char *)NULL);
     _exit(1);
@@ -1706,7 +1707,7 @@ static void run_session(void) {
        on this specific child instead of on any child: udhcpc is our child too,
        and `udhcpc -b` leaves a short-lived parent behind when it daemonises.
 
-       waitpid(-1) would return on that exit and start a second copper-sh on the
+       waitpid(-1) would return on that exit and start a second Bash shell on the
        same tty, so two shells fought over stdin -- typing came out garbled and
        the banner printed twice. */
     /* tty3 is the recovery login for the busybox-init image. The systemd

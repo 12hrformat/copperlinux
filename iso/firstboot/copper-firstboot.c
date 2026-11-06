@@ -502,7 +502,7 @@ static int create_user_direct(const char *user) {
 
     p = fopen("/etc/passwd", "a");
     if (!p) return 1;
-    fprintf(p, "%s:x:%d:%d:%s:%s:/usr/bin/copper-sh\n",
+    fprintf(p, "%s:x:%d:%d:%s:%s:/usr/bin/bash\n",
             user, uid, uid, gecos, home);
     fclose(p);
 
@@ -913,7 +913,7 @@ static void screen_done(const char *name) {
         char l1[256], l2[256], l3[256];
         snprintf(l1, sizeof l1, "%*sDone -- welcome, %s.", BOX_PAD, "", name);
         snprintf(l2, sizeof l2, "%*sCopper is yours.", BOX_PAD, "");
-        snprintf(l3, sizeof l3, "%*sType 'help' to see the builtins.",
+        snprintf(l3, sizeof l3, "%*sType 'copper help' for Copper commands.",
                  BOX_PAD, "");
         box_line(l1, w, r++);
         box_line(l2, w, r++);
@@ -921,7 +921,7 @@ static void screen_done(const char *name) {
     }
     box_rule(w, r);
     msleep(2600);
-    /* Hand the screen over clean: copper-sh prints its own banner next, and
+    /* Hand the screen over clean: Bash prints its prompt next, and
        two banners stacked in 25 rows looks like a mistake. */
     clr();
 }
@@ -1441,7 +1441,7 @@ int main(void) {
     run("/bin/busybox hostname %s", host);
     draw_progress(1);
 
-    /* The named user, with copper-sh as their login shell.
+    /* The named user, with Bash as their login shell.
 
        Three things about this command, all of them found by running it against
        the busybox that actually ships in the ISO rather than by reading docs:
@@ -1459,7 +1459,7 @@ int main(void) {
             is unambiguous and does what the wizard wants: the wizard sets both
             passwords itself with chpasswd a few lines further down.
 
-       -s /usr/bin/copper-sh   The login shell. Nothing logs in yet -- init
+       -s /usr/bin/bash   The login shell. Nothing logs in yet -- init
             goes straight to a shell -- but it is what makes the account a
             Copper account rather than a generic one.
 
@@ -1472,7 +1472,7 @@ int main(void) {
     char why[1024] = "";
     if (run_capture(why, sizeof why,
                     "/bin/busybox adduser --disabled-password -G %s "
-                    "-h /home/%s -s /usr/bin/copper-sh %s",
+                    "-h /home/%s -s /usr/bin/bash %s",
                     user, user, user) != 0) {
         printf("(adduser failed, writing the account files directly)\n");
         if (why[0]) printf("  busybox said: %s\n", why);
@@ -1481,6 +1481,9 @@ int main(void) {
             return 1;
         }
     }
+    run_quiet("/bin/busybox cp -a /etc/skel/.bashrc /home/%s/.bashrc", user);
+    run_quiet("/bin/busybox chown %s:%s /home/%s/.bashrc", user, user, user);
+
     /* _seatd is for the Hyprland session: seatd runs as root and the session
        user reaches its socket by group membership, not by being root
        (copper-init starts it as `seatd -g _seatd`; the group is created by the
