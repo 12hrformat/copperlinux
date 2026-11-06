@@ -2129,12 +2129,24 @@ build_hypr() {
   for f in usr/bin/Hyprland usr/bin/hyprctl usr/bin/hyprpaper usr/bin/hypridle \
            usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/rofi \
            usr/bin/swaync usr/bin/kitty usr/libexec/hyprpolkitagent \
+           usr/libexec/xdg-desktop-portal-hyprland \
            usr/lib/copper/hypr-defaults.sh \
            usr/share/copper/wallpapers/copper-default.png \
            etc/copper/hypr-apps \
            usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua; do
     if [ ! -e "$TGT/$f" ]; then
       echo "hypr: $f did not arrive from the packages" >&2
+      exit 1
+    fi
+  done
+  # custom.lua starts the agent and the portal only when its `[ -x ]` guard
+  # passes. A file that exists but is not executable is a guard that silently
+  # skips the piece, which is how the portal's real path (/usr/libexec, not
+  # /usr/bin) went unnoticed until a boot. Check what the guard checks.
+  for f in usr/libexec/hyprpolkitagent \
+           usr/libexec/xdg-desktop-portal-hyprland; do
+    if [ ! -x "$TGT/$f" ]; then
+      echo "hypr: $f is not executable; custom.lua's guard would skip it" >&2
       exit 1
     fi
   done
