@@ -642,15 +642,31 @@ if [ "$up" = 1 ]; then
     # used at all, which is exactly the shape the seat fixes could not reach (bug
     # 30).
     hysock=$(find "$hyprrt" -name .socket.sock -print -quit 2>/dev/null)
-    devs=$("$HYPRCTL" -s "$hysock" devices 2>/dev/null || :)
+    # Ask, and keep asking for a bounded while: the instance socket shows up
+    # when the compositor starts and device enumeration can trail it by a beat,
+    # and one sample taken at the wrong moment reads as "no input" on a session
+    # that is perfectly alive. Same bound and same shape as the wait above, so a
+    # compositor that never answers the question still gets its verdict in
+    # bounded time, and a compositor that answers gets its answer.
     kbd=no
     ptr=no
-    case "$devs" in
-        *keyboard*) kbd=yes ;;
-    esac
-    case "$devs" in
-        *pointer*)  ptr=yes ;;
-    esac
+    polled=0
+    while [ "$polled" -lt 30 ]; do
+        devs=$("$HYPRCTL" -s "$hysock" devices 2>/dev/null || :)
+        kbd=no
+        ptr=no
+        case "$devs" in
+            *keyboard*) kbd=yes ;;
+        esac
+        case "$devs" in
+            *pointer*)  ptr=yes ;;
+        esac
+        if [ "$kbd" = yes ] && [ "$ptr" = yes ]; then
+            break
+        fi
+        polled=$((polled + 1))
+        sleep 0.1 2>/dev/null || sleep 1
+    done
     if [ "$kbd" = yes ]; then
         say "compositor sees a keyboard"
     else
