@@ -82,11 +82,14 @@ touches the VT. `--check` and `--help` exit before this and never touch it.
 `iso/boot/grub.cfg`'s main entry carries:
 
 ```
-quiet splash plymouth.ignore-udev console=ttyS0,115200 console=tty0
+splash plymouth.ignore-udev console=ttyS0,115200 console=tty0
 ```
 
 - `splash` turns the animation on. Remove it (or add `nosplash`, or
   `plymouth.enable=0`) to boot with a plain text console.
+- no `quiet`: Esc hands the splash over to the boot messages, and `quiet` would
+  leave those messages with nothing to show. The entry deliberately lets the
+  kernel log through underneath the splash.
 - `plymouth.ignore-udev` is required. This image runs no udev, and without the
   switch `plymouthd` waits on a device enumeration that never happens and the
   screen stays black. With it, `plymouthd` drives DRM or the framebuffer
