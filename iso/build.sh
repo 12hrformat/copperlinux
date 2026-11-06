@@ -1323,7 +1323,7 @@ assert_shell_scripts_parse() {
 # (on most merged-usr systems the first is a symlink to the second), and a
 # reader may open either, so both are written and then compared.
 copper_identity() {
-  local rel id
+  local rel id pkg_manager pkg_home
   for rel in etc/os-release etc/lsb-release etc/issue etc/issue.net etc/legal; do
     if [ ! -f "$ROOT/rootfs-overlay/$rel" ]; then
       echo "gui: iso/rootfs-overlay/$rel is missing; without it the image" >&2
@@ -1339,6 +1339,12 @@ copper_identity() {
   if [ "$id" != copper ]; then
     echo "gui: /etc/os-release does not say ID=copper (it says '${id:-nothing}')" >&2
     echo "     base-files' copy won again; see copper_identity above" >&2
+    exit 1
+  fi
+  pkg_manager=$(sed -n 's/^PKG_MANAGER="\{0,1\}\([^"[:space:]]*\)"\{0,1\}$/\1/p' "$TGT/etc/os-release" | head -n1)
+  pkg_home=$(sed -n 's|^PKG_MANAGER_HOME_URL="\{0,1\}\([^"[:space:]]*\)"\{0,1\}$|\1|p' "$TGT/etc/os-release" | head -n1)
+  if [ "$pkg_manager" != Ingot ] || [ "$pkg_home" != https://github.com/12hrformat/copper-ingot-repo ]; then
+    echo "gui: /etc/os-release does not identify Ingot as Copper's package manager" >&2
     exit 1
   fi
   if ! cmp -s "$TGT/etc/os-release" "$TGT/usr/lib/os-release"; then
