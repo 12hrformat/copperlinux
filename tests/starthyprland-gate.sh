@@ -772,6 +772,24 @@ eq "  exit code is 0" 0 "$rc"
 has "  sees the keyboard" "compositor sees a keyboard" "$out"
 has "  sees the pointer" "compositor sees a pointer" "$out"
 
+echo
+echo "=== case 31: the compositor is told which session it is ==="
+setup_cfg_case
+cat > "$TMP/Hyprland" <<EOF
+#!/bin/sh
+printf '%s|%s|%s|%s\n' "\$XDG_SESSION_TYPE" "\$XDG_CURRENT_DESKTOP" "\$XDG_SESSION_DESKTOP" "\$DESKTOP_SESSION" > "$TMP/env.txt"
+mkdir -p "\$XDG_RUNTIME_DIR/hypr/gate"
+: > "\$XDG_RUNTIME_DIR/hypr/gate/.socket.sock"
+sleep 1
+exit 0
+EOF
+chmod +x "$TMP/Hyprland"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+eq "  session type/desktop reach the compositor" \
+   "wayland|Hyprland|Hyprland|Hyprland" "$(cat "$TMP/env.txt" 2>/dev/null)"
+
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
 echo

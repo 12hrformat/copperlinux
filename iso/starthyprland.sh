@@ -598,6 +598,19 @@ if [ "$soft" = 1 ]; then
     say "no render node; forcing software rendering (pixman)"
 fi
 
+# Who this session says it is. A compositor started from a bare tty has no
+# display manager to stamp the session, and the readers are not cosmetic:
+# xdg-desktop-portal chooses a backend by XDG_CURRENT_DESKTOP, so without it the
+# Hyprland portal is started and then ignored in favour of the GTK one (no
+# screencopy, no global shortcuts), and toolkits read XDG_SESSION_TYPE to pick
+# Wayland over X11. These describe the session this script is starting, so they
+# are set even if an outer shell carried something else.
+XDG_SESSION_TYPE=wayland
+XDG_CURRENT_DESKTOP=Hyprland
+XDG_SESSION_DESKTOP=Hyprland
+DESKTOP_SESSION=Hyprland
+export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
+
 # Hand the session over. Background first so the launch can be watched: a
 # compositor that dies in the first second -- no seat, no DRM master, a broken
 # config -- prints its reason and exits, and a launcher that only waited on the
