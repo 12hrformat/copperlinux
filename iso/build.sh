@@ -1665,6 +1665,7 @@ build_gui() {
   local f
   for f in usr/bin/Xorg usr/bin/startxfce4 usr/bin/xkbcomp \
            usr/bin/dbus-daemon usr/bin/dbus-launch \
+           usr/share/dbus-1/system.conf \
            lib64/ld-linux-x86-64.so.2 \
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do
     if [ ! -e "$TGT/$f" ]; then
@@ -1938,6 +1939,27 @@ build_hypr() {
 
   copy_stage_in "$STAGE" "$TGT"
 
+  # polkitd's package postinst makes its authentication helper setuid root and
+  # hands two state directories to the polkitd group. No postinst runs in this
+  # build, so what arrived from the .deb is a plain 0755 root:root helper. The
+  # session agent collects the password and then runs that helper to verify it;
+  # without the setuid bit the verification cannot read the shadow database,
+  # and every prompt answers "wrong password" no matter what was typed. Mirror
+  # the postinst here, and again in the iso stage after the ownership sweep.
+  if [ -e "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" ]; then
+    chown 0:0 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
+    chmod 4755 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
+  fi
+  local polkit_gid d
+  polkit_gid=$(awk -F: '$1 == "polkitd" { print $3 }' "$TGT/etc/group" 2>/dev/null | head -n1)
+  if [ -n "$polkit_gid" ]; then
+    for d in etc/polkit-1/rules.d var/lib/polkit-1; do
+      [ -d "$TGT/$d" ] || continue
+      chown "0:$polkit_gid" "$TGT/$d"
+      chmod 0750 "$TGT/$d"
+    done
+  fi
+
   # Shared libraries are the one thing copied from a PACKAGE that must be
   # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
   # version win, which is right for /etc, for the busybox applet links and for
@@ -2130,6 +2152,11 @@ build_hypr() {
            usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/rofi \
            usr/bin/swaync usr/bin/kitty usr/libexec/hyprpolkitagent \
            usr/libexec/xdg-desktop-portal-hyprland \
+           usr/lib/polkit-1/polkitd \
+           usr/lib/polkit-1/polkit-agent-helper-1 \
+           usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service \
+           usr/share/dbus-1/system.d/org.freedesktop.PolicyKit1.conf \
+           etc/polkit-1/rules.d/10-copper-wheel.rules \
            usr/lib/copper/hypr-defaults.sh \
            usr/share/copper/wallpapers/copper-default.png \
            etc/copper/hypr-apps \
@@ -2150,6 +2177,13 @@ build_hypr() {
       exit 1
     fi
   done
+  # The helper is only useful setuid. Check the bit, not the file: the mode
+  # is what the agent's password check needs, and a cache restore is the
+  # easiest way to lose it.
+  if [ "$(stat -c '%a' "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" 2>/dev/null)" != "4755" ]; then
+    echo "hypr: polkit-agent-helper-1 is mode $(stat -c '%a' "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" 2>/dev/null || echo missing), not 4755; polkit authentication would fail" >&2
+    exit 1
+  fi
   # seatd has lived in both /usr/bin and /usr/sbin across releases, so find it
   # rather than name a directory. -print -quit: grep -q closes the pipe on its
   # first match and a second write would arrive as SIGPIPE, which under pipefail
@@ -3145,6 +3179,14 @@ build_iso() {
   # not among them -- but re-assert it anyway: build_sudo set this bit earlier
   # and a silent drop here is exactly the failure this function exists to stop.
   chmod 4755 "$TGT/usr/bin/sudo"
+  # polkit's authentication helper, for exactly the same reason. build_hypr
+  # sets its bit too, but a cache restore can strip it and the hypr stage can
+  # then skip on its stamp. Re-assert here, before the tree hash, then read it
+  # back off the disc below.
+  if [ -e "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" ]; then
+    chown 0:0 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
+    chmod 4755 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
+  fi
   #
   # /etc/shadow ships 0644 in git and is copied with cp -a, so it was readable
   # by everyone even before this change. Root reads it directly (setuid sudo
@@ -3288,6 +3330,26 @@ WRAP
   # packaging drops a mode, a link resolves elsewhere), and the only witness
   # that cannot be wrong about what ships is the thing that ships.
   echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
+
+  # polkit's helper, same readback discipline. Missing is allowed only when the
+  # image has no polkitd at all; present-but-not-setuid is the failure that
+  # turns every authentication prompt into "wrong password".
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/lib/polkit-1/polkit-agent-helper-1 "$ex/polkit-helper" \
+      >/dev/null 2>&1 || true
+  if [ -e "$ex/polkit-helper" ]; then
+    pm=$(stat -c '%a' "$ex/polkit-helper" 2>/dev/null || echo missing)
+    if [ "$pm" != "4755" ]; then
+      echo "iso: /usr/lib/polkit-1/polkit-agent-helper-1 in the ISO is mode $pm, not 4755" >&2
+      echo "iso: polkit could not verify any password; every prompt would fail" >&2
+      exit 1
+    fi
+    if [ "$(stat -c '%u:%g' "$ex/polkit-helper" 2>/dev/null)" != "0:0" ]; then
+      echo "iso: polkit-agent-helper-1 in the ISO is owned by $(stat -c '%u:%g' "$ex/polkit-helper" 2>/dev/null), not 0:0" >&2
+      exit 1
+    fi
+    echo "  iso: polkit-agent-helper-1 is 4755 root:root, on the disc"
+  fi
 
   # The power commands, read back off the disc -- bug 29 in one check. PATH
   # (copper-init's setenv, /etc/profile) and sudo's secure_path all search
