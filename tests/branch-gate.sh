@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Nineteen gates: smoke.sh always; startxfce-gate.sh,
+# Twenty-one gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
 # calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
-# starthyprland-gate.sh, hypr-defaults-gate.sh and plymouth-gate.sh do not --
+# starthyprland-gate.sh, hypr-defaults-gate.sh, plymouth-gate.sh and
+# polkit-gate.sh do not --
 # ingot's install lands in a scratch INGOT_ROOT and its repo is served on
 # localhost, starthyprland's compositor is a stub under a private home,
-# hypr-defaults only writes into a scratch tree, and plymouth-gate.sh only reads
-# grub.cfg and copper-init.c -- so all four run unprivileged too.
+# hypr-defaults only writes into a scratch tree, plymouth-gate.sh only reads
+# grub.cfg and copper-init.c, and polkit-gate.sh only reads the init source, the
+# overlay and build.sh -- so all five run unprivileged too.
 # kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
 # the shipped require_kernel_config() against synthetic configs rather than
 # building a kernel.
@@ -403,6 +405,20 @@ if out=$(sh tests/firstboot-eof-gate.sh 2>&1); then
     esac
 else
     record firstboot-eof-gate.sh bad "the wizard looped or mis-reported on EOF"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/polkit-gate.sh: the bus, the daemon and the agent can meet ---"
+# Unprivileged and static: the text of copper-init.c, the overlay's account
+# files and polkit rule, and the build's setuid/read-back pins. What it cannot
+# prove is that dbus-daemon actually binds -- that is a boot, bug 45.
+if out=$(sh tests/polkit-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record polkit-gate.sh ok "$n checks"
+else
+    record polkit-gate.sh bad "a system-bus/polkit check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
 fi
 

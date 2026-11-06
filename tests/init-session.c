@@ -136,6 +136,16 @@ static int record_names_type(const char *dbdir, const char *dev) {
     return strstr(buf, "E:ID_INPUT_") != NULL;
 }
 
+/* Read a whole file into buf, or "" when it is not there. */
+static void slurp(const char *path, char *buf, size_t bufsz) {
+    buf[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    size_t r = fread(buf, 1, bufsz - 1, f);
+    buf[r] = '\0';
+    fclose(f);
+}
+
 int main(void) {
     /* An account that certainly exists, so the test never touches the account
        database. The wizard's own user cannot be used: it only exists after a
@@ -214,6 +224,98 @@ int main(void) {
         fails++;
     }
     unlink(marker);
+
+    /* --------------------------------- the system bus's service accounts */
+    /* dbus-daemon --system refuses to start without the messagebus account
+       its system.conf names, and polkitd drops to polkitd. The package
+       postinsts that would create them do not run in this build, so
+       copper-init writes the records itself on images that lost them. The
+       writer takes the database paths as arguments, which is what lets this
+       run against a fixture instead of the host's /etc. */
+    char adir[] = "/tmp/copper-init-acct-XXXXXX";
+    if (!mkdtemp(adir)) {
+        printf("FAIL mkdtemp for the account fixture: %s\n", strerror(errno));
+        fails++;
+    } else {
+        char pwp[320], grp[320], before[1024], after[1024];
+        snprintf(pwp, sizeof pwp, "%s/passwd", adir);
+        snprintf(grp, sizeof grp, "%s/group", adir);
+
+        /* A bare database: both records are missing and must be made. */
+        put(pwp, "root:x:0:0:root:/root:/bin/sh\n");
+        put(grp, "root:x:0:\n");
+        int r = ensure_system_user(pwp, grp, "messagebus",
+                                   "/nonexistent", "/bin/false");
+        int gid = -1, uid = -1, pgid = -1;
+        slurp(pwp, after, sizeof after);
+        char *line = strstr(after, "messagebus:x:");
+        if (line)
+            sscanf(line, "messagebus:x:%d:%d:", &uid, &pgid);
+        if (r == 1 && file_group_id(grp, "messagebus", &gid) && line
+            && uid == gid && pgid == gid && uid > 100 && uid < 1000
+            && strstr(line, ":/nonexistent:/bin/false") != NULL) {
+            printf("ok   a missing service account is created with its own group\n");
+        } else {
+            printf("FAIL a missing service account is created with its own "
+                   "group (rc %d, uid %d, gid %d, passwd gid %d)\n",
+                   r, uid, gid, pgid);
+            fails++;
+        }
+
+        /* Calling it again must change nothing. Boot runs this every time. */
+        slurp(pwp, before, sizeof before);
+        r = ensure_system_user(pwp, grp, "messagebus",
+                               "/nonexistent", "/bin/false");
+        slurp(pwp, after, sizeof after);
+        if (r == 0 && strcmp(before, after) == 0) {
+            printf("ok   an existing service account is left byte-for-byte alone\n");
+        } else {
+            printf("FAIL an existing service account is left byte-for-byte "
+                   "alone (rc %d)\n", r);
+            fails++;
+        }
+
+        /* An account whose group arrived from a package keeps that gid. The
+           passwd record is the missing half here, and the gid must not be
+           reallocated: polkit's rules.d ownership is pinned to it. */
+        put(pwp, "root:x:0:0:root:/root:/bin/sh\n");
+        put(grp, "root:x:0:\npolkitd:x:4242:\n");
+        r = ensure_system_user(pwp, grp, "polkitd",
+                               "/nonexistent", "/bin/false");
+        slurp(pwp, after, sizeof after);
+        line = strstr(after, "polkitd:x:");
+        pgid = -1;
+        if (line)
+            sscanf(line, "polkitd:x:%*d:%d:", &pgid);
+        if (r == 1 && pgid == 4242
+            && file_group_id(grp, "polkitd", &gid) && gid == 4242) {
+            printf("ok   an existing group's gid is reused, not reallocated\n");
+        } else {
+            printf("FAIL an existing group's gid is reused, not reallocated "
+                   "(rc %d, passwd gid %d, group gid %d)\n", r, pgid, gid);
+            fails++;
+        }
+
+        /* Ids already in either file are never handed out twice. */
+        put(pwp, "root:x:0:0:root:/root:/bin/sh\nfoo:x:999:999::/:/bin/false\n");
+        put(grp, "root:x:0:\nfoo:x:999:\n");
+        r = ensure_system_user(pwp, grp, "messagebus",
+                               "/nonexistent", "/bin/false");
+        gid = uid = -1;
+        slurp(pwp, after, sizeof after);
+        line = strstr(after, "messagebus:x:");
+        if (line)
+            sscanf(line, "messagebus:x:%d:%d:", &uid, &pgid);
+        if (r == 1 && uid < 999 && gid < 999 && uid == pgid) {
+            printf("ok   a service account never takes an id already in use\n");
+        } else {
+            printf("FAIL a service account never takes an id already in use "
+                   "(rc %d, uid %d, gid %d)\n", r, uid, gid);
+            fails++;
+        }
+
+        rmtree(adir);
+    }
 
     /* -------------------------------------------------- the actual drop */
     if (s.ok) {
