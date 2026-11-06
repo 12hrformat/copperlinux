@@ -35,7 +35,6 @@
 #
 # Root only (the gate chroots). Run: sudo tests/systemd-gate-sabotage.sh
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 
 set -u
 

@@ -33,7 +33,6 @@
 # a toolchain), it checks the agreement between the .config the kernel writes and
 # the list the build asserts.
 #
-# handcrafted by 12hrformat (bug 46: a VMware guest with no disk to offer)
 #
 # Run: bash tests/kernel-gate.sh   (no root needed)
 

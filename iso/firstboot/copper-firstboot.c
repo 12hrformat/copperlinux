@@ -32,7 +32,6 @@ static void banner(void) {
     printf("\n===================================================\n");
     printf("         Welcome to Copper Linux\n");
     printf("===================================================\n");
-    printf("Made by farcrowx and 12hrformat\n");
     printf("A couple of questions and you're in. This is a live\n");
     printf("session: it runs from the ISO, and at the end you can\n");
     printf("hand it a spare disk so your files are kept.\n\n");

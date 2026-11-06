@@ -14,6 +14,5 @@
 # of its own beyond what it inherits, and inheriting the normal shutdown
 # ordering is what makes `systemctl isolate` and a clean poweroff behave.
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper session target (wizard, console, seat, network)

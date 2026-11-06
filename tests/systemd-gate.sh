@@ -37,7 +37,6 @@
 #
 # Root only (it chroots). Run: sudo tests/systemd-gate.sh
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 
 set -u
 

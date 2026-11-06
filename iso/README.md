@@ -1,7 +1,5 @@
 # Copper Linux — build internals
 
-> made by farcrowx
-
 Everything under `iso/` contributes to a fully from-source Linux distro:
 
 ```

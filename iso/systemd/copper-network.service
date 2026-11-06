@@ -26,7 +26,6 @@
 # to have settled the interfaces, which is what makes "the first real
 # interface" a stable answer.
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper DHCP client (busybox udhcpc)
 # No Documentation= here, and that is a decision rather than an omission.

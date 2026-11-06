@@ -24,7 +24,6 @@
 # loop keeps the same process (and the same session) across a logout, the
 # outer restart is what happens if the process is what died.
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper console (login shell on tty1)
 # The wizard has to have finished before there is anything to log in AS, and

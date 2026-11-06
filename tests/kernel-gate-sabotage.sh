@@ -18,7 +18,6 @@
 #
 # No root needed. Run: bash tests/kernel-gate-sabotage.sh
 #
-# handcrafted by 12hrformat (bug 46: a VMware guest with no disk to offer)
 
 set -u
 

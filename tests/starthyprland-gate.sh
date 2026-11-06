@@ -1,8 +1,6 @@
 #!/bin/sh
 # Prove starthyprland does the right thing, and fails the right way.
 #
-# handcrafted by dragon
-#
 # Hyprland is a Wayland compositor: there is no second process to hand a display
 # to, so the launcher's whole job is the preparation around the compositor --
 # seed the config, make the runtime directory, start the session bus, notice that

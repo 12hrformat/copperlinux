@@ -21,7 +21,6 @@
 # copper-init.c always searched both directories; the unit now does too, and
 # names the real path in the failure message instead of a plausible one.
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper seat daemon (seatd)
 # No Documentation= here, for the same reason copper-network.service has none:

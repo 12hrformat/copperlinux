@@ -27,7 +27,6 @@
 # HOW it is ordered is the whole trick, and getting it wrong is not a degraded
 # boot but no boot at all -- see the cycle written out under [Unit] below.
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper console clear (erase the kernel's boot text)
 DefaultDependencies=no

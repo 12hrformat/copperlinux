@@ -18,7 +18,6 @@
 # service's stdin, which IS the tty below. StandardInput=tty pins stdin at
 # /dev/tty1 and TTYPath= makes that the controlling tty for the unit.
 #
-# handcrafted by 12hrformat (SYSTEMD-MIGRATION.md, phase 1)
 [Unit]
 Description=Copper first-boot wizard
 ConditionPathExists=!/etc/copper-firstboot.done

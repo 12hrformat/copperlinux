@@ -513,7 +513,6 @@ else
     # because the builtin's own redirects are set up in order -- `>` first,
     # and it fails before `2>/dev/null` is ever applied, which is why the
     # error was leaking to the console too.
-    # updated by 12hrformat, bug 44, iso/startxfce.sh (the xorg.conf probe)
     xorgconf2=${COPPER_XORGCONF_FALLBACK:-/tmp/xorg.conf}
     cfg=
     for cand in "$xorgconf" "$xorgconf2"; do

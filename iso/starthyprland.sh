@@ -1,8 +1,6 @@
 #!/bin/sh
 # starthyprland -- start Hyprland on the tty.
 #
-# handcrafted by dragon
-#
 # The compositor and its session tools are in the image: the hypr stage bakes
 # them from the cppiber PPA. The apps on top -- browsers, editors, media, the
 # extra themes -- are ingot packages, and before anything starts this asks

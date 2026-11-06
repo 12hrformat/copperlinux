@@ -297,13 +297,3 @@ The stub `blkid` needs a mode where it answers per-disk, since case 1 and case
   the narrowest one that removes the VM friction. Widening it to "any single
   non-boot disk" would be one line and would be wrong — see §6.
 
----
-
-handcrafted by 12hrformat (persistence: claim a disk we already own, without
-asking)
-
-<!--
-Updated-files convention: a file that already exists and is being fixed gets
-"updated by <name>, <the bug>, <the line where the bug was>". This document is
-new, so it takes the handcrafted line above.
--->

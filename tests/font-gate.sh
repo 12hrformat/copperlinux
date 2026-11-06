@@ -37,7 +37,6 @@
 # number must be rejected, and a copy with one glyph removed must be reported
 # as missing that glyph.
 #
-# handcrafted by 12hrformat (bug 55: a console of question marks)
 #
 # Ten kilobytes of public-domain font, one afternoon of "why is every dash a
 # question mark", and the kernel still cannot fall back per glyph. Worth it.

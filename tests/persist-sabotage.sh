@@ -12,7 +12,6 @@
 #
 # Root only (the gate uses a mount namespace). Run: sudo tests/persist-sabotage.sh
 #
-# handcrafted by 12hrformat (PERSISTENCE.md; claim a disk we already own)
 #
 # NOTE: unlike tests/systemd-gate-sabotage.sh, this copies ONLY the source file
 # it sabotages, and points tests/persist.sh at it with PERSIST_SRC. The gate
