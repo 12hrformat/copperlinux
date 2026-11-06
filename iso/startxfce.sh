@@ -55,6 +55,14 @@ XSOCKDIR=${XSOCKDIR:-/tmp/.X11-unix}
 DISPLAY_NUM=${DISPLAY_NUM:-0}
 WAIT_TRIES=${WAIT_TRIES:-100}
 
+# Give Xorg and every GTK client a real, installed cursor theme. Some cursor
+# themes are only inherited by the Xfce settings daemon after it starts, while
+# Xcursor clients can look up their theme before that point, so set both the
+# system-wide xfconf default (xsettings.xml) and the process environment.
+XCURSOR_THEME=${XCURSOR_THEME:-DMZ-White}
+XCURSOR_SIZE=${XCURSOR_SIZE:-24}
+export XCURSOR_THEME XCURSOR_SIZE
+
 # The component manifest and the installer it drives. startxfce only offers
 # components; it does not hardcode which ones.
 APPS=${COPPER_XFCE_APPS:-/etc/copper/xfce-apps}

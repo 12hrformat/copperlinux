@@ -124,4 +124,5 @@ say "$ifname is up, asking DHCP for an address"
 
 # exec, so this process IS udhcpc: the unit tracks the client, and a signal
 # to the unit reaches the client rather than a shell wrapper.
-exec /sbin/udhcpc -i "$ifname" -b -p "/run/udhcpc.$ifname.pid"
+exec /sbin/udhcpc -i "$ifname" -s /usr/share/udhcpc/default.script \
+    -b -p "/run/udhcpc.$ifname.pid"

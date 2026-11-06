@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A visible cursor theme for fresh XFCE sessions. User preferences in
+     ~/.config/xfce4/xfconf take precedence over this system default. -->
+<channel name="xsettings" version="1.0">
+  <property name="Gtk" type="empty">
+    <property name="CursorThemeName" type="string" value="DMZ-White"/>
+    <property name="CursorThemeSize" type="int" value="24"/>
+  </property>
+</channel>

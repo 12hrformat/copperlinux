@@ -42,14 +42,16 @@ Nobody has logged in yet, but the machine should already be reachable, so
 - finds the first interface in `/sys/class/net` that isn't `lo`, waiting a
   couple of seconds for a cold one to turn up
 - raises it with `SIOCSIFFLAGS` directly, so init needs no helper binary
-- execs `/sbin/udhcpc -b`, which keeps asking in the background and never
-  holds up the boot
+- execs `/sbin/udhcpc -s /usr/share/udhcpc/default.script -b`, explicitly
+  selecting Copper's lease script instead of relying on BusyBox's compiled-in
+  default path; the client keeps asking in the background and never holds up
+  the boot
 
 `udhcpc` calls `usr/share/udhcpc/default.script` on every lease change; that
 script assigns the address, installs the default route, and writes
-`/etc/resolv.conf` with the nameservers the server offered followed by the
-image's fallback resolvers (`1.1.1.1` and `9.9.9.9`). That way a broken DNS
-server advertised by a gateway does not remove the fallback. It turns the
+`/etc/resolv.conf` with public resolvers (`1.1.1.1` and `9.9.9.9`) before any
+nameservers the DHCP server offered. This keeps a gateway that answers with a
+false "name not found" from preventing public package lookup. It turns the
 netmask DHCP hands over into a prefix length, guessing /24 when a server
 leaves it out — installing a /32 instead would push every packet through the
 gateway. If a lease turns up without any nameservers, the fallback resolver

@@ -536,6 +536,15 @@ XDG_SESSION_DESKTOP=Hyprland
 DESKTOP_SESSION=Hyprland
 export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
 
+# libxkbcommon uses these as its fallback when the config does not provide a
+# keyboard layout. Set an explicit installed rules tree and US layout so a
+# missing inherited desktop setting cannot leave an enumerated keyboard
+# without a usable keymap. A caller can still select another layout through
+# the environment or the Hyprland configuration.
+XKB_CONFIG_ROOT=${XKB_CONFIG_ROOT:-/usr/share/X11/xkb}
+XKB_DEFAULT_LAYOUT=${XKB_DEFAULT_LAYOUT:-us}
+export XKB_CONFIG_ROOT XKB_DEFAULT_LAYOUT
+
 # No package manager runs maintainer scripts on this image, so the caches a
 # postinst would have built are built here, once, when absent. Without the
 # font cache every program that asks fontconfig for a glyph walks the font

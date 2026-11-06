@@ -185,7 +185,8 @@ static void start_dhcp(const char *ifname) {
     snprintf(pidfile, sizeof pidfile, "/run/udhcpc.%s.pid", ifname);
     /* god please kill me: fork, then hope the lease script finds its own way
        to ip(8). If it does not, the machine boots offline and says nothing. */
-    execl("/sbin/udhcpc", "udhcpc", "-i", ifname, "-b", "-p", pidfile,
+    execl("/sbin/udhcpc", "udhcpc", "-i", ifname,
+          "-s", "/usr/share/udhcpc/default.script", "-b", "-p", pidfile,
           (char *)NULL);
     _exit(127);
 }
@@ -1074,28 +1075,21 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
-/* A password-protected recovery login on a spare virtual terminal.
+/* A getty on a spare virtual terminal.
 
-   The normal Copper shell is an automatic session on tty1, but a graphical
-   session can leave the user needing another way back. Unlike spawn_tty(),
-   this child must stay root until BusyBox login verifies the account and
-   drops privileges itself. */
-static pid_t spawn_login_tty(int tty) {
+   Let BusyBox getty own the terminal setup and login cycle. Invoking login
+   directly can leave a VT without getty's line setup and respawn behavior. */
+static pid_t spawn_getty(int tty) {
     pid_t pid = fork();
     if (pid != 0) return pid;
 
     setsid();
-    char dev[32];
-    snprintf(dev, sizeof dev, "/dev/tty%d", tty);
-    int fd = open(dev, O_RDWR);
-    if (fd < 0) _exit(1);
-    dup2(fd, 0);
-    dup2(fd, 1);
-    dup2(fd, 2);
-    acquire_ctty(fd);
-    if (fd > 2) close(fd);
-    execl("/bin/login", "login", (char *)NULL);
-    execl("/bin/busybox", "busybox", "login", (char *)NULL);
+    char name[16];
+    snprintf(name, sizeof name, "tty%d", tty);
+    execl("/sbin/getty", "getty", "-L", "38400", name, "linux",
+          (char *)NULL);
+    execl("/bin/busybox", "busybox", "getty", "-L", "38400", name,
+          "linux", (char *)NULL);
     _exit(127);
 }
 
@@ -1718,9 +1712,9 @@ static void run_session(void) {
     /* tty3 is the recovery login for the busybox-init image. The systemd
        image already owns tty3 through getty@tty3.service, so do not compete
        with it when copper-init runs as that service. */
-    pid_t rescue = g_console_only ? -1 : spawn_login_tty(3);
+    pid_t rescue = g_console_only ? -1 : spawn_getty(3);
     if (rescue > 0)
-        say("login prompt ready on tty3 (Ctrl-Alt-F3)");
+        say("getty running on tty3 (Ctrl-Alt-F3 for a login prompt)");
     else if (!g_console_only)
         say("could not start the tty3 login; the main shell remains on tty1");
 
@@ -1775,7 +1769,7 @@ static void run_session(void) {
                     got = waitpid(rescue, &rescue_status, WNOHANG);
                 } while (got < 0 && errno == EINTR);
                 if (got == rescue || (got < 0 && errno == ECHILD)) {
-                    rescue = spawn_login_tty(3);
+                    rescue = spawn_getty(3);
                     if (rescue < 0)
                         say("could not restart the tty3 login prompt");
                 }

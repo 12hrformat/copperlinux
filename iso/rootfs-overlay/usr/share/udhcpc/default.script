@@ -4,7 +4,7 @@
 # default.script — what udhcpc runs every time the lease changes state.
 # Same job as busybox's examples/udhcp/simple.script: take the address the
 # server offered us, point the default route at its router, and write
-# resolv.conf with its nameservers followed by the image's fallback resolvers.
+# resolv.conf with public resolvers first and the DHCP-provided resolvers after.
 #
 # udhcpc hands us these in the environment:
 #   interface ip subnet mask broadcast router dns domain lease
@@ -116,20 +116,21 @@ bound|renew)
     tmp="$RESOLV_CONF.copper.$$"
     : > "$tmp"
     [ -n "$domain" ] && echo "search $domain" >> "$tmp"
-    for ns in $dns; do
-        say "nameserver $ns"
-        echo "nameserver $ns" >> "$tmp"
-    done
     if [ -s "$tmp" ]; then
-        # Keep the image's public resolvers after the DHCP-provided ones.
-        # Some gateways advertise a resolver that is reachable only on the
-        # local network (or is simply broken); replacing our fallback entirely
-        # makes every hostname lookup fail even when the machine has a route.
+        # Public packages live on the internet, so query public DNS first.
+        # A DHCP resolver that answers NXDOMAIN is considered a successful DNS
+        # response and libc will not try later servers; putting it first can
+        # therefore defeat a reachable public fallback. If outbound DNS is
+        # blocked, timeouts fall through to the DHCP resolver below.
         for ns in 1.1.1.1 9.9.9.9; do
-            case " $dns " in
+            say "nameserver $ns"
+            echo "nameserver $ns" >> "$tmp"
+        done
+        for ns in $dns; do
+            case " 1.1.1.1 9.9.9.9 " in
                 *" $ns "*) ;;
                 *)
-                    say "fallback nameserver $ns"
+                    say "DHCP nameserver $ns"
                     echo "nameserver $ns" >> "$tmp"
                     ;;
             esac

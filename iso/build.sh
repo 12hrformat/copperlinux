@@ -204,7 +204,7 @@ require_kernel_config() {
       VT VGA_CONSOLE UNIX98_PTYS \
       EXT4_FS BLK_DEV_SD ATA ATA_PIIX BLK_DEV_NVME \
       VIRTIO_PCI VIRTIO_BLK \
-      NET NETDEVICES INET PACKET UNIX E1000 E1000E VIRTIO_NET ; do
+      NET NETDEVICES INET PACKET UNIX E1000 E1000E VMXNET3 VIRTIO_NET ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -527,7 +527,7 @@ require_bb_config() {
       WGET FEATURE_WGET_HTTPS FEATURE_WGET_OPENSSL NSLOOKUP \
       MOUNT UMOUNT SWITCH_ROOT HOSTNAME \
       BLKID FEATURE_BLKID_TYPE GREP \
-      ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP LOGIN \
+      ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP GETTY LOGIN \
       CHPASSWD FEATURE_SHADOWPASSWDS SETFONT ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
@@ -557,6 +557,7 @@ build_busybox() {
     set_bb_config CHPASSWD
     set_bb_config PASSWD
     set_bb_config LOGIN
+    set_bb_config GETTY
     set_bb_config SU
     set_bb_config MOUNT
     set_bb_config UMOUNT
@@ -592,6 +593,9 @@ build_busybox() {
     make CONFIG_PREFIX="$TGT" install
   popd >/dev/null
   [ -x "$TGT/bin/busybox" ] || { echo "busybox build failed"; exit 1; }
+  [ -x "$TGT/sbin/getty" ] && [ -x "$TGT/bin/login" ] || {
+    echo "busybox: tty3 recovery needs the getty and login applet links" >&2
+    exit 1; }
   stamp_set "$WORK/busybox.stamp" "$SELF"
 }
 
@@ -1463,7 +1467,7 @@ build_gui() {
   # lacks.
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
-         adwaita-icon-theme librsvg2-common openssl ca-certificates e2fsprogs \
+         adwaita-icon-theme dmz-cursor-theme librsvg2-common openssl ca-certificates e2fsprogs \
          libc-bin curl make nano \
          firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
@@ -1486,6 +1490,17 @@ build_gui() {
   echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
 
   copy_stage_in "$STAGE" "$TGT"
+
+  # Hyprland's fallback keymap and XFCE's pointer both depend on data files,
+  # not just their shared libraries. Catch a missing package payload here so
+  # the booted desktop cannot silently have no keymap or an invisible cursor.
+  for f in usr/share/X11/xkb/rules/evdev \
+           usr/share/icons/DMZ-White/cursors/left_ptr; do
+    if [ ! -r "$TGT/$f" ]; then
+      echo "gui: required keyboard/cursor data is missing: /$f" >&2
+      exit 1
+    fi
+  done
 
   # Every glibc ELF names /lib64/ld-linux-x86-64.so.2 as its interpreter, and
   # the kernel resolves that exact path before a single instruction of the
