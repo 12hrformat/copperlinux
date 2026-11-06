@@ -1311,6 +1311,226 @@ static void splash_stop(void) {
    see console_main(). */
 static int g_console_only = 0;
 
+/* ---- the system bus -------------------------------------------------------
+
+   polkit, udisks2 and power-profiles-daemon are D-Bus services: each owns a
+   name on the *system* bus and the bus starts it on first use. There is no
+   systemd here to start that bus, so nothing did. hyprpolkitagent still came
+   up (custom.lua starts it), tried to reach org.freedesktop.PolicyKit1, and
+   got nothing; udisks and the power daemon were equally unreachable. The
+   visible result is that every privileged action -- mount a stick, change the
+   power profile -- has no agent to ask, so the desktop silently refuses.
+
+   This starts the daemon systemd's dbus.service would have started. Two
+   things the package postinsts would normally arrange have to be arranged
+   here, because build.sh unpacks the .debs without running those scripts:
+
+     - the messagebus account. dbus-daemon --system reads
+       /usr/share/dbus-1/system.conf, which names <user>messagebus</user>,
+       and refuses to start when that account is missing.
+
+     - the polkitd account. polkitd is D-Bus-activated and drops to this
+       account; without it, the activation itself fails.
+
+   Both accounts are shipped in the rootfs overlay as well. The creation here
+   is the repair path for a tree that lost them -- the same reason start_seatd
+   can recreate _seatd -- and the file paths are arguments so
+   tests/init-session.c can prove the grammar against a fixture instead of the
+   host's /etc. */
+
+/* Does the account database at `path` already have `name`? A prefix match is
+   not enough: "polkitd-old" starts with "polkitd". */
+static int file_has_name(const char *path, const char *name) {
+    char line[512];
+    size_t n = strlen(name);
+    FILE *f = fopen(path, "r");
+
+    if (!f)
+        return 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, name, n) == 0 && line[n] == ':') {
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+/* Is `id` the uid or gid of any record in `path`? The third colon-separated
+   field of both /etc/passwd and /etc/group is the one that matters. */
+static int file_has_id(const char *path, int id) {
+    char line[512];
+    FILE *f = fopen(path, "r");
+
+    if (!f)
+        return 0;
+    while (fgets(line, sizeof line, f)) {
+        char *p = strchr(line, ':');
+        if (!p)
+            continue;
+        p = strchr(p + 1, ':');
+        if (p && atoi(p + 1) == id) {
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+/* The gid of `name` in `path`, if it is there. */
+static int file_group_id(const char *path, const char *name, int *gid) {
+    char line[512];
+    size_t n = strlen(name);
+    FILE *f = fopen(path, "r");
+
+    if (!f)
+        return 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, name, n) == 0 && line[n] == ':') {
+            char *p = strchr(line, ':');
+            p = p ? strchr(p + 1, ':') : NULL;
+            if (p) {
+                *gid = atoi(p + 1);
+                fclose(f);
+                return 1;
+            }
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
+/* The lowest free system id from 999 down, checking both files when given. */
+static int next_free_id(const char *a, const char *b) {
+    int id = 999;
+
+    while (id > 100) {
+        if (!file_has_id(a, id) && (!b || !file_has_id(b, id)))
+            return id;
+        id--;
+    }
+    return -1;
+}
+
+/* Make a system account and its own group.
+
+   Returns 1 when it wrote the records, 0 when the account was already there,
+   -1 when it could not write. Callers treat -1 as a reason to skip the
+   service, not a reason to abort the boot. */
+static int ensure_system_user(const char *passwd_path, const char *group_path,
+                              const char *name, const char *home,
+                              const char *shell) {
+    int gid = -1, uid, id;
+    FILE *f;
+
+    if (file_has_name(passwd_path, name))
+        return 0;
+
+    if (!file_group_id(group_path, name, &gid)) {
+        id = next_free_id(passwd_path, group_path);
+        if (id < 0) {
+            errno = ERANGE;
+            return -1;
+        }
+        f = fopen(group_path, "a");
+        if (!f)
+            return -1;
+        if (fprintf(f, "%s:x:%d:\n", name, id) < 0 || fclose(f) != 0)
+            return -1;
+        gid = id;
+        uid = id;
+    } else {
+        uid = next_free_id(passwd_path, NULL);
+        if (uid < 0) {
+            errno = ERANGE;
+            return -1;
+        }
+    }
+
+    f = fopen(passwd_path, "a");
+    if (!f)
+        return -1;
+    if (fprintf(f, "%s:x:%d:%d:%s:%s:%s\n", name, uid, gid, name, home,
+                shell) < 0 || fclose(f) != 0)
+        return -1;
+    return 1;
+}
+
+static void start_system_bus(void) {
+    static const char *paths[] = { "/usr/bin/dbus-daemon",
+                                   "/bin/dbus-daemon", NULL };
+    static const char sock[] = "/run/dbus/system_bus_socket";
+    const char *exe = NULL;
+    int made = 0, rc, st;
+    pid_t pid;
+
+    for (int i = 0; paths[i]; i++) {
+        if (access(paths[i], X_OK) == 0) {
+            exe = paths[i];
+            break;
+        }
+    }
+    if (!exe)
+        return;                 /* no D-Bus in this image */
+
+    if (access(sock, F_OK) == 0) {
+        say("system bus: already running");
+        return;
+    }
+    if (access("/usr/share/dbus-1/system.conf", R_OK) != 0) {
+        say("system bus: no /usr/share/dbus-1/system.conf, so polkit and removable media stay unavailable");
+        return;
+    }
+
+    rc = ensure_system_user("/etc/passwd", "/etc/group", "messagebus",
+                            "/nonexistent", "/bin/false");
+    if (rc < 0) {
+        say("system bus: could not add the messagebus account: %s",
+            strerror(errno));
+        return;
+    }
+    made |= rc > 0;
+    rc = ensure_system_user("/etc/passwd", "/etc/group", "polkitd",
+                            "/nonexistent", "/bin/false");
+    if (rc < 0) {
+        /* The bus runs without this one; only the polkit daemon needs it,
+           and a bus with no authority is still better than no bus at all. */
+        say("polkit: could not add the polkitd account: %s", strerror(errno));
+    } else {
+        made |= rc > 0;
+    }
+
+    if (mkdir("/run/dbus", 0755) != 0 && errno != EEXIST) {
+        say("system bus: could not make /run/dbus: %s", strerror(errno));
+        return;
+    }
+
+    pid = fork();
+    if (pid < 0) {
+        say("system bus: could not fork dbus-daemon: %s", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        execl(exe, "dbus-daemon", "--system", "--fork", (char *)NULL);
+        _exit(127);
+    }
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
+        ;
+    /* A beat for the socket to bind. The user still has to type a desktop
+       name, so a slower bus is not a reason to block the boot on it. */
+    usleep(200 * 1000);
+
+    if (access(sock, F_OK) == 0) {
+        say("system bus: up%s", made ? " (created the missing service accounts)"
+                                      : "");
+    } else {
+        say("system bus: dbus-daemon left no socket, so polkit and removable media stay unavailable");
+    }
+}
+
+
 /* Give the console a font that can draw what the tools print.
 
    The kernel console is one bitmap font and zero fallback: a codepoint whose
@@ -1449,13 +1669,17 @@ static void run_session(void) {
             ? "starthyprland for Hyprland (or startxfce for XFCE)"
             : "startxfce for XFCE (or starthyprland for Hyprland)");
 
-    /* The seat, before the shell: Hyprland needs it the moment starthyprland
-       runs, and starting it here means the user never waits on it. Under
-       --console there is a unit for that (copper-seatd.service) and it is
-       ordered before this service, so starting a second seatd here would only
-       be a second process failing to bind the same socket. */
-    if (!g_console_only)
+    /* The seat and the system bus, before the shell: Hyprland needs the seat
+       the moment starthyprland runs, and the polkit agent that starts with the
+       compositor needs the bus. Starting them here means the user never waits
+       on either. Under --console there are units for both
+       (copper-seatd.service and systemd's own dbus.service) ordered before
+       this service, so starting a second copy here would only be a second
+       process failing to bind the same socket. */
+    if (!g_console_only) {
+        start_system_bus();
         start_seatd();
+    }
 
     /* Exactly one session at a time. Keep the pid so the reaper below can wait
        on this specific child instead of on any child: udhcpc is our child too,
