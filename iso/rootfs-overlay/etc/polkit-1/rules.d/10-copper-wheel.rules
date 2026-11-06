@@ -1,0 +1,18 @@
+// Copper's admin group is wheel, not sudo or admin.
+//
+// The first-boot wizard puts the session user in wheel, and the shipped
+// sudoers is the line that grants wheel root through sudo. polkit does not
+// read sudoers: its stock rules (49-ubuntu-admin, 50-default from polkitd)
+// name unix-group:sudo and unix-group:admin, neither of which exists here.
+// Without this file polkit treats the only real account as a non-admin and
+// every auth_admin action -- mount a removable drive, change the power
+// profile, add a network connection -- prompts for the root password, which
+// is locked on a live image. The prompt then cannot be satisfied at all.
+//
+// Rules are read in filename order and the first admin rule that returns a
+// non-empty list wins, so the 10- prefix deliberately runs before Ubuntu's
+// 49- and 50-. Referencing the group by name keeps it correct even if the
+// build allocates wheel a different gid.
+polkit.addAdminRule(function(action, subject) {
+    return ["unix-group:wheel"];
+});
