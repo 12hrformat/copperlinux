@@ -103,13 +103,23 @@ else
 fi
 
 for want in 'hl.on("hyprland.start"' 'hyprpaper' 'hyprpolkitagent' \
-            'xdg-desktop-portal-hyprland'; do
+            '/usr/libexec/xdg-desktop-portal-hyprland'; do
     if grep -qF "$want" "$tree/.config/hypr/custom.lua" 2>/dev/null; then
         ok "custom.lua carries $want"
     else
         bad "custom.lua carries $want" "$(cat "$tree/.config/hypr/custom.lua" 2>/dev/null)"
     fi
 done
+
+# The portal package puts the daemon in /usr/libexec; /usr/bin holds only the
+# share picker. A guard on /usr/bin would never fire and the portal would never
+# start, so the exact exec path is part of the contract, not a detail.
+if grep -qF '/usr/bin/xdg-desktop-portal-hyprland' "$tree/.config/hypr/custom.lua" 2>/dev/null; then
+    bad "custom.lua does not point the portal at the empty /usr/bin path" \
+        "$(cat "$tree/.config/hypr/custom.lua" 2>/dev/null)"
+else
+    ok "custom.lua does not point the portal at the empty /usr/bin path"
+fi
 
 # The loader in hyprland.lua require()s this exact name. Spelling it
 # differently here would be a file nothing ever reads.

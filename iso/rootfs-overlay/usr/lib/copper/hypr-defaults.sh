@@ -172,10 +172,13 @@ hl.on("hyprland.start", function ()
     -- No systemd, so ML4W's user units cannot start the portal either. The
     -- compositor's global shortcuts and screencopy read through it, and the
     -- image stages xdg-desktop-portal-hyprland in the hypr stage -- so start
-    -- it here, the same way the agent is started. The -x guard keeps a machine
-    -- without it from logging a complaint on every single start.
-    hl.exec_cmd("[ -x /usr/bin/xdg-desktop-portal-hyprland ] && " ..
-                "exec /usr/bin/xdg-desktop-portal-hyprland")
+    -- it here, the same way the agent is started. The binary lives in
+    -- /usr/libexec, which is where the package's own unit starts it; /usr/bin
+    -- has only hyprland-share-picker, so a guard there would never run. The -x
+    -- guard keeps a machine without the package from logging a complaint on
+    -- every single start.
+    hl.exec_cmd("[ -x /usr/libexec/xdg-desktop-portal-hyprland ] && " ..
+                "exec /usr/libexec/xdg-desktop-portal-hyprland")
 end)
 CUSTOM_LUA
     [ -s "$hypr/custom.lua" ] || exit 1
