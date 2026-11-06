@@ -44,9 +44,10 @@ fi
 
 # ---- 1. the kernel switch, and tty0 still owning /dev/console -------------
 # The grub.cfg half: the splash entry must ask for the splash, must tell
-# plymouthd the serial console is not the display, and must still leave tty0
-# last (the last console= is the one that owns /dev/console -- bug 7).
-cl=$(sed -n '/^[[:space:]]*linux .*quiet splash/p' "$GRUB" | head -n1)
+# plymouthd the serial console is not the display, must not carry quiet (the
+# boot messages Esc is supposed to reveal would be silenced), and must still
+# leave tty0 last (the last console= is the one that owns /dev/console -- bug 7).
+cl=$(sed -n '/^[[:space:]]*linux .*splash/p' "$GRUB" | head -n1)
 if [ -z "$cl" ]; then
     echo "FAIL grub.cfg has no splash entry"
     fail=1
@@ -57,6 +58,16 @@ else
             *) echo "FAIL grub splash entry is missing $sw"; fail=1 ;;
         esac
     done
+    # Esc is what turns the splash into the boot messages. `quiet` is what
+    # kept the messages from being there to turn: it silenced the boot before
+    # Plymouth's escape hatch could hand anything back, so the Esc the user
+    # presses would have nothing to reveal. The splash entry must not carry it.
+    if printf '%s\n' "$cl" | grep -q ' quiet '; then
+        echo "FAIL grub splash entry carries quiet -- Esc would have no boot messages to show"
+        fail=1
+    else
+        echo "ok   grub splash entry carries no quiet -- Esc has boot messages to show"
+    fi
     last=$(printf '%s\n' "$cl" | tr ' ' '\n' | grep '^console=' | tail -n1)
     if [ "$last" = "console=tty0" ]; then
         echo "ok   grub splash entry keeps tty0 last (bug 7)"
