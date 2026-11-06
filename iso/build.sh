@@ -3487,14 +3487,20 @@ WRAP
   # seeded from it came up half-loaded. That is what the human hit. Same
   # readback discipline as sudo's mode above -- check the artifact, on the disc.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
-      -extract /usr/share/copper/hyprland-skel/.config/hypr/conf/environments \
-      "$ex/skel-env" >/dev/null 2>&1 || true
-  if [ ! -f "$ex/skel-env/default.lua" ]; then
-    echo "iso: the Hyprland skeleton in the ISO has no conf/environments/default.lua" >&2
-    echo "iso: its Lua config require()s that file; the seeded session would load half" >&2
+      -extract /usr/share/copper/hyprland-skel/.config/hypr \
+      "$ex/hypr-config" >/dev/null 2>&1 || true
+  for f in hyprland.lua input.lua custom.lua conf/environments/default.lua; do
+    if [ ! -f "$ex/hypr-config/$f" ]; then
+      echo "iso: the Hyprland skeleton in the ISO has no $f" >&2
+      echo "iso: the session config must be present on the ISO; do not defer it to Ingot" >&2
+      exit 1
+    fi
+  done
+  if [ ! -s "$ex/hypr-config/custom.lua" ]; then
+    echo "iso: the Hyprland skeleton's Copper startup configuration is empty" >&2
     exit 1
   fi
-  echo "  iso: the Hyprland skeleton's zero-byte Lua include is on the disc"
+  echo "  iso: Hyprland's session configuration is on the disc"
 
   echo "$want" > "$WORK/iso.stamp"
   ls -lh "$OUT/copper.iso"
