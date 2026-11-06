@@ -939,6 +939,27 @@ else
     fi
 fi
 
+# ---- the default backdrop ----------------------------------------------
+# xfdesktop reads system defaults from /etc/xdg/xfce4, and a home that has never
+# chosen a wallpaper gets what is written there. A default that names a path the
+# disc does not carry is a grey gradient with extra steps, so check both halves:
+# the channel points at Copper's picture and that picture is a real PNG.
+XDG_DESKTOP="$REPO/iso/rootfs-overlay/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"
+WALLPAPER="$REPO/iso/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"
+if [ -f "$XDG_DESKTOP" ] \
+   && grep -qF 'value="/usr/share/copper/wallpapers/copper-default.png"' "$XDG_DESKTOP"; then
+    ok "  the XFCE session has Copper's default wallpaper"
+else
+    bad "  the XFCE session has Copper's default wallpaper" \
+        "no $XDG_DESKTOP, or it does not name the shipped picture"
+fi
+if [ -f "$WALLPAPER" ] \
+   && [ "$(od -An -tx1 -N8 "$WALLPAPER" | tr -d ' \n')" = "89504e470d0a1a0a" ]; then
+    ok "  the default wallpaper is a real PNG"
+else
+    bad "  the default wallpaper is a real PNG" "$WALLPAPER"
+fi
+
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
 echo

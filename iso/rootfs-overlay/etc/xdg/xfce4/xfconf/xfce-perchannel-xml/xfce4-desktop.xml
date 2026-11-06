@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copper's system-wide backdrop. xfdesktop reads this channel when the user has
+  not set a wallpaper of their own, so a fresh home comes up as Copper instead
+  of XFCE's grey gradient. A value in ~/.config/xfce4/xfconf/ overrides it, which
+  is exactly the behaviour a default should have.
+
+  The image ships at /usr/share/copper/wallpapers/copper-default.png and the
+  Hyprland side points hyprpaper at the same file (hypr-defaults.sh), so both
+  desktops wear the same picture.
+-->
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor0" type="empty">
+        <property name="image-path" type="string" value="/usr/share/copper/wallpapers/copper-default.png"/>
+        <property name="image-style" type="int" value="5"/>
+        <property name="image-show" type="bool" value="true"/>
+      </property>
+      <property name="monitor1" type="empty">
+        <property name="image-path" type="string" value="/usr/share/copper/wallpapers/copper-default.png"/>
+        <property name="image-style" type="int" value="5"/>
+        <property name="image-show" type="bool" value="true"/>
+      </property>
+      <property name="monitor2" type="empty">
+        <property name="image-path" type="string" value="/usr/share/copper/wallpapers/copper-default.png"/>
+        <property name="image-style" type="int" value="5"/>
+        <property name="image-show" type="bool" value="true"/>
+      </property>
+      <property name="monitor3" type="empty">
+        <property name="image-path" type="string" value="/usr/share/copper/wallpapers/copper-default.png"/>
+        <property name="image-style" type="int" value="5"/>
+        <property name="image-show" type="bool" value="true"/>
+      </property>
+    </property>
+  </property>
+</channel>
