@@ -74,6 +74,78 @@ if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
 say() { printf 'startxfce: %s\n' "$1"; }
 
+apply_xfce_theme() {
+    _theme=$1
+    _xfconf="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+    mkdir -p "$_xfconf" || {
+        say "could not create XFCE settings in $HOME"
+        return
+    }
+
+    case "$_theme" in
+        default)
+            _gtk=Adwaita
+            _xfwm=Default
+            _wall=/usr/share/copper/wallpapers/copper-default.png
+            ;;
+        *)
+            _theme=backlight
+            _gtk=Blacklight
+            _xfwm=Blacklight
+            _wall=/usr/share/copper/wallpapers/backlight-final.png
+            ;;
+    esac
+
+    cat >"$_xfconf/xsettings.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="ThemeName" type="string" value="$_gtk"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="CursorThemeName" type="string" value="DMZ-White"/>
+    <property name="CursorThemeSize" type="int" value="24"/>
+  </property>
+</channel>
+EOF
+    cat >"$_xfconf/xfwm4.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfwm4" version="1.0">
+  <property name="general" type="empty">
+    <property name="theme" type="string" value="$_xfwm"/>
+  </property>
+</channel>
+EOF
+    cat >"$_xfconf/xfce4-desktop.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-desktop" version="1.0">
+  <property name="backdrop" type="empty">
+    <property name="screen0" type="empty">
+      <property name="monitor0" type="empty">
+        <property name="image-path" type="string" value="$_wall"/>
+        <property name="image-style" type="int" value="5"/>
+        <property name="image-show" type="bool" value="true"/>
+      </property>
+    </property>
+  </property>
+</channel>
+EOF
+    say "theme: $_theme"
+}
+
+choose_xfce_theme() {
+    _choice=${COPPER_XFCE_THEME:-}
+    if [ -z "$_choice" ] && [ -t 0 ]; then
+        printf 'startxfce: choose theme: 1) default  2) backlight [2] '
+        read -r _choice || _choice=
+    fi
+    case "$_choice" in
+        1|default) apply_xfce_theme default ;;
+        ''|2|backlight) apply_xfce_theme backlight ;;
+        *) say "unknown theme '$_choice'; using backlight"; apply_xfce_theme backlight ;;
+    esac
+}
+
 usage() {
     cat <<'EOF'
 startxfce -- start the X server, then XFCE on it
@@ -400,6 +472,10 @@ if [ "$(id -u)" = 0 ]; then
         fi
     fi
 fi
+
+# Apply the selection after any sudo hand-off so it belongs to the account
+# that owns the XFCE session. Backlight is the default.
+choose_xfce_theme
 
 disp_state=$(display_state)
 if [ "$disp_state" = live ]; then

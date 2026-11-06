@@ -1,0 +1,32 @@
+#
+#
+# Blacklight/themes/Blacklight/xfwm4/themerc
+#
+#
+active_text_color=#e0e0e0
+active_text_shadow_color=#000000
+inactive_text_color=#000000
+inactive_text_shadow_color=#000000
+title_shadow_active=false
+title_shadow_inactive=false
+full_width_title=true
+title_vertical_offset_active=0
+title_vertical_offset_inactive=0
+button_offset=0
+button_spacing=0
+shadow_delta_height=0
+shadow_delta_width=0
+shadow_delta_x=0
+shadow_delta_y=0
+shadow_opacity=100
+show_app_icon=false
+show_popup_shadow=false
+# default
+#button_layout=O|SHMC
+button_layout=O|HC
+sync_to_vblank=false
+vblank_mode=none
+raise_delay=200
+focus_delay=200
+double_click_time=200
+title_alignment=center

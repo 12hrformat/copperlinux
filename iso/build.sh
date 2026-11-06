@@ -1400,6 +1400,8 @@ build_gui() {
   # wizard's tty. The group is part of what this stage guarantees, so it is
   # part of "already staged".
   if [ -e "$TGT/usr/bin/Xorg" ] && [ -e "$TGT/usr/bin/startxfce4" ] \
+     && [ -r "$TGT/usr/share/themes/Blacklight/index.theme" ] \
+     && [ -r "$TGT/usr/share/copper/wallpapers/backlight-final.png" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then
     echo "gui: already staged, skipping"
@@ -1717,6 +1719,15 @@ build_gui() {
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do
     if [ ! -e "$TGT/$f" ]; then
       echo "gui: $f did not arrive from the packages" >&2
+      exit 1
+    fi
+  done
+  for f in usr/share/themes/Blacklight/index.theme \
+           usr/share/themes/Blacklight/gtk-3.0/gtk.css \
+           usr/share/themes/Blacklight/xfwm4/themerc \
+           usr/share/copper/wallpapers/backlight-final.png; do
+    if [ ! -r "$TGT/$f" ]; then
+      echo "gui: required Backlight theme asset is missing: /$f" >&2
       exit 1
     fi
   done
