@@ -658,8 +658,32 @@ echo "=== case 26: compositor says it holds a keyboard and a pointer ==="
 setup_cfg_case
 cat > "$TMP/hyprctl" <<'STUBEOF'
 #!/bin/sh
-echo "     1:      type:keyboard"
-echo "     2:      type:pointer"
+# The launcher must call plain `devices` and point hyprctl at the instance
+# through HYPRLAND_INSTANCE_SIGNATURE. A -s/--socket flag would make the real
+# hyprctl (0.57.1) print usage and exit, which is how the probe silently asked
+# nothing on a session that was fine.
+if [ "$1" != devices ] || [ "$HYPRLAND_INSTANCE_SIGNATURE" != gate ]; then
+    echo "stub: called as [$*] with signature [${HYPRLAND_INSTANCE_SIGNATURE:-}]" >&2
+    exit 1
+fi
+# The real shape of `hyprctl devices` in 0.57.1, section headers and all.
+printf 'mice:\n'
+printf '\tMouse at 55d5e0e1a2c0:\n'
+printf '\t\tLogitech USB Optical Mouse\n'
+printf '\t\t\tdefault speed: 0.00000\n'
+printf '\t\t\tscroll factor: -1.00\n'
+printf '\n\nKeyboards:\n'
+printf '\tKeyboard at 55d5e0e1a5f0:\n'
+printf '\t\tAT Translated Set 2 keyboard\n'
+printf '\t\t\trules: r "", m "", l "us", v "", o ""\n'
+printf '\t\t\tactive layout index: 0\n'
+printf '\t\t\tactive keymap: English (US)\n'
+printf '\t\t\tcapsLock: no\n'
+printf '\t\t\tnumLock: no\n'
+printf '\t\t\tmain: yes\n'
+printf '\n\nTablets:\n'
+printf '\n\nTouch:\n'
+printf '\n\nSwitches:\n'
 STUBEOF
 chmod +x "$TMP/hyprctl"
 SUT_HYPRCTL="$TMP/hyprctl"
@@ -677,7 +701,14 @@ echo "=== case 27: compositor holds a pointer but no keyboard ==="
 setup_cfg_case
 cat > "$TMP/hyprctl" <<'STUBEOF'
 #!/bin/sh
-echo "     1:      type:pointer"
+printf 'mice:\n'
+printf '\tMouse at 55d5e0e1a2c0:\n'
+printf '\t\tLogitech USB Optical Mouse\n'
+printf '\t\t\tdefault speed: 0.00000\n'
+printf '\n\nKeyboards:\n'
+printf '\n\nTablets:\n'
+printf '\n\nTouch:\n'
+printf '\n\nSwitches:\n'
 STUBEOF
 chmod +x "$TMP/hyprctl"
 SUT_HYPRCTL="$TMP/hyprctl"
@@ -689,15 +720,57 @@ has "  says no keyboard" "compositor sees no keyboard" "$out"
 has "  says the pointer is there" "compositor sees a pointer" "$out"
 
 echo
-echo "=== case 28: no hyprctl in the image -> the probe degrades instead of dying ==="
+echo "=== case 28: no hyprctl in the image -> say it could not ask, not that input is absent ==="
 setup_cfg_case
 SUT_HYPRCTL="$TMP/no-hyprctl"
 out=$(run_sut "$TMP/Hyprland" 80); rc=$?
 SUT_HYPRCTL=
 SKEL=; INGOT_STUB=
 eq "  exit code is 0" 0 "$rc"
-has "  says no keyboard when the compositor could not be asked" "compositor sees no keyboard" "$out"
-has "  says no pointer when the compositor could not be asked" "compositor sees no pointer" "$out"
+has "  says it could not ask" "could not ask the compositor" "$out"
+has "  calls the input unverified" "input is unverified, not absent" "$out"
+hasnt "  does not claim the compositor sees no keyboard" "compositor sees no keyboard" "$out"
+hasnt "  does not claim the compositor sees no pointer" "compositor sees no pointer" "$out"
+
+echo
+echo "=== case 29: hyprctl exists but gives no answer -> same honest verdict ==="
+setup_cfg_case
+cat > "$TMP/hyprctl" <<'STUBEOF'
+#!/bin/sh
+echo "stub: no such instance" >&2
+exit 1
+STUBEOF
+chmod +x "$TMP/hyprctl"
+SUT_HYPRCTL="$TMP/hyprctl"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SUT_HYPRCTL=
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  says hyprctl gave no answer" "hyprctl gave no answer" "$out"
+hasnt "  does not claim the compositor sees no keyboard" "compositor sees no keyboard" "$out"
+hasnt "  does not claim the compositor sees no pointer" "compositor sees no pointer" "$out"
+
+echo
+echo "=== case 30: an older hyprctl layout (lowercase headers, bare device names) still reads ==="
+setup_cfg_case
+cat > "$TMP/hyprctl" <<'STUBEOF'
+#!/bin/sh
+printf 'mice:\n'
+printf '\tLogitech USB Optical Mouse\n'
+printf '\t\tdefault speed: 0.000000\n'
+printf '\nkeyboards:\n'
+printf '\tAT Translated Set 2 keyboard\n'
+printf '\t\trules: evdev\n'
+printf '\n'
+STUBEOF
+chmod +x "$TMP/hyprctl"
+SUT_HYPRCTL="$TMP/hyprctl"
+out=$(run_sut "$TMP/Hyprland" 80); rc=$?
+SUT_HYPRCTL=
+SKEL=; INGOT_STUB=
+eq "  exit code is 0" 0 "$rc"
+has "  sees the keyboard" "compositor sees a keyboard" "$out"
+has "  sees the pointer" "compositor sees a pointer" "$out"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"

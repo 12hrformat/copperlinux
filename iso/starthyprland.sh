@@ -642,6 +642,15 @@ if [ "$up" = 1 ]; then
     # used at all, which is exactly the shape the seat fixes could not reach (bug
     # 30).
     hysock=$(find "$hyprrt" -name .socket.sock -print -quit 2>/dev/null)
+    # How to point hyprctl at this instance. The version the PPA ships (0.57.1)
+    # has no -s/--socket switch: an unknown flag prints usage and exits, so
+    # `hyprctl -s <sock> devices` asked nothing and the probe then reported a
+    # working session as having no keyboard and no pointer. hyprctl builds the
+    # socket path from HYPRLAND_INSTANCE_SIGNATURE, and the socket's directory
+    # is that signature, so hand it over that way -- the same path hyprctl
+    # computes for itself, with no version-specific flag.
+    his=
+    [ -n "$hysock" ] && his=$(basename "$(dirname "$hysock")")
     # Ask, and keep asking for a bounded while: the instance socket shows up
     # when the compositor starts and device enumeration can trail it by a beat,
     # and one sample taken at the wrong moment reads as "no input" on a session
@@ -650,31 +659,66 @@ if [ "$up" = 1 ]; then
     # bounded time, and a compositor that answers gets its answer.
     kbd=no
     ptr=no
+    answered=no
     polled=0
-    while [ "$polled" -lt 30 ]; do
-        devs=$("$HYPRCTL" -s "$hysock" devices 2>/dev/null || :)
-        kbd=no
-        ptr=no
-        case "$devs" in
-            *keyboard*) kbd=yes ;;
-        esac
-        case "$devs" in
-            *pointer*)  ptr=yes ;;
-        esac
-        if [ "$kbd" = yes ] && [ "$ptr" = yes ]; then
-            break
+    if [ ! -x "$HYPRCTL" ]; then
+        say "could not ask the compositor what input it holds: $HYPRCTL is not executable"
+        say "  hyprctl ships with Hyprland; without it, input is unverified, not absent"
+        kbd=
+        ptr=
+    else
+        while [ "$polled" -lt 30 ]; do
+            devs=$(HYPRLAND_INSTANCE_SIGNATURE=$his "$HYPRCTL" devices 2>/dev/null || :)
+            [ -n "$devs" ] && answered=yes
+            # What hyprctl devices prints, in the version the image ships:
+            #
+            #   mice:
+            #       Mouse at <addr>:
+            #   ...
+            #   Keyboards:
+            #       Keyboard at <addr>:
+            #
+            # Older versions use lowercase headers and a bare device name, so
+            # both are accepted. A section header has no leading tab, a device
+            # line has exactly one, and everything belonging to the device has
+            # two -- which is what separates "the section exists" (it is always
+            # printed, even with nothing in it) from "the section holds a
+            # device". Matching the words "keyboard"/"pointer" instead would
+            # read the empty headers as devices and the word "Mouse" as
+            # neither.
+            seen=$(printf '%s\n' "$devs" | awk '
+                /^mice:[[:space:]]*$/         { sec = "p"; next }
+                /^[Kk]eyboards:[[:space:]]*$/ { sec = "k"; next }
+                /^[A-Za-z]+:[[:space:]]*$/    { sec = "";  next }
+                sec == "p" && /^[[:space:]][^[:space:]]/ { p = 1 }
+                sec == "k" && /^[[:space:]][^[:space:]]/ { k = 1 }
+                END { if (p) printf "p"; if (k) printf "k" }
+            ')
+            kbd=no
+            ptr=no
+            case "$seen" in *k*) kbd=yes ;; esac
+            case "$seen" in *p*) ptr=yes ;; esac
+            if [ "$kbd" = yes ] && [ "$ptr" = yes ]; then
+                break
+            fi
+            polled=$((polled + 1))
+            sleep 0.1 2>/dev/null || sleep 1
+        done
+        if [ "$answered" != yes ]; then
+            say "could not ask the compositor what input it holds (hyprctl gave no answer)"
+            say "  so input is unverified, not absent; the compositor log is $SESSIONLOG"
+            kbd=
+            ptr=
         fi
-        polled=$((polled + 1))
-        sleep 0.1 2>/dev/null || sleep 1
-    done
+    fi
     if [ "$kbd" = yes ]; then
         say "compositor sees a keyboard"
-    else
+    elif [ "$kbd" = no ]; then
         say "compositor sees no keyboard; the session will not type"
     fi
     if [ "$ptr" = yes ]; then
         say "compositor sees a pointer"
-    else
+    elif [ "$ptr" = no ]; then
         say "compositor sees no pointer; the cursor will not move"
     fi
 else
