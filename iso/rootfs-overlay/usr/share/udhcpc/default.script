@@ -116,32 +116,24 @@ bound|renew)
     tmp="$RESOLV_CONF.copper.$$"
     : > "$tmp"
     [ -n "$domain" ] && echo "search $domain" >> "$tmp"
-    if [ -s "$tmp" ]; then
-        # Public packages live on the internet, so query public DNS first.
-        # A DHCP resolver that answers NXDOMAIN is considered a successful DNS
-        # response and libc will not try later servers; putting it first can
-        # therefore defeat a reachable public fallback. If outbound DNS is
-        # blocked, timeouts fall through to the DHCP resolver below.
-        for ns in 1.1.1.1 9.9.9.9; do
-            say "nameserver $ns"
-            echo "nameserver $ns" >> "$tmp"
-        done
-        for ns in $dns; do
-            case " 1.1.1.1 9.9.9.9 " in
-                *" $ns "*) ;;
-                *)
-                    say "DHCP nameserver $ns"
-                    echo "nameserver $ns" >> "$tmp"
-                    ;;
-            esac
-        done
-        mv "$tmp" "$RESOLV_CONF"
-    else
-        # Some networks hand out addresses but no resolver. Keep the one
-        # we shipped rather than leaving the box with no DNS at all.
-        say "lease carried no nameserver, keeping the fallback"
-        rm -f "$tmp"
-    fi
+    # Always write the fallback resolvers. The previous `-s "$tmp"` guard
+    # only became true when DHCP sent a search domain, so a normal lease with
+    # no domain left /etc/resolv.conf unchanged or empty and every hostname
+    # lookup failed.
+    for ns in 1.1.1.1 9.9.9.9; do
+        say "nameserver $ns"
+        echo "nameserver $ns" >> "$tmp"
+    done
+    for ns in $dns; do
+        case " 1.1.1.1 9.9.9.9 " in
+            *" $ns "*) ;;
+            *)
+                say "DHCP nameserver $ns"
+                echo "nameserver $ns" >> "$tmp"
+                ;;
+        esac
+    done
+    mv "$tmp" "$RESOLV_CONF"
     ;;
 
 leasefail)
