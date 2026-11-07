@@ -3511,9 +3511,11 @@ WRAP
   # grub.cfg is copied from the tree, so what is really being checked is that
   # the file the build ships is the one that carries the splash: with a serial
   # console beside the screen, plymouthd refuses to create a renderer at all
-  # and the animation never paints a frame. It must not carry quiet, either:
-  # Esc is what hands the splash over to the boot messages, and quiet is what
-  # leaves those messages with nothing to reveal. And tty0 has to be the LAST
+  # and the animation never paints a frame. The entry also has to carry the
+  # quiet switches: quiet loglevel=3 keeps kernel chatter off the screen, and
+  # systemd.show_status=1 keeps the [ OK ] status block from being suppressed
+  # while a splash is up, so the screen is handed from the animation to the
+  # status lines instead of going blank. And tty0 has to be the LAST
   # console= or /dev/console is the serial port and the screen goes quiet.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /boot/grub/grub.cfg "$ex/grub.cfg" >/dev/null 2>&1 || true
@@ -3534,8 +3536,19 @@ WRAP
     echo "iso:   $cl" >&2
     exit 1
   fi
-  if printf '%s\n' "$cl" | grep -q ' quiet '; then
-    echo "iso: the splash entry carries quiet -- Esc would have no boot messages to show:" >&2
+  # The splash entry is expected to carry the quiet switches the design now
+  # ships: quiet loglevel=3 silences the kernel chatter the animation would
+  # otherwise cover, and systemd.show_status=1 puts the [ OK ] status block back
+  # on screen once the animation is gone. A splash entry missing one of them
+  # puts kernel text or a blank screen back over the boot, so each is checked.
+  for sw in quiet loglevel=3 systemd.show_status=1; do
+    case " $cl " in
+      *" $sw "*) ;;
+      *) badsw="$badsw $sw" ;;
+    esac
+  done
+  if [ -n "$badsw" ]; then
+    echo "iso: the splash entry's kernel command line is wrong (missing:$badsw):" >&2
     echo "iso:   $cl" >&2
     exit 1
   fi
@@ -3545,7 +3558,7 @@ WRAP
     echo "iso: /dev/console is the LAST one; the screen would go quiet (bug 7)" >&2
     exit 1
   fi
-  echo "  iso: splash switches, no quiet, and tty0-last console order on the disc's grub.cfg"
+  echo "  iso: splash switches, quiet, and tty0-last console order on the disc's grub.cfg"
 
   # The Hyprland skeleton, read back off the disc -- bug 26's second half, in
   # one check. The session config is Lua whose include stubs are DELIBERATELY

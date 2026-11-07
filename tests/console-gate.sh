@@ -60,10 +60,12 @@ done
 
 # A literal is not enough: a real Bash has to expand it to something with a
 # user, a host and a colon. PS1 is assigned inside the shell because Bash does
-# not import PS1 from the environment.
+# not import PS1 from the environment. The trailing prompt character is Bash's
+# own \$-or-# logic -- '#' for root, '$' for everyone else -- so the pattern
+# has to take both; this gate runs under sudo, where the prompt is root's.
 p=$(prompt_in "$BASHRC")
 expanded=$(bash -c 'PS1=$1; printf "%s" "${PS1@P}"' _ "$p" 2>/dev/null || true)
-if printf '%s' "$expanded" | grep -Eq '^[^@[:space:]]+@[^:[:space:]]+:.*[$] $'; then
+if printf '%s' "$expanded" | grep -Eq '^[^@[:space:]]+@[^:[:space:]]+:.*[$#] $'; then
     ok "Bash expands the prompt to user@host:path (\"$expanded\")"
 else
     bad "Bash does not expand the prompt to user@host:path" "got '$expanded'"
