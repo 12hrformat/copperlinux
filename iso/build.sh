@@ -528,7 +528,7 @@ require_bb_config() {
       MOUNT UMOUNT SWITCH_ROOT HOSTNAME \
       BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP GETTY LOGIN \
-      CHPASSWD FEATURE_SHADOWPASSWDS SETFONT ; do
+      CHPASSWD FEATURE_SHADOWPASSWDS SETFONT CLEAR TTY ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -577,6 +577,13 @@ build_busybox() {
     # VGA face is the difference between fastfetch's box drawing and a screen
     # of question marks on tty1.
     set_bb_config SETFONT
+    # clear: the console shell's `clear` is busybox's applet. It is the first
+    # command a lot of people reach for, and the applet is what turns it into
+    # the VT's erase sequence.
+    set_bb_config CLEAR
+    # tty: /etc/profile asks it whether the shell is on a virtual console
+    # before it upgrades bash's invented TERM=dumb to the VT's TERM=linux.
+    set_bb_config TTY
     # the tc applet needs CBQ traffic-class kernel UAPI (TCA_CBQ_* and
     # struct tc_cbq_*) that newer kernel headers removed, so it fails to
     # compile against the runner's headers. Copper ships no traffic
@@ -1483,7 +1490,7 @@ build_gui() {
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme dmz-cursor-theme librsvg2-common openssl ca-certificates e2fsprogs \
-         libc-bin curl make nano bash \
+         libc-bin curl make nano bash ncurses-base \
          firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
          fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \

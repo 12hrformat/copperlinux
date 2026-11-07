@@ -58,7 +58,7 @@ jobs:
                    tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
                    tests/starthyprland-gate.sh tests/hypr-defaults-gate.sh \
                    tests/plymouth-gate.sh tests/polkit-gate.sh \
-                   tests/network-gate.sh \
+                   tests/network-gate.sh tests/console-gate.sh \
                    tests/systemd-gate.sh tests/systemd-gate-sabotage.sh \
                    tests/persist-sabotage.sh \
                    tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \

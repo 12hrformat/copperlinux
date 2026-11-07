@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Twenty-two gates: smoke.sh always; startxfce-gate.sh,
+# Twenty-three gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
@@ -9,13 +9,14 @@
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
 # starthyprland-gate.sh, hypr-defaults-gate.sh, plymouth-gate.sh,
-# polkit-gate.sh and network-gate.sh do not --
+# polkit-gate.sh, network-gate.sh and console-gate.sh do not --
 # ingot's install lands in a scratch INGOT_ROOT and its repo is served on
 # localhost, starthyprland's compositor is a stub under a private home,
 # hypr-defaults only writes into a scratch tree, plymouth-gate.sh only reads
-# grub.cfg and copper-init.c, and polkit-gate.sh only reads the init source, the
-# overlay and build.sh, and network-gate.sh runs the real lease script against
-# a stub ip(8) -- so all six run unprivileged too.
+# grub.cfg and copper-init.c, polkit-gate.sh only reads the init source, the
+# overlay and build.sh, network-gate.sh runs the real lease script against
+# a stub ip(8), and console-gate.sh reads the startup files and runs their
+# TERM block against a stubbed tty(1) -- so all seven run unprivileged too.
 # kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
 # the shipped require_kernel_config() against synthetic configs rather than
 # building a kernel.
@@ -436,6 +437,22 @@ if out=$(sh tests/network-gate.sh 2>&1); then
     record network-gate.sh ok "$n checks"
 else
     record network-gate.sh bad "the lease script does not always leave a resolver"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/console-gate.sh: the prompt names you, the shell knows its tty ---"
+# Reads /etc/profile, /etc/bash.bashrc and copper-init.c. It exists because
+# the prompt shipped as a literal "copper:" with no user, and nothing set
+# TERM: bash invented "dumb", readline lost the character at the right margin
+# on a long command, and `clear` needed a second Enter. The TERM block is run
+# against a stubbed tty(1), so the VT-only upgrade is exercised. Unprivileged.
+if out=$(bash tests/console-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record console-gate.sh ok "$n checks"
+else
+    record console-gate.sh bad "the console prompt or TERM fallback regressed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
 fi
 

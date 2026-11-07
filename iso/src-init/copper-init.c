@@ -1608,6 +1608,18 @@ static void run_session(void) {
        stages. Overwrite 0: a LANG inherited from the caller wins. */
     setenv("LANG", "C.UTF-8", 0);
 
+    /* The console is a Linux VT, and nothing in the image set TERM. Bash
+       invents "dumb" when it finds none, and a dumb terminal is what makes
+       readline lose the character at the right margin and leaves `clear`
+       unable to repaint the prompt until another Enter. `linux` is the
+       terminfo name for the VT. A real inherited TERM keeps its own answer
+       (a terminal emulator started from this shell); "dumb" does not, because
+       that is the placeholder bash made up. /etc/profile carries the same
+       fallback for shells that do not come through copper-init. */
+    const char *term = getenv("TERM");
+    if (!term || !*term || strcmp(term, "dumb") == 0)
+        setenv("TERM", "linux", 1);
+
     /* Also before anything draws: the console has no per-glyph fallback, so
        whatever face is loaded now is the one the tools will be judged on. */
     load_console_font();

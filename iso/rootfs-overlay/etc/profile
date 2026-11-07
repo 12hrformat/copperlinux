@@ -7,10 +7,28 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # musl treats it as UTF-8, so nothing has to run locale-gen at boot.
 export LANG=C.UTF-8
 
+# Which terminal this is. The live console is a Linux VT, and nothing else in
+# the image sets TERM. Bash invents "dumb" when it finds none, and a dumb
+# terminal is exactly what makes readline lose the character at the right
+# margin, leaving `clear` unable to repaint the prompt until another Enter.
+# `linux` is the terminfo name for the VT. Upgrade only a real virtual console:
+# a terminal emulator or a serial login brings its own TERM, and a pty that
+# says "dumb" on purpose is left alone.
+case "${TERM:-dumb}" in
+    dumb)
+        case "$(tty 2>/dev/null)" in
+            /dev/tty[0-9]*|/dev/console) TERM=linux ;;
+        esac
+        ;;
+esac
+export TERM
+
 if [ -n "${BASH_VERSION:-}" ] && [ -r /etc/bash.bashrc ]; then
     . /etc/bash.bashrc
 fi
 
+# Who and where, not just where. The shell runs as the wizard's user, and the
+# old literal prompt hid that behind the machine name.
 if [ -n "$PS1" ]; then
-    export PS1='copper:\w\$ '
+    export PS1='\u@\h:\w\$ '
 fi
