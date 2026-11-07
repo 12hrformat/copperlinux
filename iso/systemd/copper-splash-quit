@@ -1,0 +1,69 @@
+#!/bin/sh
+# Copper Linux -- let the whole boot animation play, then hand the console back.
+#
+# copper-plymouth-quit.service used to run `plymouth --quit` the moment the
+# network was up. On an ordinary boot that is well under a second -- frame 20
+# of 150 -- so the animation was cut off mid-flight and the first-boot wizard
+# appeared over whatever frame happened to be on screen.
+#
+# How long "the whole animation" is comes from the theme's own script:
+# frame_count and Plymouth.SetRefreshRate. Reading it here rather than copying
+# the number means re-exporting the animation with more frames cannot silently
+# outrun this wait.
+#
+# The clock starts at /run/plymouth/started, stamped by copper-splash-show just
+# before the first frame. /proc/uptime is monotonic; date(1) is not, and the
+# clock is often set during boot. One-second granularity is fine because the
+# wait rounds up.
+set -u
+
+SCRIPT=/usr/share/plymouth/themes/copper/copper.script
+
+frames=""
+rate=""
+if [ -r "$SCRIPT" ]; then
+    frames=$(sed -n \
+        's/^[[:space:]]*frame_count[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "$SCRIPT" | head -n 1)
+    rate=$(sed -n \
+        's/^[[:space:]]*Plymouth\.SetRefreshRate[[:space:]]*(\([0-9][0-9]*\)).*/\1/p' \
+        "$SCRIPT" | head -n 1)
+fi
+[ -n "$frames" ] || frames=150
+[ -n "$rate" ] || rate=24
+case "$frames" in ''|*[!0-9]*) frames=150 ;; esac
+case "$rate" in ''|*[!0-9]*) rate=24 ;; esac
+[ "$rate" -gt 0 ] || rate=24
+
+# Rounded up: a partly played last frame still counts as played.
+want=$(( (frames + rate - 1) / rate ))
+
+# Nothing to wait for when plymouthd is not answering -- a serial boot, a
+# machine that disabled the splash. --ping is the same answer copper-init uses,
+# and it is cheap.
+if ! /usr/bin/plymouth --ping >/dev/null 2>&1; then
+    rm -f /run/plymouth/started
+    exit 0
+fi
+
+start=$(cat /run/plymouth/started 2>/dev/null)
+case "$start" in
+    ''|*[!0-9]*) start=$(cut -d. -f1 /proc/uptime 2>/dev/null) ;;
+esac
+[ -n "$start" ] || start=0
+
+now=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+[ -n "$now" ] || now=$start
+while [ $((now - start)) -lt "$want" ]; do
+    sleep 1
+    now=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+    [ -n "$now" ] || now=$((start + want))
+done
+
+/usr/bin/plymouth --quit || true
+# Wait for the daemon to release the VT, not merely for it to receive the
+# request. On an ordinary distribution this is plymouth-quit-wait.service's
+# whole job, and the wizard draws on the same console a moment later.
+/usr/bin/plymouth --wait >/dev/null 2>&1 || true
+rm -f /run/plymouth/started
+exit 0

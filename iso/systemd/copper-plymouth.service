@@ -16,6 +16,11 @@
 # pid file lives under /run/plymouth, which RuntimeDirectory= creates -- the
 # console half only ever sees that directory through a running daemon.
 #
+# ExecStartPost is a helper, not `plymouth --show-splash` directly: it stamps
+# /run/plymouth/started with the monotonic clock in the same breath as it asks
+# for the first frame. copper-plymouth-quit then waits out the animation the
+# theme declares, so the splash is not cut off mid-flight (see that unit).
+#
 # The switches are Copper's, not the package's defaults: grub.cfg asks for
 # "splash", plymouth.ignore-udev keeps the daemon off a device enumeration this
 # image never runs, plymouth.ignore-serial-consoles keeps it from reading the
@@ -29,6 +34,11 @@
 [Unit]
 Description=Copper Linux boot splash
 DefaultDependencies=no
+# The splash is opt-in, as the grub entry describes: without the kernel's
+# "splash" token (the verbose and debug entries) this unit is skipped, not
+# failed, and copper-plymouth-quit finds no daemon to quit. That keeps the
+# debugging entries as plain text instead of covering them with animation.
+ConditionKernelCommandLine=splash
 After=systemd-vconsole-setup.service
 Before=copper-network.service copper-firstboot.service copper-console.service copper-tty-clear.service
 
@@ -37,7 +47,7 @@ Type=forking
 RuntimeDirectory=plymouth
 PIDFile=/run/plymouth/pid
 ExecStart=/usr/sbin/plymouthd --mode=boot --pid-file=/run/plymouth/pid --ignore-serial-consoles
-ExecStartPost=-/usr/bin/plymouth --show-splash
+ExecStartPost=-/usr/bin/copper-splash-show
 
 [Install]
 WantedBy=sysinit.target

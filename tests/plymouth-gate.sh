@@ -35,6 +35,11 @@ set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$REPO/iso/src-init/copper-init.c"
 GRUB="$REPO/iso/boot/grub.cfg"
+SHOWUNIT="$REPO/iso/systemd/copper-plymouth.service"
+QUITUNIT="$REPO/iso/systemd/copper-plymouth-quit.service"
+SHOW="$REPO/iso/systemd/copper-splash-show"
+QUIT="$REPO/iso/systemd/copper-splash-quit"
+THEME="$REPO/iso/plymouth/copper/copper.script"
 
 fail=0
 if [ ! -f "$SRC" ]; then
@@ -58,15 +63,23 @@ else
             *) echo "FAIL grub splash entry is missing $sw"; fail=1 ;;
         esac
     done
-    # Esc is what turns the splash into the boot messages. `quiet` is what
-    # kept the messages from being there to turn: it silenced the boot before
-    # Plymouth's escape hatch could hand anything back, so the Esc the user
-    # presses would have nothing to reveal. The splash entry must not carry it.
+    # The screen belongs to the animation and then to systemd's status lines.
+    # `quiet loglevel=3` keeps kernel chatter off it, and
+    # systemd.show_status=1 is what keeps the [ OK ] block from disappearing:
+    # systemd's default "auto" suppresses status while a splash is up.
+    for sw in quiet loglevel=3 systemd.show_status=1; do
+        case " $cl " in
+            *" $sw "*) echo "ok   grub splash entry passes $sw" ;;
+            *) echo "FAIL grub splash entry is missing $sw"; fail=1 ;;
+        esac
+    done
+    # And the opposite: a splash entry with no quiet would put kernel text
+    # back over the animation, which is the bug this switch exists to close.
     if printf '%s\n' "$cl" | grep -q ' quiet '; then
-        echo "FAIL grub splash entry carries quiet -- Esc would have no boot messages to show"
-        fail=1
+        echo "ok   grub splash entry keeps the kernel quiet"
     else
-        echo "ok   grub splash entry carries no quiet -- Esc has boot messages to show"
+        echo "FAIL grub splash entry leaks kernel chatter (no quiet)"
+        fail=1
     fi
     last=$(printf '%s\n' "$cl" | tr ' ' '\n' | grep '^console=' | tail -n1)
     if [ "$last" = "console=tty0" ]; then
@@ -120,6 +133,101 @@ if [ "$calls" -ge 2 ] && [ "$withsw" -ge "$calls" ]; then
     echo "ok   --ignore-serial-consoles on all $calls plymouthd call forms"
 else
     echo "FAIL --ignore-serial-consoles on $withsw of $calls plymouthd call forms"
+    fail=1
+fi
+
+# ---- 2b. the two helpers that own show and quit ---------------------------
+# The splash used to be cut off around frame 20 because the quit unit ran
+# `plymouth --quit` the moment the network came up. These helpers are the fix,
+# so the things that made the fix work are what is checked here: the units
+# exec them, the show side stamps the clock before the first frame, and the
+# quit side waits on a length it reads out of the theme.
+for f in "$SHOW" "$QUIT"; do
+    if [ ! -f "$f" ]; then
+        echo "FAIL $(basename "$f") is missing"
+        fail=1
+        continue
+    fi
+    if sh -n "$f" 2>/dev/null; then
+        echo "ok   $(basename "$f") parses as POSIX sh"
+    else
+        echo "FAIL $(basename "$f") does not parse as POSIX sh"
+        fail=1
+    fi
+done
+
+if grep -qE '^ExecStartPost=-?/usr/bin/copper-splash-show$' "$SHOWUNIT"; then
+    echo "ok   copper-plymouth.service starts the animation through the show helper"
+else
+    echo "FAIL copper-plymouth.service does not exec copper-splash-show"
+    fail=1
+fi
+if grep -qE '^ExecStart=/usr/bin/copper-splash-quit$' "$QUITUNIT"; then
+    echo "ok   copper-plymouth-quit.service hands back through the quit helper"
+else
+    echo "FAIL copper-plymouth-quit.service does not exec copper-splash-quit"
+    fail=1
+fi
+
+# The stamp has to be written in the show helper, and before the frames start.
+stamp_line=$(grep -n 'run/plymouth/started' "$SHOW" 2>/dev/null | head -n 1 | cut -d: -f1)
+show_line=$(grep -n -- '--show-splash' "$SHOW" 2>/dev/null | head -n 1 | cut -d: -f1)
+if [ -n "$stamp_line" ] && [ -n "$show_line" ] && [ "$stamp_line" -lt "$show_line" ]; then
+    echo "ok   the show helper stamps the monotonic clock before the first frame"
+else
+    echo "FAIL the show helper does not stamp the clock before showing the splash"
+    fail=1
+fi
+
+# The wait length must come from the theme, not from a copied 6 or 7.
+if grep -q 'frame_count' "$QUIT" && grep -q 'SetRefreshRate' "$QUIT"; then
+    echo "ok   the quit helper reads the animation length out of the theme"
+else
+    echo "FAIL the quit helper does not read frame_count/SetRefreshRate"
+    fail=1
+fi
+quit_line=$(grep -n -- '/usr/bin/plymouth --quit' "$QUIT" 2>/dev/null | head -n 1 | cut -d: -f1)
+sleep_line=$(grep -n '^[[:space:]]*sleep 1' "$QUIT" 2>/dev/null | head -n 1 | cut -d: -f1)
+if [ -n "$quit_line" ] && [ -n "$sleep_line" ] && [ "$sleep_line" -lt "$quit_line" ]; then
+    echo "ok   the quit helper waits before it quits"
+else
+    echo "FAIL the quit helper quits before waiting out the animation"
+    fail=1
+fi
+
+# And the arithmetic has to agree with the theme that is actually shipped:
+# every declared frame is on disk and the wait rounds the division up.
+if [ -r "$THEME" ]; then
+    frames=$(sed -n 's/^[[:space:]]*frame_count[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$THEME" | head -n 1)
+    rate=$(sed -n 's/^[[:space:]]*Plymouth\.SetRefreshRate[[:space:]]*(\([0-9][0-9]*\)).*/\1/p' "$THEME" | head -n 1)
+    ondisk=$(ls "$REPO"/iso/plymouth/copper/frames/*.png 2>/dev/null | wc -l | tr -d ' ')
+    if [ -n "$frames" ] && [ -n "$rate" ] && [ "$rate" -gt 0 ] \
+       && [ "$ondisk" -ge "$frames" ]; then
+        secs=$(( (frames + rate - 1) / rate ))
+        echo "ok   theme declares $frames frames at $rate fps (${secs}s wait), $ondisk on disk"
+    else
+        echo "FAIL theme frame_count/rate do not match the frames on disk" \
+             "(frames=${frames:-?} rate=${rate:-?} ondisk=${ondisk:-?})"
+        fail=1
+    fi
+else
+    echo "FAIL theme script $THEME is missing"
+    fail=1
+fi
+
+# Skipping the splash must not fail the boot: the service is conditional on
+# the kernel token, and the quit helper exits before it waits when no daemon
+# answers.
+if grep -q '^ConditionKernelCommandLine=splash' "$SHOWUNIT"; then
+    echo "ok   copper-plymouth.service is skipped without the splash token"
+else
+    echo "FAIL copper-plymouth.service starts the splash on every kernel entry"
+    fail=1
+fi
+if grep -q -- '--ping' "$QUIT"; then
+    echo "ok   the quit helper checks for a daemon before waiting"
+else
+    echo "FAIL the quit helper waits even when no splash is running"
     fail=1
 fi
 

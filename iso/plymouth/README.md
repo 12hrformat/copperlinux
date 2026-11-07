@@ -5,8 +5,9 @@ full-quality over the boot, from just after the rootfs is up until just before
 the login shell.
 
 This directory is the source. The theme is built into the ISO by
-`build_plymouth()` in `../build.sh`, started and stopped by `copper-init`
-(PID 1), and handed off to the desktop before XFCE starts.
+`build_plymouth()` in `../build.sh`, started and stopped by the
+`copper-plymouth` units in `../systemd/`, and handed off to the first-boot
+wizard and then the desktop.
 
 ## What is here
 
@@ -48,48 +49,48 @@ line (see below) the udev path is never entered.
 
 ## How it runs
 
-**Started and stopped by `copper-init` (PID 1).** There is no service manager in
-this image, so the splash is the init's job:
+Copper boots systemd as PID 1 now, so the splash has units rather than an init
+that owns it:
 
-- `splash_start()` runs right after `/proc`, `/sys`, `/dev` and `/run` are
-  mounted, and before anything prints — with the console redirected, the
-  animation covers the boot instead of scrolling underneath it.
-- `splash_stop()` runs before the first-boot wizard and the login shell, so the
-  console is back in text mode before anything asks the user a question.
+- `copper-plymouth.service` starts `plymouthd` during sysinit, before any
+  status line can scroll over the animation. Its `ExecStartPost` is
+  `copper-splash-show`, which asks for the first frame and stamps
+  `/run/plymouth/started` with `/proc/uptime` in the same breath. The unit is
+  conditional on the kernel's `splash` token, so the verbose and debug entries
+  stay text.
+- `copper-plymouth-quit.service` is the hand-back. Its `ExecStart` is
+  `copper-splash-quit`, which reads `frame_count` and `Plymouth.SetRefreshRate`
+  out of `copper.script`, waits out the remainder of `ceil(frames / rate)`
+  against that stamp, then runs `plymouth --quit` and `plymouth --wait`. The
+  wizard and the console are ordered on the far side of it, which is why the
+  animation finishes before the registration table appears instead of being
+  cut off around frame 20.
 
-Both are guarded rather than assumed:
+The helpers are guarded rather than optimistic:
 
-- the kernel command line must ask for it (`splash`, and not `nosplash` or
-  `plymouth.enable=0`), matched as exact tokens in `/proc/cmdline`;
-- both `/usr/sbin/plymouthd` and `/usr/bin/plymouth` must be present — a splash
-  that cannot be quit would sit on the console the login shell needs;
-- the daemon must answer `plymouth --ping` before `--show-splash` is sent, so a
-  broken Plymouth costs a short bounded pause, not a hang. If the
-  console-attached start fails, the daemon is restarted once without
-  `--attach-to-session` before the idea is dropped.
-
-`plymouthd` runs with `--no-daemon`, so it stays a direct child of PID 1 and is
-reaped by `waitpid` when it quits; no zombie is left behind.
-
-**`iso/startxfce.sh` quits it defensively.** copper-init normally stops the
-splash long before, but a session started by hand or through another path could
-still find it up. A splash holding the console is what makes Xorg fail with
-"Switching VT failed", so `startxfce.sh` pings Plymouth and quits it before it
-touches the VT. `--check` and `--help` exit before this and never touch it.
+- each one exits 0 when there is nothing to do, so a serial-only machine or a
+  unit that was skipped is not a failed boot;
+- `copper-splash-quit` asks `plymouth --ping` first and returns immediately if
+  no daemon answers;
+- the length comes from the theme itself, so re-exporting the animation with a
+  different frame count cannot silently outrun the wait.
 
 ## The kernel command line
 
 `iso/boot/grub.cfg`'s main entry carries:
 
 ```
-splash plymouth.ignore-udev console=ttyS0,115200 console=tty0
+splash plymouth.ignore-udev plymouth.ignore-serial-consoles quiet loglevel=3 systemd.show_status=1 console=ttyS0,115200 console=tty0
 ```
 
 - `splash` turns the animation on. Remove it (or add `nosplash`, or
-  `plymouth.enable=0`) to boot with a plain text console.
-- no `quiet`: Esc hands the splash over to the boot messages, and `quiet` would
-  leave those messages with nothing to show. The entry deliberately lets the
-  kernel log through underneath the splash.
+  `plymouth.enable=0`) to boot with a plain text console. The splash unit
+  checks for the token, so the verbose and debug entries do not start it.
+- `quiet loglevel=3` keeps kernel chatter off the screen. The boot report is
+  the systemd `[ OK ]` block and nothing else.
+- `systemd.show_status=1` is what makes that block appear. systemd's default
+  `auto` suppresses status lines while a splash is up, so without it the
+  console would be blank before the wizard.
 - `plymouth.ignore-udev` is required. This image runs no udev, and without the
   switch `plymouthd` waits on a device enumeration that never happens and the
   screen stays black. With it, `plymouthd` drives DRM or the framebuffer
@@ -114,14 +115,18 @@ The frames are used exactly as delivered:
 
 ## Testing
 
-There is no automated test yet. On a machine with the staged rootfs:
+`tests/plymouth-gate.sh` checks the parts that can be held still without a
+boot: the plymouthd argv, the kernel switches, the two helpers, and that the
+quit helper derives its wait from the theme instead of a copied number.
+
+To watch the animation by hand, on a machine with the staged rootfs:
 
 ```sh
-/usr/bin/plymouthd --mode=boot --pid-file=/run/plymouth/pid --attach-to-session --no-daemon &
+/usr/bin/plymouthd --mode=boot --pid-file=/run/plymouth/pid --no-daemon &
 sleep 1
-/usr/bin/plymouth --ping && /usr/bin/plymouth --show-splash
-sleep 3
-/usr/bin/plymouth quit
+/usr/bin/copper-splash-show
+sleep 8
+/usr/bin/copper-splash-quit
 ```
 
 `plymouth.ignore-udev` must be on the running kernel's command line for the

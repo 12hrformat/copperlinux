@@ -528,7 +528,8 @@ require_bb_config() {
       MOUNT UMOUNT SWITCH_ROOT HOSTNAME \
       BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP GETTY LOGIN \
-      CHPASSWD FEATURE_SHADOWPASSWDS SETFONT CLEAR TTY ; do
+      CHPASSWD FEATURE_SHADOWPASSWDS SETFONT CLEAR TTY \
+      SED CUT HEAD SLEEP ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -1290,7 +1291,8 @@ assert_shell_scripts_parse() {
     local n_posix=0
     for f in iso/copper.sh \
              iso/rootfs-overlay/usr/bin/ingot \
-             iso/systemd/copper-tty-clear iso/systemd/copper-dhcp; do
+             iso/systemd/copper-tty-clear iso/systemd/copper-dhcp \
+             iso/systemd/copper-splash-show iso/systemd/copper-splash-quit; do
       [ -f "$REPO/$f" ] || {
         echo "build: $f is missing, so the POSIX check cannot run on it" >&2
         bad=1; continue; }
@@ -1306,8 +1308,8 @@ assert_shell_scripts_parse() {
     # check at all, because it reads like the busybox tools were verified.
     # This loop was skipping every one of them over a wrong path, and
     # `[ -f ] || continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 4 ] || {
-      echo "build: the POSIX check covered $n_posix of 4 busybox tools" >&2; exit 1; }
+    [ "$n_posix" -eq 6 ] || {
+      echo "build: the POSIX check covered $n_posix of 6 busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
@@ -2581,9 +2583,10 @@ build_systemd() {
   # stamped_skip the literal string "…*.network", which would hash a filename
   # that does not exist and silently change what "already staged" means.
   #
-  # The two SCRIPTS in this directory count as unit files for this purpose.
-  # copper-tty-clear.service execs copper-tty-clear, and copper-network.service
-  # execs copper-dhcp, so editing either of them changes what the image does.
+  # The four SCRIPTS in this directory count as unit files for this purpose.
+  # copper-tty-clear.service execs copper-tty-clear, copper-network.service
+  # execs copper-dhcp, and the two Plymouth units exec copper-splash-show and
+  # copper-splash-quit, so editing any of them changes what the image does.
   # They were not in this list, and that was a live bug rather than a
   # theoretical one: the stage skips itself when its inputs still hash the
   # same, so a helper that is not one of the inputs did not invalidate the
@@ -2593,7 +2596,9 @@ build_systemd() {
   # exists to prevent.
   local sdin=("$SELF" "$ROOT/systemd"/*.service "$ROOT/systemd"/*.target)
   for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network \
-           "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp"; do
+           "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp" \
+           "$ROOT/systemd/copper-splash-show" \
+           "$ROOT/systemd/copper-splash-quit"; do
     [ -e "$p" ] && sdin+=("$p")
   done
   if [ -e "$TGT/lib/systemd/systemd" ] \
@@ -2777,13 +2782,17 @@ build_systemd() {
          "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service"
   # The helpers are SCRIPTS, not units, and they are the files in this
   # directory that have to be executable and to live on PATH (their units run
-  # them as /usr/bin/copper-tty-clear and /usr/bin/copper-dhcp). 0755 here,
-  # not 0644 like the units: a unit systemd reads is data, a program systemd
-  # execs is not.
+  # them as /usr/bin/copper-tty-clear, /usr/bin/copper-dhcp and the two
+  # splash helpers). 0755 here, not 0644 like the units: a unit systemd reads
+  # is data, a program systemd execs is not.
   install -D -m 0755 "$ROOT/systemd/copper-tty-clear" \
           "$TGT/usr/bin/copper-tty-clear"
   install -D -m 0755 "$ROOT/systemd/copper-dhcp" \
           "$TGT/usr/bin/copper-dhcp"
+  install -D -m 0755 "$ROOT/systemd/copper-splash-show" \
+          "$TGT/usr/bin/copper-splash-show"
+  install -D -m 0755 "$ROOT/systemd/copper-splash-quit" \
+          "$TGT/usr/bin/copper-splash-quit"
   for f in "$ROOT/systemd"/*.conf; do
     [ -e "$f" ] || continue
     install -m 0644 "$f" "$TGT/etc/systemd/"
@@ -2936,12 +2945,16 @@ build_systemd() {
   done
   # The clear helper is exec'd by the unit above. A unit with an ExecStart that
   # does not exist is the seatd failure all over again, one unit over -- so it is
-  # asserted executable at the exact path the unit names.
-  if [ ! -x "$TGT/usr/bin/copper-tty-clear" ]; then
-    echo "systemd: /usr/bin/copper-tty-clear is missing or not executable;" >&2
-    echo "          copper-tty-clear.service would exec a path that does not exist" >&2
-    exit 1
-  fi
+  # asserted executable at the exact path the unit names. The two splash
+  # helpers get the same treatment: copper-plymouth.service and
+  # copper-plymouth-quit.service exec them by absolute path.
+  for h in copper-tty-clear copper-splash-show copper-splash-quit; do
+    if [ ! -x "$TGT/usr/bin/$h" ]; then
+      echo "systemd: /usr/bin/$h is missing or not executable;" >&2
+      echo "          a unit would exec a path that does not exist" >&2
+      exit 1
+    fi
+  done
   # The seat is part of the migration, not a nicety: copper-seatd.service is
   # wanted by copper.target, and the two ways it can be broken are both silent.
   # The binary must be at a path the unit actually searches -- the unit's own

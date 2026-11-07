@@ -1,0 +1,19 @@
+#!/bin/sh
+# Copper Linux -- show the boot splash, and remember when it started.
+#
+# The quit side has to hold the splash up for the whole animation, and the one
+# fact it cannot recover later is when frame 1 was drawn. So stamp the clock
+# here, immediately before asking plymouthd to start, and let that side do the
+# arithmetic.
+#
+# /proc/uptime is used instead of date(1) on purpose: it does not jump when
+# userspace sets the clock during boot, and it is the same clock the quit
+# helper reads. Whole seconds are enough -- the quit side rounds up.
+set -u
+
+[ -d /run/plymouth ] || mkdir -p /run/plymouth 2>/dev/null || true
+if read -r up _ < /proc/uptime; then
+    printf '%s\n' "${up%%.*}" > /run/plymouth/started 2>/dev/null || true
+fi
+
+exec /usr/bin/plymouth --show-splash

@@ -10,7 +10,23 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin
 # it means the file gets the kernel's opinion of the boot and none of ours,
 # which is the half nobody wants. So say it in both places. The screen stays
 # authoritative and the log becomes worth having.
+#
+# Whether the screen sees it is decided by the kernel command line: the default
+# splash entry passes "quiet" and the verbose/debug entries do not, so a normal
+# boot keeps the screen for Plymouth and systemd's [ OK ] lines while a
+# debugging boot still gets every line.
+QUIET=0
+
 say() {
+    [ "$QUIET" = 1 ] || echo "copper: $*"
+    if [ -c /dev/ttyS0 ]; then
+        echo "copper: $*" > /dev/ttyS0 2>/dev/null || true
+    fi
+}
+
+# Failures are not chatter. They go to the screen even in quiet mode: a machine
+# that will not boot and will not say why is worse than a noisy one.
+notice() {
     echo "copper: $*"
     if [ -c /dev/ttyS0 ]; then
         echo "copper: $*" > /dev/ttyS0 2>/dev/null || true
@@ -18,6 +34,11 @@ say() {
 }
 
 /bin/busybox mount -t proc proc /proc 2>/dev/null
+if read -r cmdline < /proc/cmdline; then
+    case " $cmdline " in
+        *" quiet "*) QUIET=1 ;;
+    esac
+fi
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 /bin/busybox mkdir -p /mnt/root /mnt/upper /mnt/merged /run
@@ -26,9 +47,9 @@ say() {
 # to come back to, so "it didn't boot" is all the report anyone gets. Say
 # which step broke instead.
 rescue() {
-    say ""
-    say "$1"
-    say "dropping to a shell on /dev/console so you can look around"
+    notice ""
+    notice "$1"
+    notice "dropping to a shell on /dev/console so you can look around"
     exec /bin/busybox sh < /dev/console > /dev/console 2>&1
 }
 
@@ -96,7 +117,7 @@ find_upper() {
 if find_upper; then
     say "persistent upper: $UPPER_DEV carries the COPPER label"
     if ! /bin/busybox mount -t ext4 -o rw "$UPPER_DEV" /mnt/upper; then
-        say "$UPPER_DEV would not mount -- running this session in RAM"
+        notice "$UPPER_DEV would not mount -- running this session in RAM"
         UPPER_DEV=""
     fi
 fi
@@ -143,7 +164,7 @@ fi
 # at the pty pool in case devtmpfs has not created the legacy node.
 /bin/busybox mkdir -p /mnt/merged/dev/pts 2>/dev/null
 /bin/busybox mount -t devpts devpts /mnt/merged/dev/pts 2>/dev/null || \
-    say "devpts failed to mount: sudo and terminals will not work"
+    notice "devpts failed to mount: sudo and terminals will not work"
 [ -e /mnt/merged/dev/ptmx ] || /bin/busybox ln -s pts/ptmx /mnt/merged/dev/ptmx 2>/dev/null
 /bin/busybox mkdir -p /mnt/merged/run
 /bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null

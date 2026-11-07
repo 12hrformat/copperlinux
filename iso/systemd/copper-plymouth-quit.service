@@ -5,6 +5,14 @@
 # here the ordering takes over that job) and before anything that draws on tty1
 # for real: the first-boot wizard, the login shell, the boot-text clear.
 #
+# ExecStart is a helper, not `plymouth --quit` directly. Quitting the instant
+# the network came up cut the 150-frame animation off around frame 20; the
+# helper reads frame_count and the refresh rate out of the theme, waits out the
+# remainder against the stamp copper-splash-show left, and only then quits and
+# waits for the daemon to release the VT. The wizard draws on the far side of
+# that hand-back, so it appears after the last frame rather than over the
+# middle of it.
+#
 # The clear helper is deliberately NOT in this unit's Before= -- it erases the
 # kernel's boot text ahead of sysinit, before the splash is even up, and adding
 # the edge here closes an ordering cycle the boot would refuse to start.
@@ -21,7 +29,7 @@ Before=copper-firstboot.service copper-console.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/plymouth --quit
+ExecStart=/usr/bin/copper-splash-quit
 
 [Install]
 WantedBy=copper.target

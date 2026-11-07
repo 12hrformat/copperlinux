@@ -63,11 +63,23 @@ static void apply_hostname(void) {
     sethostname(host, strlen(host));
 }
 
+/* Set by --console: something else is PID 1 (systemd), and the units own the
+   daemons; this file owns only the console. Declared up here because say()
+   reads it: under systemd the console is about to draw the wizard's form and
+   then a clean shell prompt, and diagnostic chatter would land on both. The
+   serial log still gets every line, which is where a log is worth having. */
+static int g_console_only;
+
 /* Boot chatter. Goes to the console everyone is already looking at, and to
    the serial port when the machine has one. Both, not either: /dev/console
    only ever points at one of them — whichever console= was last on the kernel
    command line — so writing to stdout alone means a quiet boot leaves a serial
-   log completely empty, which is precisely when a log is most wanted. */
+   log completely empty, which is precisely when a log is most wanted.
+
+   Under --console (the systemd image) the console half is deliberately silent:
+   the boot report is systemd's [ OK ] screen, the wizard draws a table on the
+   same tty, and a stray "copper:" line either corrupts the table or pushes the
+   shell prompt down. The serial log is unchanged. */
 static void say(const char *fmt, ...) {
     char line[512];
     va_list ap;
@@ -79,8 +91,10 @@ static void say(const char *fmt, ...) {
     va_end(ap);
     if (n < 0)
         return;
-    printf("copper: %s\n", line);
-    fflush(stdout);
+    if (!g_console_only) {
+        printf("copper: %s\n", line);
+        fflush(stdout);
+    }
     tty = fopen("/dev/ttyS0", "w");
     if (tty) {
         fprintf(tty, "copper: %s\n", line);
@@ -1328,8 +1342,8 @@ static void splash_stop(void) {
 /* Set by --console: something else is PID 1 (systemd, once Copper makes that
    swap), and the half of this file that starts daemons is then somebody
    else's job -- the units own the daemons, this file owns only the console.
-   see console_main(). */
-static int g_console_only = 0;
+   see console_main(). The definition is above say(), which reads it to keep
+   the console quiet. */
 
 /* ---- the system bus -------------------------------------------------------
 

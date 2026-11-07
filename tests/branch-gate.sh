@@ -13,7 +13,8 @@
 # ingot's install lands in a scratch INGOT_ROOT and its repo is served on
 # localhost, starthyprland's compositor is a stub under a private home,
 # hypr-defaults only writes into a scratch tree, plymouth-gate.sh only reads
-# grub.cfg and copper-init.c, polkit-gate.sh only reads the init source, the
+# grub.cfg, copper-init.c and the Plymouth units/helpers, polkit-gate.sh only
+# reads the init source, the
 # overlay and build.sh, network-gate.sh runs the real lease script against
 # a stub ip(8), and console-gate.sh reads the startup files and runs their
 # TERM block against a stubbed tty(1) -- so all seven run unprivileged too.

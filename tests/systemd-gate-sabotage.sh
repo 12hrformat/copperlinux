@@ -457,11 +457,12 @@ run_case "the stage stops installing the dhcp helper" \
 #     of the inputs does not invalidate the stamp: edit the helper, re-run the
 #     build, and the stage said "already staged, skipping" and the ISO shipped
 #     the PREVIOUS helper. A stale artifact with a green light.
-run_case "the stage stops stamping on the dhcp helper" \
+run_case "the stage stops stamping on the splash helper" \
     "$B" \
-    '           "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp"; do' \
-    '           "$ROOT/systemd/copper-tty-clear"; do' \
-    "FAIL.*stamps on copper-dhcp"
+    '           "$ROOT/systemd/copper-splash-show" \
+           "$ROOT/systemd/copper-splash-quit"; do' \
+    '           "$ROOT/systemd/copper-splash-quit"; do' \
+    "FAIL.*stamps on copper-splash-show"
 
 # 31. The stage stops asserting that a command the units name is in the tree.
 #     /sbin/udhcpc is what the helper execs, and /bin/sh is what the seatd

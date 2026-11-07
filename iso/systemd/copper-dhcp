@@ -37,8 +37,20 @@ export PATH
 
 # To the screen, and to the serial port when there is one -- the same two
 # places the boot scripts elsewhere in this image speak to.
+#
+# The screen half is muted when the kernel command line says quiet (the normal
+# splash entry does): the boot report there is systemd's [ OK ] block, and a
+# stray "copper-dhcp:" line either lands behind the animation or pushes the
+# wizard's form down. The serial log keeps every line either way, which is
+# where a post-mortem looks.
+QUIET=0
+if read -r cmdline < /proc/cmdline 2>/dev/null; then
+    case " $cmdline " in
+        *" quiet "*) QUIET=1 ;;
+    esac
+fi
 say() {
-    echo "copper-dhcp: $*"
+    [ "$QUIET" = 1 ] || echo "copper-dhcp: $*"
     if [ -c /dev/ttyS0 ]; then
         echo "copper-dhcp: $*" > /dev/ttyS0 2>/dev/null || true
     fi

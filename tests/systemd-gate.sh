@@ -522,6 +522,41 @@ else
         "$(grep Before "$TGT/etc/systemd/system/copper-plymouth-quit.service" 2>&1 | tr '\n' '|')"
 fi
 
+# Show and quit are helpers now, not bare plymouth calls. The quit helper is
+# what makes the splash play all 150 frames instead of quitting on the first
+# network beat, and the show helper is what leaves it the clock to wait
+# against. Both exec'd at the exact path the units name, and both installed.
+for h in copper-splash-show copper-splash-quit; do
+    if [ -x "$TGT/usr/bin/$h" ]; then
+        ok "splash helper installed executable at /usr/bin/$h"
+    else
+        bad "splash helper installed executable at /usr/bin/$h" \
+            "$(ls -l "$TGT/usr/bin/$h" 2>&1)"
+    fi
+done
+if grep -qE '^ExecStartPost=-?/usr/bin/copper-splash-show$' \
+        "$TGT/etc/systemd/system/copper-plymouth.service"; then
+    ok "copper-plymouth.service shows the splash through the helper"
+else
+    bad "copper-plymouth.service shows the splash through the helper" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-plymouth.service" 2>&1 | tr '\n' '|')"
+fi
+if grep -qE '^ExecStart=/usr/bin/copper-splash-quit$' \
+        "$TGT/etc/systemd/system/copper-plymouth-quit.service"; then
+    ok "copper-plymouth-quit.service quits through the helper"
+else
+    bad "copper-plymouth-quit.service quits through the helper" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-plymouth-quit.service" 2>&1 | tr '\n' '|')"
+fi
+# The verbose and debug grub entries must not be covered by the splash.
+if grep -qE '^ConditionKernelCommandLine=splash$' \
+        "$TGT/etc/systemd/system/copper-plymouth.service"; then
+    ok "copper-plymouth.service is conditional on the splash token"
+else
+    bad "copper-plymouth.service is conditional on the splash token" \
+        "$(grep Condition "$TGT/etc/systemd/system/copper-plymouth.service" 2>&1 | tr '\n' '|')"
+fi
+
 # The units must be present as real files at mode 644 -- a unit installed 0777
 # is one systemd reads with a warning, and the source tree is 777 on Windows.
 for u in copper.target copper-tty-clear.service copper-firstboot.service \
@@ -847,7 +882,7 @@ else
 fi
 
 # ---- the stage stamps on the helpers it installs ---------------------------
-# The stage skips itself when its inputs still hash the same. The two scripts
+# The stage skips itself when its inputs still hash the same. The scripts
 # in iso/systemd/ are inputs in exactly that sense -- a unit execs each of
 # them -- and they were not in the list. So editing a helper did not
 # invalidate the stamp: the stage said "already staged, skipping" and the ISO
@@ -859,7 +894,7 @@ fi
 # thing under test, not in a copy of it.
 sdin_block() { sed -n '/^  local sdin=/,/^  done$/p' "$BUILD"; }
 SB=$(sdin_block)
-for h in copper-tty-clear copper-dhcp; do
+for h in copper-tty-clear copper-dhcp copper-splash-show copper-splash-quit; do
     if printf '%s\n' "$SB" | grep -q "systemd/$h"; then
         ok "the systemd stage stamps on $h"
     else
