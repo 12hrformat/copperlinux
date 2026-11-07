@@ -30,10 +30,10 @@ if [ -r "$SCRIPT" ]; then
         "$SCRIPT" | head -n 1)
 fi
 [ -n "$frames" ] || frames=150
-[ -n "$rate" ] || rate=24
+[ -n "$rate" ] || rate=12
 case "$frames" in ''|*[!0-9]*) frames=150 ;; esac
-case "$rate" in ''|*[!0-9]*) rate=24 ;; esac
-[ "$rate" -gt 0 ] || rate=24
+case "$rate" in ''|*[!0-9]*) rate=12 ;; esac
+[ "$rate" -gt 0 ] || rate=12
 
 # Rounded up: a partly played last frame still counts as played.
 want=$(( (frames + rate - 1) / rate ))

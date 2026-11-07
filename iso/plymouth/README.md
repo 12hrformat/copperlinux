@@ -109,7 +109,9 @@ The frames are used exactly as delivered:
   stretching;
 - frames are decoded on demand, one per tick. Preloading all 150 would cost over
   a gigabyte resident (a decoded 1080p frame is about 8 MB);
-- they play at 24 fps, which is the rate the theme requests, and the last frame
+- they play at 12 fps, which is the rate the theme requests (the decoder cannot
+  keep up with 24 fps of full 1080p PNG decode and scale, which dropped frames
+  and read as a stutter on the splash), and the last frame
   is **held** rather than looped, so the animation does not visibly restart
   while the rest of the boot finishes.
 

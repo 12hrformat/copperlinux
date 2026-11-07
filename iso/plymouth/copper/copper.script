@@ -63,7 +63,8 @@ fun refresh_callback ()
 
 Plymouth.SetRefreshFunction (refresh_callback);
 
-# 24 fps. Each tick decodes a full 1080p PNG, so the ceiling is the decoder, not
-# the display; 24 leaves a little headroom on a slow machine without looking
-# like a slideshow.
-Plymouth.SetRefreshRate (24);
+# 12 fps. Each tick decodes a full 1080p PNG, so the ceiling is the decoder, not
+# the display. At 24 fps the decoder was falling behind and dropping frames,
+# which read as a stutter on the splash. 12 fps halves the decode pressure and
+# still looks smooth for a boot animation.
+Plymouth.SetRefreshRate (12);
