@@ -28,7 +28,7 @@
 #   - install/remove/update/reinstall on the real / refuse for a non-root
 #     user with a sudo hint (INGOT_ROOT is the rootless test path)
 #
-# Needs: python3 (to serve), wget, tar, sha256sum. No root: it never writes
+# Needs: python3 (to serve), curl, tar, sha256sum. No root: it never writes
 # outside its own temp tree. CI runs it via tests/branch-gate.sh alongside
 # the other root-using gates.
 
