@@ -135,31 +135,24 @@ draw_bar() {
     "$pct" "$bar" "$cur" "$tot" "$kib" "$eta" >&2
 }
 
-# download_once <file> <url> <total> -- one curl attempt. On a terminal with a
-# known size it runs curl in the background and repaints a live progress bar
+# download_once <file> <url> <total> -- one wget attempt. On a terminal with a
+# known size it runs wget in the background and repaints a live progress bar
 # from the growing file. Polling uses stat -c %s (busybox and GNU) which is
 # metadata only -- NOT wc -c, which reads the whole payload every second, and
 # NOT wc -c's `SIZE filename` output shape. Off a terminal, or with no size
-# known, it is a plain silent curl.
-#
-# The transferer is curl, not wget: the busybox wget this image ships has been
-# failing every fetch with "wget: bad address '<host>'" (the string lives in
-# busybox's own binary, the one with WGET_HTTPS/WGET_OPENSSL enabled), which
-# left ingot unable to download anything at all. curl is the downloader
-# build.sh already uses for its own fetches (with -fL and retries) and is the
-# one with the TLS helper built in, so it is the transferer that has to work.
+# known, it is a plain quiet wget.
 download_once() { # download_once <file> <url> <total>
   file=$1; url=$2; total=${3:-}
   # Bar only for real payloads on a real terminal: tiny packages (libpcap 136K,
   # tcpdump 533K) finish faster than the bar can tick, and logs/scripts are
   # quiet pipes, not terminals.
   if [ -t 2 ] && [ -n "$total" ] && [ "$total" -ge 1048576 ]; then
-    curl -fL -C - -o "$file" "$url" &
-    cpid=$!
+    wget -q -c -O "$file" "$url" &
+    wpid=$!
     prev=0
     speed=0
     t_last=$(date +%s)
-    while kill -0 "$cpid" 2>/dev/null; do
+    while kill -0 "$wpid" 2>/dev/null; do
       sleep 1
       t_now=$(date +%s)
       now=$(stat -c %s "$file" 2>/dev/null || echo 0)
@@ -169,7 +162,7 @@ download_once() { # download_once <file> <url> <total>
       draw_bar "$now" "$total" "$speed"
       prev=$now; t_last=$t_now
     done
-    wait "$cpid"
+    wait "$wpid"
     rc=$?
     done_now=$(stat -c %s "$file" 2>/dev/null || echo 0)
     case "$done_now" in ''|*[!0-9]*) done_now=0 ;; esac
@@ -177,22 +170,27 @@ download_once() { # download_once <file> <url> <total>
     printf '\n' >&2
     return $rc
   fi
-  curl -fL -o "$file" "$url"
+  wget -q -c -O "$file" "$url"
 }
 
-# fetch url -> file. curl does the transfer; -f makes an HTTP error a failure
-# instead of saving an error page as the payload, and -C - lets the retry loop
-# below resume a transfer that dropped mid-flight. The note about stderr goes
-# to stderr, not stdout: fetch_meta ends with `echo "/tmp/$name"` and
-# cmd_install captures ALL of its stdout via `meta=$(fetch_meta ...)` -- a
-# stdout note would land in the package meta and break jget. stderr is the
-# notification channel here.
+# fetch url -> file. busybox wget and GNU wget both accept -O and -q.
+# busybox wget's openssl helper path verifies certificates (the image ships
+# openssl since 2026-10-10); only the internal-TLS fallback skips that, and
+# the helper is the path a normal image takes.
+#
+# Say what we are doing before touching the network -- a multi-tens-of-MB
+# payload from the release CDN looks like a hang when the only output line is
+# the trailing "installed". The note goes to stderr, not stdout: fetch_meta
+# ends with `echo "/tmp/$name"` and cmd_install captures ALL of its stdout via
+# `meta=$(fetch_meta ...)` -- a stdout note would land in the package meta and
+# break jget. stderr is the notification channel here.
 #
 # The release CDN drops long slow transfers ("connection closed prematurely"
-# from the old transferer, i.e. the server closed the socket before
-# content-length bytes arrived). One curl shot therefore fails most of the
-# time on a 120MB payload; retry a few times so each attempt resumes the bytes
-# already pulled instead of restarting.
+# from busybox, i.e. the server closed the socket before content-length bytes
+# arrived). One wget shot therefore fails most of the time on a 120MB payload;
+# retry a few times with -c so each attempt resumes the bytes already pulled
+# instead of restarting. busybox wget checks that the server honored the Range
+# header and starts over itself when it did not.
 dl() { # dl <file> <url> [size]
   file=$1; url=$2; total=${3:-}
   if [ -n "$total" ]; then
