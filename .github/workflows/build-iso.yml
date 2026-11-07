@@ -80,7 +80,9 @@ jobs:
           for s in tests/*.sh iso/live/init \
                    iso/rootfs-overlay/usr/share/udhcpc/default.script \
                    iso/systemd/copper-tty-clear \
-                   iso/systemd/copper-dhcp; do
+                   iso/systemd/copper-dhcp \
+                   iso/systemd/copper-splash-show \
+                   iso/systemd/copper-splash-quit; do
             bash -n "$s" || { echo "::error::syntax:$s"; bad=1; }
           done
           exit $bad
