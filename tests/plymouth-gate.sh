@@ -1,8 +1,9 @@
 #!/bin/sh
 # Gate for the boot splash's plymouthd invocation (bug 25).
 #
-# The splash is started by PID 1, and the one part of that a test on this box
-# can really hold still is the argv copper-init hands plymouthd. It matters
+# The splash is started by the copper-plymouth unit and quit by its helper,
+# and the one part of that a test on this box can really hold still is the
+# argv copper-init hands plymouthd. It matters
 # because the failure mode is silent in one direction and fatal in the other:
 # plymouthd returns before creating a renderer when it decides a serial console
 # owns the display (so no frame is ever drawn), and it refuses to start at all
@@ -49,9 +50,10 @@ fi
 
 # ---- 1. the kernel switch, and tty0 still owning /dev/console -------------
 # The grub.cfg half: the splash entry must ask for the splash, must tell
-# plymouthd the serial console is not the display, must not carry quiet (the
-# boot messages Esc is supposed to reveal would be silenced), and must still
-# leave tty0 last (the last console= is the one that owns /dev/console -- bug 7).
+# plymouthd the serial console is not the display, must keep the kernel quiet
+# (quiet loglevel=3), must force systemd's [ OK ] status block back on
+# (systemd.show_status=1), and must still leave tty0 last (the last console=
+# is the one that owns /dev/console -- bug 7).
 cl=$(sed -n '/^[[:space:]]*linux .*splash/p' "$GRUB" | head -n1)
 if [ -z "$cl" ]; then
     echo "FAIL grub.cfg has no splash entry"
