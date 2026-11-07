@@ -74,7 +74,7 @@ HYPR_PPA_FPR="A54D23B62FF3FCC76EFF71E8FDBAAA1CF0CCF48E"
 STAGE=${1:-all}
 
 [ "$(id -u)" = 0 ] || { echo "build.sh: run with sudo/root"; exit 1; }
-command -v curl >/dev/null || { echo "build.sh: need curl"; exit 1; }
+command -v wget >/dev/null || { echo "build.sh: need wget"; exit 1; }
 
 mkdir -p "$DL" "$OUT" "$SYS"/{bin,lib} \
   "$TGT"/{bin,sbin,usr/bin,usr/sbin,usr/share,etc,dev,proc,sys,run,tmp,home,root,var/log,mnt,boot}
@@ -160,9 +160,9 @@ fetch() {                   # fetch url -> prints tarball path (stdout only)
   local f="$DL/${1##*/}"
   [ -s "$f" ] && { echo "$f"; return; }
   echo "  < $url" >&2
-  # Download to the side and rename: an interrupted curl leaves a partial
+  # Download to the side and rename: an interrupted wget leaves a partial
   # file, and the existence test above would trust that file forever after.
-  curl -fL --retry 3 --retry-delay 2 -o "$f.part" "$url"
+  wget -t 3 -O "$f.part" "$url"
   [ -s "$f.part" ] || { echo "fetch failed: $url" >&2; exit 1; }
   mv "$f.part" "$f"
   echo "$f"
@@ -1492,7 +1492,7 @@ build_gui() {
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme dmz-cursor-theme librsvg2-common openssl ca-certificates e2fsprogs \
-         libc-bin curl make nano bash ncurses-base \
+         libc-bin make nano bash ncurses-base \
          firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
          fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \
@@ -1867,9 +1867,8 @@ build_hypr() {
   rm -rf "$HA"
   mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
   local asc="$WORK/cppiber-hyprland.asc" fpr
-  if ! curl -fsSL --retry 3 --retry-all-errors \
-       "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPR_PPA_FPR" \
-       -o "$asc"; then
+  if ! wget -q -t 3 -O "$asc" \
+       "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPR_PPA_FPR"; then
     echo "hypr: could not fetch the PPA archive key from the keyserver" >&2
     exit 1
   fi
@@ -2117,7 +2116,7 @@ build_hypr() {
     fi
     rm -f "$cfg"
     echo "  < $HYPR_CFG_URL" >&2
-    curl -fsSL --retry 3 --retry-all-errors -o "$cfg.part" "$HYPR_CFG_URL" || {
+    wget -q -t 3 -O "$cfg.part" "$HYPR_CFG_URL" || {
       rm -f "$cfg.part"; continue; }
     got=$(sha256sum "$cfg.part" | cut -d' ' -f1)
     if [ "$got" != "$HYPR_CFG_SHA256" ]; then
