@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Twenty-one gates: smoke.sh always; startxfce-gate.sh,
+# Twenty-two gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
 # calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
-# starthyprland-gate.sh, hypr-defaults-gate.sh, plymouth-gate.sh and
-# polkit-gate.sh do not --
+# starthyprland-gate.sh, hypr-defaults-gate.sh, plymouth-gate.sh,
+# polkit-gate.sh and network-gate.sh do not --
 # ingot's install lands in a scratch INGOT_ROOT and its repo is served on
 # localhost, starthyprland's compositor is a stub under a private home,
 # hypr-defaults only writes into a scratch tree, plymouth-gate.sh only reads
 # grub.cfg and copper-init.c, and polkit-gate.sh only reads the init source, the
-# overlay and build.sh -- so all five run unprivileged too.
+# overlay and build.sh, and network-gate.sh runs the real lease script against
+# a stub ip(8) -- so all six run unprivileged too.
 # kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
 # the shipped require_kernel_config() against synthetic configs rather than
 # building a kernel.
@@ -419,6 +420,22 @@ if out=$(sh tests/polkit-gate.sh 2>&1); then
     record polkit-gate.sh ok "$n checks"
 else
     record polkit-gate.sh bad "a system-bus/polkit check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/network-gate.sh: a lease always leaves a resolver ---"
+# The real udhcpc lease script, run against a stub ip(8). It exists because an
+# ISO shipped a script that only wrote /etc/resolv.conf when the lease carried
+# a search domain; a normal lease left 1.1.1.1/9.9.9.9 as the only servers,
+# and a network that blocks public DNS turned every lookup into "bad address".
+# Unprivileged: it never touches the host's interfaces.
+if out=$(sh tests/network-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record network-gate.sh ok "$n checks"
+else
+    record network-gate.sh bad "the lease script does not always leave a resolver"
     printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
 fi
 
