@@ -154,7 +154,7 @@ download_once() { # download_once <file> <url> <total>
   # tcpdump 533K) finish faster than the bar can tick, and logs/scripts are
   # quiet pipes, not terminals.
   if [ -t 2 ] && [ -n "$total" ] && [ "$total" -ge 1048576 ]; then
-    curl -fL -o "$file" "$url" &
+    curl -fL -C - -o "$file" "$url" &
     cpid=$!
     prev=0
     speed=0
