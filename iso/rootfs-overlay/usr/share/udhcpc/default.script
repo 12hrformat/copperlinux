@@ -4,7 +4,7 @@
 # default.script — what udhcpc runs every time the lease changes state.
 # Same job as busybox's examples/udhcp/simple.script: take the address the
 # server offered us, point the default route at its router, and write
-# resolv.conf with public resolvers first and the DHCP-provided resolvers after.
+# resolv.conf with the DHCP-provided resolvers first, public ones after them.
 #
 # udhcpc hands us these in the environment:
 #   interface ip subnet mask broadcast router dns domain lease
@@ -116,14 +116,13 @@ bound|renew)
     tmp="$RESOLV_CONF.copper.$$"
     : > "$tmp"
     [ -n "$domain" ] && echo "search $domain" >> "$tmp"
-    # Always write the fallback resolvers. The previous `-s "$tmp"` guard
-    # only became true when DHCP sent a search domain, so a normal lease with
-    # no domain left /etc/resolv.conf unchanged or empty and every hostname
-    # lookup failed.
-    for ns in 1.1.1.1 9.9.9.9; do
-        say "nameserver $ns"
-        echo "nameserver $ns" >> "$tmp"
-    done
+    # The resolver the lease itself carries comes first: it is the local one,
+    # so it answers fastest, and on a network that blocks or throttles public
+    # DNS it is the only one that answers at all. The public pair follows as
+    # the fallback, for a lease that carries no nameserver of its own -- which
+    # is why this block exists in the first place: the old `-s "$tmp"` guard
+    # only fired when a search domain was present, so a normal lease left the
+    # file untouched and every lookup died as "bad address".
     for ns in $dns; do
         case " 1.1.1.1 9.9.9.9 " in
             *" $ns "*) ;;
@@ -132,6 +131,10 @@ bound|renew)
                 echo "nameserver $ns" >> "$tmp"
                 ;;
         esac
+    done
+    for ns in 1.1.1.1 9.9.9.9; do
+        say "nameserver $ns"
+        echo "nameserver $ns" >> "$tmp"
     done
     mv "$tmp" "$RESOLV_CONF"
     ;;

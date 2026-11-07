@@ -78,6 +78,19 @@ else
     bad "the public fallbacks are kept alongside it" \
         "$(cat "$TMP/resolv.conf" 2>/dev/null | tr '\n' ' ')"
 fi
+# And in that order: resolv.conf order IS query order, because the resolver
+# library asks the first name and waits out its timeout before trying the
+# next. Public-first made a network that blocks or throttles 1.1.1.1 pay
+# that penalty on every single lookup -- which is what "the network is slow"
+# looks like from a browser or a package fetch.
+dhcp_at=$(grep -n '^nameserver 10.0.2.3$' "$TMP/resolv.conf" 2>/dev/null | head -n1 | cut -d: -f1)
+pub_at=$(grep -n '^nameserver 1.1.1.1$' "$TMP/resolv.conf" 2>/dev/null | head -n1 | cut -d: -f1)
+if [ -n "$dhcp_at" ] && [ -n "$pub_at" ] && [ "$dhcp_at" -lt "$pub_at" ]; then
+    ok "the DHCP nameserver is asked before the public fallbacks"
+else
+    bad "the DHCP nameserver is asked before the public fallbacks" \
+        "$(cat "$TMP/resolv.conf" 2>/dev/null | tr '\n' ' ')"
+fi
 
 # ---- a lease with a domain keeps the search line ---------------------------
 run_lease renew interface=eth0 ip=10.0.2.15 subnet=255.255.255.0 \
