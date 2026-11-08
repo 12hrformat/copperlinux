@@ -357,7 +357,7 @@ static void grant_devices(const struct session *s) {
 
 /* Make the input devices visible to libinput -- and say what each one is.
 
-   Hyprland gets its keyboard and pointer from libinput, and libinput discards
+   niri gets its keyboard and pointer from libinput, and libinput discards
    every device that libudev calls "not initialized". That flag does not mean
    the device is broken: it means udevd has written a record for it under
    /run/udev/data. This image runs no udev daemon -- the note under "the
@@ -951,22 +951,22 @@ static void prepare_session_dirs(const struct session *s) {
    half-written marker is never a machine with no desktop -- it is the default
    one. Takes a path rather than hardcoding one so tests/init-session.c can
    exercise it without touching /etc. */
-static int chose_hyprland(const char *path) {
+static int chose_niri(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     char line[32] = "";
     if (fgets(line, sizeof line, f))
         line[strcspn(line, "\r\n")] = '\0';
     fclose(f);
-    return strcmp(line, "hyprland") == 0;
+    return strcmp(line, "niri") == 0;
 }
 
 /* The seat.
 
-   Hyprland is a Wayland compositor: through libseat it opens /dev/dri and
+   niri is a Wayland compositor: through libseat it opens /dev/dri and
    /dev/input. With no logind and no systemd, the seat comes from seatd, a small
    daemon that hands out device access over a unix socket. Start it once, as
-   root, with the _seatd group the hypr stage created; the socket lands at
+   root, with the _seatd group the niri stage created; the socket lands at
    /run/seatd.sock and the session user reaches it because the first-boot wizard
    put them in _seatd.
 
@@ -979,11 +979,11 @@ static void start_seatd(void) {
     for (int i = 0; paths[i]; i++) {
         if (access(paths[i], X_OK) == 0) { exe = paths[i]; break; }
     }
-    if (!exe) return;                 /* no Hyprland in this image */
+    if (!exe) return;                 /* no niri in this image */
 
     /* On images where the _seatd group did not arrive from the build stage
        (a reset /etc/group on a live init), recreating it here is cheaper than
-       refusing to boot Hyprland. seatd looks the group up by name before doing
+       refusing to boot niri. seatd looks the group up by name before doing
        any useful work, so without this line on such systems it exits early
        with "Could not find group by name '_seatd'." and there is no seat. */
     if (!getgrnam("_seatd")) {
@@ -999,7 +999,7 @@ static void start_seatd(void) {
 
     /* Firstboot may have run before the _seatd group existed, so the account
        never got added to it. Put it there now, before the login shell starts,
-       so libseat can open the input devices (cursor/keyboard in Hyprland).
+       so libseat can open the input devices (cursor/keyboard in niri).
        Only when the group actually exists and the user is really not in it --
        addgroup's "already a member" complaint on every boot would be noise on
        the console. */
@@ -1040,7 +1040,7 @@ static void start_seatd(void) {
         execl(exe, "seatd", "-g", "_seatd", (char *)NULL);
         _exit(127);
     }
-    /* Best effort: a moment for the socket to bind so the first starthyprland
+    /* Best effort: a moment for the socket to bind so the first startniri
        finds a seat. Not a wait on the socket itself -- the user types slowly,
        and a busy wait here would only delay the shell. seatd is PID 1's child
        and is reaped only if it exits, which it should not. */
@@ -1349,9 +1349,10 @@ static void splash_stop(void) {
 
    polkit, udisks2 and power-profiles-daemon are D-Bus services: each owns a
    name on the *system* bus and the bus starts it on first use. There is no
-   systemd here to start that bus, so nothing did. hyprpolkitagent still came
-   up (custom.lua starts it), tried to reach org.freedesktop.PolicyKit1, and
-   got nothing; udisks and the power daemon were equally unreachable. The
+   systemd here to start that bus, so nothing did. The polkit agent still came
+   up (the session config starts it), tried to reach
+   org.freedesktop.PolicyKit1, and got nothing; udisks and the power daemon
+   were equally unreachable. The
    visible result is that every privileged action -- mount a stick, change the
    power profile -- has no agent to ask, so the desktop silently refuses.
 
@@ -1711,14 +1712,14 @@ static void run_session(void) {
        behind, so there is nothing to switch away from. */
 
     say("type %s",
-        chose_hyprland("/etc/copper-desktop")
-            ? "starthyprland for Hyprland (or startxfce for XFCE)"
-            : "startxfce for XFCE (or starthyprland for Hyprland)");
+        chose_niri("/etc/copper-desktop")
+            ? "startniri for niri (or startxfce for XFCE)"
+            : "startxfce for XFCE (or startniri for niri)");
     if (!g_console_only)
         say("Ctrl-Alt-F3 opens a password-protected login shell");
 
-    /* The seat and the system bus, before the shell: Hyprland needs the seat
-       the moment starthyprland runs, and the polkit agent that starts with the
+    /* The seat and the system bus, before the shell: niri needs the seat
+       the moment startniri runs, and the polkit agent that starts with the
        compositor needs the bus. Starting them here means the user never waits
        on either. Under --console there are units for both
        (copper-seatd.service and systemd's own dbus.service) ordered before
@@ -1747,7 +1748,7 @@ static void run_session(void) {
 
     for (;;) {
         /* The libudev records, before the shell for the same reason the seat
-           is: the compositor needs them the moment starthyprland runs. Every
+           is: the compositor needs them the moment startniri runs. Every
            pass, not just the first, so a session that logs out and back in --
            or a keyboard that only showed up later -- still gets its records.
            /run/udev is ours to make; there is no daemon to have made it, and

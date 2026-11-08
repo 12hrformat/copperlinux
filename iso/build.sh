@@ -14,7 +14,7 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | hypr | plymouth |
+# Stages: kernel | base | tools | copper | rootfs | gui | niri | plymouth |
 #         sudo | systemd | initramfs | iso
 #
 # systemd is opt-in and deliberately NOT part of `all`: see build_systemd. A
@@ -59,17 +59,17 @@ export FORCE_UNSAFE_CONFIGURE=1
 KREL=${KREL:-6.12.10}
 KPATH="v${KREL%%.*}.x"
 
-# The Hyprland session's configuration tree is NOT vendored into this repo: it
-# lives in 12hrformat/copper-hyprland-configs and is fetched at build time,
-# pinned to a commit and checked against a hash (build_hypr does the fetch and
+# The niri session's configuration tree is NOT vendored into this repo: it
+# lives in 12hrformat/copper-niriconfig and is fetched at build time,
+# pinned to a commit and checked against a hash (build_niri does the fetch and
 # the check).
-HYPR_CFG_SHA=9c2e40f5189859c79187629157c848944e249ecc
-HYPR_CFG_URL="https://codeload.github.com/12hrformat/copper-hyprland-configs/tar.gz/$HYPR_CFG_SHA"
-HYPR_CFG_SHA256=06e73842f24f23dfeb0d9c9a3df1ea28b52088a4266e805166ec07b2d1e9ce15
+NIRI_CFG_SHA=fdab48c39d03143910449847849a9555f8b186c4
+NIRI_CFG_URL="https://codeload.github.com/12hrformat/copper-niriconfig/tar.gz/$NIRI_CFG_SHA"
+NIRI_CFG_SHA256=d4e5791bde750acbe537a629efef30c8a46d2d774df4456264ef4ebe50691964
 
-# The cppiber/hyprland PPA for noble, with a verified fingerprint.
-HYPR_PPA_URL="https://ppa.launchpadcontent.net/cppiber/hyprland/ubuntu"
-HYPR_PPA_FPR="A54D23B62FF3FCC76EFF71E8FDBAAA1CF0CCF48E"
+# The praksharma/ubuntu-niri PPA for noble, with a verified fingerprint.
+NIRI_PPA_URL="https://ppa.launchpadcontent.net/praksharma/ubuntu-niri/ubuntu"
+NIRI_PPA_FPR="B2AA0C43F73505B5A65A53D26EE0350540BB4F59"
 
 STAGE=${1:-all}
 
@@ -86,11 +86,10 @@ lint_scripts() {
   local s
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
            "$ROOT/rootfs-overlay/usr/bin/ingot" \
-           "$ROOT/rootfs-overlay/usr/lib/copper/hypr-defaults.sh" \
-           "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh"; do
+           "$ROOT/startxfce.sh" "$ROOT/startniri.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script, ingot, hypr-defaults, startxfce and starthyprland parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot, startxfce and startniri parse clean"
 }
 lint_scripts
 
@@ -672,7 +671,7 @@ build_tools() {
 #     iso: the ISO boots systemd but its power commands are wrong:
 #          sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
 #
-# Called after every stage that copies packages into $TGT (copper, gui, hypr;
+# Called after every stage that copies packages into $TGT (copper, gui, niri;
 # plymouth only copies its own lib directory), and by the systemd stage right
 # after it swaps PID 1.
 # updated by farcrowx, bug 29, iso/build.sh (the /sbin-only relink loops)
@@ -735,14 +734,15 @@ init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
 # then go wrong, and both of them happened for real:
 #
 #   * cp cannot merge a directory into a symlink, so a package tree that has
-#     a real lib/systemd of its own -- the Hyprland closure has one, the gui
-#     closure does not -- cannot be copied into the tree at all:
+#     a real lib/systemd of its own -- the old Wayland desktop closure had one,
+#     the gui closure does not -- cannot be copied into the tree at all:
 #
 #         cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
-#             directory '.../hypr-root/./lib/systemd'
+#             directory '.../desktop-root/./lib/systemd'
 #
-#     and cp stops. That killed the Hyprland stage in CI, on two consecutive
-#     runs, on a tree that had been perfectly good a moment before.
+#     and cp stops. That killed the second-desktop stage in CI, on two
+#     consecutive runs, on a tree that had been perfectly good a moment
+#     before.
 #
 #   * a tree whose PID 1 is systemd packages a "default" ISO that silently
 #     boots systemd -- the half-done swap SYSTEMD-MIGRATION.md warns about,
@@ -857,13 +857,13 @@ local SRC="$ROOT/../src"
   # This input list and the one stamp_set hashes at the end of the function
   # must name the same files in the same order: the stamp is a hash of their
   # concatenation, so one file out of place makes it never match and the
-  # stage rebuild on every run. starthyprland.sh was missing here.
+  # stage rebuild on every run. startniri.sh was missing here.
   if [ -x "$TGT/usr/bin/copper-sh" ] && [ -x "$TGT/usr/bin/copper-init" ] \
      && [ -x "$TGT/usr/bin/copper-firstboot" ] \
      && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh" \
+        "$ROOT/startxfce.sh" "$ROOT/startniri.sh" \
         "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
         "$ROOT/copper.sh"
   then
@@ -894,9 +894,9 @@ local SRC="$ROOT/../src"
   # command-not-found from copper-sh.
   install -m 0755 "$ROOT/startxfce.sh" "$TGT/usr/bin/startxfce"
 
-  # The Hyprland launcher: the same contract style, same seeding/exit-code
+  # The niri launcher: the same contract style, same seeding/exit-code
   # discipline as startxfce.
-  install -m 0755 "$ROOT/starthyprland.sh" "$TGT/usr/bin/starthyprland"
+  install -m 0755 "$ROOT/startniri.sh" "$TGT/usr/bin/startniri"
 
   # shutdown: busybox has no such applet, so `sudo shutdown now` had nothing
   # to run. The wrapper maps its flags onto the busybox halt/poweroff/reboot
@@ -916,7 +916,7 @@ local SRC="$ROOT/../src"
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/startxfce usr/bin/starthyprland usr/bin/xprobe sbin/shutdown \
+           usr/bin/startxfce usr/bin/startniri usr/bin/xprobe sbin/shutdown \
            usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -936,7 +936,7 @@ local SRC="$ROOT/../src"
 
   stamp_set "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
     "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-    "$ROOT/startxfce.sh" "$ROOT/starthyprland.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
+    "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
     "$ROOT/copper.sh"
 }
 
@@ -1041,7 +1041,7 @@ build_rootfs() {
          "$TGT/usr/share/bash-completion/completions/copper-wifi" 2>/dev/null || true
 
   # usr/share/mime/icons is a zero-byte legacy mapping that update-mime-database
-  # emits, and the gui and hypr stages each prune it after they run. A cache
+  # emits, and the gui and niri stages each prune it after they run. A cache
   # restore can still hold one from a build before those prunes existed, and the
   # gate below would then fail here, in rootfs, before either stage can run.
   # Drop the same empty mapping the stages drop, so the gate sees the tree the
@@ -1062,19 +1062,21 @@ build_rootfs() {
   # `find "$TGT"` beside them, and $TGT is absolute, so they matched nothing
   # and the exemption the gate below carries never applied here. That went
   # unnoticed for motd and timezone -- neither is empty in this image -- but
-  # not for the Hyprland skeleton: its Lua configuration require()s files that
-  # are DELIBERATELY empty, a stub like conf/environments/default.lua existing
-  # only to be required, and those are precisely the zero-byte files. Rootfs is
-  # stage 6 and hypr is stage 8, so the skeleton is unpacked after this sweep
-  # on a cold build and survives -- but any rebuild that re-ran rootfs (any
-  # edit under iso/rootfs-overlay/) swept the skel already sitting in the
-  # cached tree, and hypr's stamp still matched, so nothing put the stubs back.
-  # The ISO shipped a skeleton missing the files its own config requires
-  # (bug 26), and every home seeded from it failed to start.
+  # not for the old Wayland desktop skeleton: its Lua configuration require()d
+  # files that were DELIBERATELY empty, a stub like
+  # conf/environments/default.lua existing only to be required, and those are
+  # precisely the zero-byte files. Rootfs is stage 6 and the desktop stage was
+  # stage 8, so the skeleton was unpacked after this sweep on a cold build and
+  # survived -- but any rebuild that re-ran rootfs (any edit under
+  # iso/rootfs-overlay/) swept the skel already sitting in the cached tree, and
+  # the desktop stage's stamp still matched, so nothing put the stubs back. The ISO shipped a skeleton missing the files its own config
+  # required (bug 26), and every home seeded from it failed to start. The niri
+  # skeleton has no empty files, but the exemption stays: it is a data tree
+  # from another repo and a future revision can carry an empty marker.
   ( cd "$TGT" && find . -type f -size 0 \
       ! -path './etc/motd' \
       ! -path './etc/timezone' \
-      ! -path './usr/share/copper/hyprland-skel/*' \
+      ! -path './usr/share/copper/niri-skel/*' \
       ! -name 'mach_kernel' \
       -delete ) 2>/dev/null || true
 
@@ -1105,15 +1107,17 @@ build_rootfs() {
 # A few files are legitimately empty, so they are named rather than allowing a
 # blanket exemption.
 #
-# updated by dragon, bug 26: the Hyprland config skel is the one exception, and
+# updated by dragon, bug 26: the desktop config skel is the one exception, and
 # it is exempted as a whole subtree rather than file by file. It is a vendored,
-# sha256-pinned DATA tree (the hypr stage checks the tarball hash before it
+# sha256-pinned DATA tree (the niri stage checks the tarball hash before it
 # unpacks it), not a set of commands -- which is the only thing this gate is
-# for. ML4W ships zero-byte Lua include stubs that `require()` loads (empty is
-# valid Lua, and deleting them would break the config) and marker files whose
-# *presence* is the setting (`waybar-disabled`, `software.sh`). Naming the eight
-# files would only break again on the next re-pin, when upstream's next release
-# moves them; the subtree is the stable unit.
+# for. The old Wayland desktop tree shipped zero-byte Lua include stubs that
+# `require()`
+# loaded (empty is valid Lua, and deleting them broke the config) and marker
+# files whose *presence* is the setting (`waybar-disabled`, `software.sh`).
+# Naming the files individually would only break again on the next re-pin, when
+# upstream's next release moves them; the subtree is the stable unit. The niri
+# tree has neither, but the exemption is cheap and a re-pin can add one.
 #
 # mach_kernel is the vestigial cosmopolitan artifact: shipped empty, and
 # grub.cfg never boots it (the menu loads /boot/vmlinuz and /boot/initrd.img),
@@ -1131,7 +1135,7 @@ assert_no_empty_files() {
     ! -path './etc/timezone' \
     ! -path './var/log/*' \
     ! -name '*.uuid' \
-    ! -path './usr/share/copper/hyprland-skel/*' \
+    ! -path './usr/share/copper/niri-skel/*' \
     ! -name 'mach_kernel' \
     -print 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort )
 
@@ -1187,7 +1191,7 @@ assert_commands_reachable() {
       adduser addgroup chpasswd \
       ip ifconfig route ping wget nslookup \
       mount umount switch_root \
-      copper startxfce starthyprland \
+      copper startxfce startniri \
       vi ; do
 
     found=""
@@ -1473,14 +1477,14 @@ build_gui() {
   # the terminal or a question mark on the console. Noto carries the scripts
   # and symbols, Symbola the monochrome emoji, Noto Color Emoji the coloured
   # ones VTE can draw, Powerline the prompt glyphs, and Font Awesome the set
-  # the Hyprland config asks for by name. Hack, JetBrains Mono, Fira Code and
+  # the desktop's panels ask for by name. Hack, JetBrains Mono, Fira Code and
   # Liberation are the terminal faces themselves: they carry box drawing and
   # the powerline-adjacent shapes at one advance width, which is what the
   # desktop's font picker is looking for when it offers "more fonts".
   #
   # fontconfig (the package -- the library arrives with GTK) is the one that
   # ships fc-cache and fc-match. --no-install-recommends drops it, so the font
-  # cache step in startxfce/starthyprland found no fc-cache to run, silently
+  # cache step in startxfce/startniri found no fc-cache to run, silently
   # skipped, and left the live image rescanning every font directory on every
   # glyph lookup.
   #
@@ -1532,7 +1536,7 @@ build_gui() {
 
   copy_stage_in "$STAGE" "$TGT"
 
-  # Hyprland's fallback keymap and XFCE's pointer both depend on data files,
+  # The Wayland session's fallback keymap and XFCE's pointer both depend on data files,
   # not just their shared libraries. Catch a missing package payload here so
   # the booted desktop cannot silently have no keymap or an invisible cursor.
   for f in usr/bin/bash \
@@ -1780,32 +1784,31 @@ build_gui() {
 }
 
 # ---------------------------------------------------------------
-# 6f. the Hyprland session: the compositor from the cppiber PPA,
-#     the configuration from copper-hyprland-configs
 # ---------------------------------------------------------------
-# Hyprland is the optional second desktop. The first-boot wizard records
-# whether it was chosen (/etc/copper-desktop), starthyprland starts it from the
-# tty, and this stage is what puts it in the image.
+# 6f. the niri session: the compositor from the praksharma PPA,
+#     the configuration from copper-niriconfig
+# ---------------------------------------------------------------
+# niri is the optional second desktop. The first-boot wizard records whether it
+# was chosen (/etc/copper-desktop), startniri starts it from the tty, and this
+# stage is what puts it in the image.
 #
 # Two things arrive here, from two places, for two reasons.
 #
-# The compositor and its ecosystem come from ppa:cppiber/hyprland for noble.
-# noble packages no Hyprland at all, and this PPA is the source ML4W's own
-# setup uses and is built for noble's glibc 2.39, so nothing else in the
-# desktop stage has to move. The closure is computed exactly the way build_gui
-# computes XFCE's: apt against an EMPTY dpkg status file with --download-only
-# --no-install-recommends, so every library counts as missing and nothing
-# arrives half-installed, then dpkg-deb -x into a staging tree and cp -a -n
-# into the rootfs, where the busybox applets, the musl tools and the overlay's
-# /etc already are and win.
+# The compositor and its session tools come from ppa:praksharma/ubuntu-niri for
+# noble. noble packages no niri at all, and upstream publishes source tarballs
+# only -- there is no prebuilt release binary -- so a PPA built against noble's
+# glibc 2.39 is the one source that can actually run here. The closure is
+# computed exactly the way build_gui computes XFCE's: apt against an EMPTY dpkg
+# status file with --download-only --no-install-recommends, so every library
+# counts as missing and nothing arrives half-installed, then dpkg-deb -x into a
+# staging tree and cp -a -n into the rootfs, where the busybox applets, the musl
+# tools and the overlay's /etc already are and win.
 #
-# The configuration is ML4W OS 2.17, scoped to the Hyprland session (the
-# contents of 12hrformat/copper-hyprland-configs, hyprland.md 6). It is NOT
-# vendored into this repo; it is fetched from that repo at a pinned commit,
-# checked against a hash, and unpacked to /usr/share/copper/hyprland-skel.
-# starthyprland seeds it into the user's home the first time it runs, as the
-# user, so the files are owned by them (a root copy would leave a config the
-# user cannot edit).
+# The configuration lives in 12hrformat/copper-niriconfig. It is NOT vendored
+# into this repo; it is fetched from that repo at a pinned commit, checked
+# against a hash, and unpacked to /usr/share/copper/niri-skel. startniri seeds
+# it into the user's home the first time it runs, as the user, so the files are
+# owned by them (a root copy would leave a config the user cannot edit).
 #
 # The PPA is added in isolation: apt is pointed at a private sourceparts
 # directory holding a copy of the host's own sources plus the PPA, so the host's
@@ -1813,47 +1816,36 @@ build_gui() {
 # what IT resolves. The archive key is fetched by fingerprint and its
 # fingerprint is checked before it is trusted.
 #
-# Quickshell, which ML4W uses for the bar, is deliberately NOT built here. Its
-# pinned commit requires Qt 6.6 (cmake: QT_MIN_VERSION "6.6.0",
-# qt_standard_project_setup(REQUIRES 6.6)); noble ships Qt 6.4.2. It cannot be
-# built against noble's Qt without dragging a second Qt into the image, which is
-# a change of its own. Waybar ships from the PPA and is the bar instead; see
-# HANDOFF.md. Nothing here pretends Quickshell is present.
-build_hypr() {
+# noble's waybar is 0.9.24 and predates niri's `niri/workspaces` modules, which
+# arrived in 0.11. The bar in the config repo therefore uses `custom` modules
+# that ask niri over its IPC socket, rather than chasing a second, newer GTK
+# stack into the image. See the config repo's README.
+build_niri() {
   # The skeleton is unpacked here, but a stage that runs earlier can take files
-  # back out of it: build_rootfs sweeps every zero-byte file in the tree, and
-  # the Lua configuration's include stubs are zero bytes on purpose -- empty is
-  # valid Lua and require() loads it. The sweep exempts the skeleton now (bug 40,
-  # the half bug 26 left), but a cached tree can already have been swept, and
-  # hypr's stamp would still match and skip the stage that puts the files back.
-  # So the stub the config require()s is part of "already staged": if it is
-  # gone, the skeleton is not whole and the whole stage re-runs to re-unpack it.
+  # back out of it: build_rootfs sweeps every zero-byte file in the tree, and a
+  # cached tree can already have been swept while niri's stamp still matches.
+  # The files the session reads are part of "already staged": if one is gone,
+  # the skeleton is not whole and the whole stage re-runs to re-unpack it.
   #
-  # seatd and the _seatd group are here for the same reason, and the boot found
-  # them missing. The gate below ("seatd did not arrive from the packages") is
-  # the loud check, but a guard that skips the stage never runs it: the guard
-  # asked only about Hyprland, so a tree that HAD Hyprland and had LOST seatd
-  # (or the group build_gui appends, which build_rootfs' overlay copy clobbers
-  # on the second pass) skipped everything, passed everything, and shipped a
-  # seatd unit pointing at a binary that was not there.
-  if [ -e "$TGT/usr/bin/Hyprland" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/custom.lua" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/ml4w/settings/statusbar" ] \
-     && [ -e "$TGT/usr/lib/copper/hypr-defaults.sh" ] \
+  # seatd and the _seatd group are here for the same reason, and a boot found
+  # them missing once. Without the seat niri cannot take the DRM master and
+  # exits at start, so the guard asks about the binary and the group as well as
+  # the compositor.
+  if [ -e "$TGT/usr/bin/niri" ] \
+     && [ -e "$TGT/usr/share/copper/niri-skel/.config/niri/config.kdl" ] \
+     && [ -e "$TGT/usr/share/copper/niri-skel/.config/waybar/config.jsonc" ] \
+     && [ -e "$TGT/usr/share/copper/niri-skel/.config/waybar/scripts/workspaces.sh" ] \
      && [ -e "$TGT/usr/share/copper/wallpapers/copper-default.png" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/conf/environments/default.lua" ] \
      && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
-     && stamped_skip "$WORK/hypr.stamp" "$SELF" \
-        "$ROOT/rootfs-overlay/usr/lib/copper/hypr-defaults.sh" \
+     && stamped_skip "$WORK/niri.stamp" "$SELF" \
         "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"; then
-    echo "hypr: already staged, skipping"; return
+    echo "niri: already staged, skipping"; return
   fi
-  echo "==> Hyprland session"
-  local DH="$DL/hypr" STAGE="$WORK/hypr-root" deb n
-  local HA="$WORK/hypr-apt" status="$WORK/hypr-status"
-  local KEYRING="$HA/etc/apt/keyrings/cppiber-hyprland.gpg"
+  echo "==> niri session"
+  local DH="$DL/niri" STAGE="$WORK/niri-root" deb n
+  local HA="$WORK/niri-apt" status="$WORK/niri-status"
+  local KEYRING="$HA/etc/apt/keyrings/praksharma-ubuntu-niri.gpg"
   mkdir -p "$DH/partial"
   : > "$status"
 
@@ -1863,31 +1855,31 @@ build_hypr() {
   # expected on the build host -- it is the same host that runs apt -- and if it
   # is not there, say so rather than fall back to something unsigned.
   command -v gpg >/dev/null 2>&1 \
-    || { echo "hypr: gpg is needed to verify the PPA archive key" >&2; exit 1; }
+    || { echo "niri: gpg is needed to verify the PPA archive key" >&2; exit 1; }
   rm -rf "$HA"
   mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
-  local asc="$WORK/cppiber-hyprland.asc" fpr
+  local asc="$WORK/praksharma-ubuntu-niri.asc" fpr
   if ! wget -q -t 3 -O "$asc" \
-       "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPR_PPA_FPR"; then
-    echo "hypr: could not fetch the PPA archive key from the keyserver" >&2
+       "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$NIRI_PPA_FPR"; then
+    echo "niri: could not fetch the PPA archive key from the keyserver" >&2
     exit 1
   fi
   fpr=$(gpg --show-keys --with-colons "$asc" 2>/dev/null \
         | awk -F: '/^fpr:/{print $10; exit}')
-  if [ "$fpr" != "$HYPR_PPA_FPR" ]; then
-    echo "hypr: the PPA key's fingerprint is '$fpr', expected '$HYPR_PPA_FPR'" >&2
+  if [ "$fpr" != "$NIRI_PPA_FPR" ]; then
+    echo "niri: the PPA key's fingerprint is '$fpr', expected '$NIRI_PPA_FPR'" >&2
     exit 1
   fi
   gpg --dearmor < "$asc" > "$KEYRING"
-  [ -s "$KEYRING" ] || { echo "hypr: the PPA keyring came out empty" >&2; exit 1; }
-  echo "  archive key verified ($HYPR_PPA_FPR)"
+  [ -s "$KEYRING" ] || { echo "niri: the PPA keyring came out empty" >&2; exit 1; }
+  echo "  archive key verified ($NIRI_PPA_FPR)"
 
   # ---- sources, isolated ------------------------------------------------
   # A private sourceparts directory: a copy of whatever the host already uses,
   # plus the PPA. apt then reads the host's sources.list (untouched) and this
   # directory instead of /etc/apt/sources.list.d, so the PPA is visible to this
   # stage and to nothing else. The copy is what keeps noble's own mirrors in
-  # the mix: seatd, swaync, lua5.4 and the rest are ordinary noble packages.
+  # the mix: seatd, swaybg, jq and the rest are ordinary noble packages.
   if [ -d /etc/apt/sources.list.d ]; then
     cp -a /etc/apt/sources.list.d/. "$HA/etc/apt/sources.list.d/" 2>/dev/null || :
   fi
@@ -1897,8 +1889,8 @@ build_hypr() {
     echo "deb http://archive.ubuntu.com/ubuntu noble main universe" \
       > "$HA/etc/apt/sources.list.d/noble.list"
   fi
-  echo "deb [signed-by=$KEYRING] $HYPR_PPA_URL noble main" \
-    > "$HA/etc/apt/sources.list.d/cppiber-hyprland.list"
+  echo "deb [signed-by=$KEYRING] $NIRI_PPA_URL noble main" \
+    > "$HA/etc/apt/sources.list.d/praksharma-ubuntu-niri.list"
 
   # ---- the closure ------------------------------------------------------
   # Dir::State::status empty: every dependency counts as missing, the same
@@ -1914,86 +1906,54 @@ build_hypr() {
   apt-get "${AOPT[@]}" update -qq
 
   # The list is what has to be in the image for the session to come up with no
-  # network at all: the compositor and its ecosystem from the PPA (hyprland.md
-  # 3.1), and the ordinary noble pieces the session leans on (3.3, plus what
-  # ML4W's own config assumes the distro already has). Everything heavier is an
-  # ingot package and is named in the manifest, not here.
+  # network at all: the compositor and the pieces its own config names, plus the
+  # ordinary noble pieces the session leans on. Everything heavier is an ingot
+  # package and is named in the manifest, not here.
   #
-  #   hyprland              the compositor
-  #   hypridle/lock/paper/picker/sunset   the ecosystem tools ML4W drives
-  #   hyprpolkitagent       the authentication agent (no logind, so no
-  #                         polkit-gnome autolaunch via systemd)
-  #   hyprland-guiutils     the toolkit dialogs ML4W opens
-  #   xdg-desktop-portal-hyprland   screencopy and global shortcuts
-  #   waybar                the bar (Quickshell is deferred; see above)
+  #   niri=25.11ppa4        the compositor, pinned to the version this stage was
+  #                         written against; a silent PPA bump is how a config
+  #                         stops parsing on a machine nobody can type on
+  #   waybar                the bar (0.9.24; see the note above)
+  #   swaybg                the wallpaper, a layer-shell client
+  #   sway-notification-center  notifications (the swaync binary)
   #   fuzzel                the launcher
-  #   seatd                 the seat, since there is no logind
-  #   sway-notification-center   notifications (the swaync binary)
   #   kitty                 the terminal
-  #   lua5.4                ML4W's config is Lua
-  #   wl-clipboard cliphist      clipboard and its history
-  #   grim slurp            screenshots
+  #   seatd                 the seat, since there is no logind
+  #   policykit-1-gnome     the authentication agent (no systemd to autolaunch
+  #                         polkit-gnome for us)
+  #   polkitd pkexec        the polkit daemon and the tool the agent prompts
+  #                         through
+  #   xdg-desktop-portal and its gtk+gnome backends
+  #                         niri-portals.conf prefers `gnome;gtk;`; naming both
+  #                         means FileChooser, notifications and the secret
+  #                         service all have a running backend
+  #   gnome-keyring libsecret-1-0   the Secret portal's store
+  #   libnotify-bin         notify-send for scripts and swaync's client tests
+  #   wl-clipboard cliphist clipboard and its history
   #   brightnessctl         brightness keys
-  #   qt6ct                 Qt theming, which ML4W drives
-  #   fonts-font-awesome libnotify-bin libsecret-1-0 gnome-keyring
-  #   gnome-themes-extra gvfs-backends udisks2   theming and mounting
-  #   xdg-desktop-portal-gtk    the GTK portal (FileChooser and friends)
-  #   power-profiles-daemon the profile switcher the bar talks to
-  #   xdg-user-dirs         the XDG_* directories the config expects
-  #   polkitd pkexec        the polkit daemon and the tool hyprpolkitagent
-  #                         prompts through
+  #   playerctl             media keys
+  #   xdg-user-dirs         the XDG_* directories the desktop expects
+  #   gvfs-backends udisks2 mounting, for file managers and upload dialogs
+  #   power-profiles-daemon the profile switcher a future bar module can talk to
+  #   bibata-cursor-theme   the cursor named by the config; without it a session
+  #                         with no visible pointer
+  #   jq                    the bar's niri IPC helpers parse JSON with it
   #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
   #                         the GL/GBM stack the renderer needs; the gui
   #                         closure may not have brought the DRI drivers
-  #   xwayland              X11 apps under the compositor
-  #   inotify-tools imagemagick   used by ML4W's own scripts
-  #   bash                  every ML4W helper is #!/usr/bin/env bash. Copper's
-  #                          own scripts are POSIX on purpose and run under
-  #                          busybox ash, but this is a vendored config we
-  #                          promised to keep unmodified: without this one
-  #                          package the keybinds that shell out (killactive,
-  #                          screenshot, reload, moveTo, the theme toggles) all
-  #                          die as "bash: not found". It is ~1.4MB. The
-  #                          decision is logged in HANDOFF.md, Hyprland.
-  #   jq                    ML4W reads its own settings with it; without it
-  #                          the statusbar and theme scripts fail halfway.
-  #   rofi                  the launcher. ML4W 2.17 picked Walker; noble never
-  #                          got the memo. ml4w-launcher already falls back to
-  #                          rofi when Walker is absent, so bake the fallback
-  #                          and let the setting stop pretending otherwise.
-  #   psmisc procps util-linux   the unglamorous plumbing waybar's launch script
-  #                          assumes: killall and pkill to clear an old bar,
-  #                          flock for its one-at-a-time lock, pgrep for every
-  #                          "is this already running?" check ML4W makes. Skip
-  #                          them and the bar script exits on its first line
-  #                          while everyone insists the bar started.
-  #   playerctl              the media keys, which are the difference between a
-  #                          laptop and a very expensive picture frame.
-  #   bibata-cursor-theme   ML4W sets XCURSOR_THEME to Bibata-Modern-Ice and
-  #                          runs hyprctl setcursor at startup. Without the
-  #                          theme you get a session with no pointer: a cursor
-  #                          bug in theory and a scream in practice.
-  #   tesseract-ocr tesseract-ocr-eng   Super+Alt+A's text extractor. English is
-  #                          both the default language and the fallback when
-  #                          ML4W cannot work out the language list.
-  set -- hyprland hypridle hyprlock hyprpaper hyprpicker hyprsunset \
-         hyprpolkitagent hyprland-guiutils xdg-desktop-portal-hyprland \
-         waybar fuzzel rofi \
-         seatd sway-notification-center kitty lua5.4 wl-clipboard cliphist \
-         grim slurp brightnessctl qt6ct \
-         fonts-font-awesome libnotify-bin libsecret-1-0 gnome-keyring \
-         gnome-themes-extra gvfs-backends udisks2 xdg-desktop-portal-gtk \
-         power-profiles-daemon xdg-user-dirs polkitd pkexec \
-         libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 xwayland \
-         libxkbcommon0 libxkbcommon-x11-0 libinput10 \
-         inotify-tools imagemagick \
-         psmisc procps util-linux playerctl bibata-cursor-theme \
-         tesseract-ocr tesseract-ocr-eng \
-         bash jq
+  set -- niri=25.11ppa4 waybar swaybg sway-notification-center fuzzel kitty \
+         seatd brightnessctl playerctl wl-clipboard cliphist jq \
+         policykit-1-gnome polkitd pkexec \
+         xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-gnome \
+         gnome-keyring libsecret-1-0 libnotify-bin \
+         xdg-user-dirs gvfs-backends udisks2 power-profiles-daemon \
+         bibata-cursor-theme \
+         libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
+         libxkbcommon0 libinput10
   apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
-    >"$WORK/hypr-apt.log" 2>&1 \
-    || { echo "hypr: apt could not resolve the session closure:" >&2
-         tail -n 30 "$WORK/hypr-apt.log" >&2 2>/dev/null || :
+    >"$WORK/niri-apt.log" 2>&1 \
+    || { echo "niri: apt could not resolve the session closure:" >&2
+         tail -n 30 "$WORK/niri-apt.log" >&2 2>/dev/null || :
          exit 1; }
 
   rm -rf "$STAGE"; mkdir -p "$STAGE"
@@ -2029,26 +1989,24 @@ build_hypr() {
   # Shared libraries are the one thing copied from a PACKAGE that must be
   # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
   # version win, which is right for /etc, for the busybox applet links and for
-  # the static musl tools -- but wrong here: the PPA carries a NEWER
-  # libxkbcommon (and libinput) than noble's, Hyprland links the newer soname,
-  # and the version gui already put in /usr/lib would leave the compositor
-  # unable to start. Identical version -> the copy is the same bytes and this is
-  # a no-op; newer -> the newer library is the one its consumer was built
-  # against, and an older one is never what a newer consumer wants.
+  # the static musl tools -- but wrong here: if the PPA ever carries a library
+  # newer than noble's, niri links that one, and the version gui already put in
+  # /usr/lib would leave the compositor unable to start. Identical version ->
+  # the copy is the same bytes and this is a no-op; newer -> the newer library
+  # is the one its consumer was built against.
   while IFS= read -r so; do
     rel=${so#"$STAGE"/}
     mkdir -p "$TGT/$(dirname "$rel")"
     # -L dereferences symlinks to real files; -f forces the overwrite, so the
     # PPA's newer library always wins over an older base-stage copy even when
-    # the base shipped a regular file under the same name (cp -a alone would
-    # keep the older one).
+    # the base shipped a regular file under the same name.
     cp -a -f "$so" "$TGT/$rel"
   done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
   echo "  shared libraries from the stage take precedence over earlier packages"
 
   # The loader, defensively: the gui stage creates it, and every glibc ELF
   # needs it at exactly /lib64/ld-linux-x86-64.so.2 before a single instruction
-  # runs. build_hypr always runs after build_gui, so this only fires on a tree
+  # runs. build_niri always runs after build_gui, so this only fires on a tree
   # someone assembled by hand -- and then it makes the chroot gate below fail
   # for the right reason instead of a bare ENOENT.
   if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
@@ -2061,25 +2019,25 @@ build_hypr() {
   # asserts on every later build over this tree that no file is zero bytes.
   # Prune exactly the empties the packages brought, matched against the staging
   # tree so an empty file the base image has a name for is left alone.
-  find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/hypr-empties"
+  find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/niri-empties"
   while IFS= read -r rel; do
     rm -f "$TGT/$rel"
-  done < "$WORK/hypr-empties"
-  echo "  $(wc -l < "$WORK/hypr-empties") empty package files pruned"
+  done < "$WORK/niri-empties"
+  echo "  $(wc -l < "$WORK/niri-empties") empty package files pruned"
 
   # The generated caches the package postinsts would have made and this image
   # never runs. Best-effort: a stale cache costs a scan, not a session, so a
   # missing tool is reported and stepped over rather than failing the build.
   if [ -x "$TGT/usr/bin/update-mime-database" ]; then
     chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
-      >"$WORK/hypr-mime.log" 2>&1 \
+      >"$WORK/niri-mime.log" 2>&1 \
       || echo "  (update-mime-database failed; new mime types will not resolve)"
-    # updated by dragon, bug 26: the same legacy zero-byte icons map the gui
-    # stage prunes is re-created here, because this stage re-runs
-    # update-mime-database after gui already pruned it. Left alone it fails the
-    # whole-tree empty-file gate two stages later -- on a cache restore it fails
-    # *earlier*, in the rootfs step that runs before this one. Mirror the gui
-    # prune so the hypr stage cannot reintroduce it.
+    # the same legacy zero-byte icons map the gui stage prunes is re-created
+    # here, because this stage re-runs update-mime-database after gui already
+    # pruned it. Left alone it fails the whole-tree empty-file gate two stages
+    # later -- on a cache restore it fails *earlier*, in the rootfs step that
+    # runs before this one. Mirror the gui prune so the niri stage cannot
+    # reintroduce it.
     if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
       rm -f "$TGT/usr/share/mime/icons"
       echo "  pruned empty mime icons map (no icon mappings in the database)"
@@ -2090,13 +2048,13 @@ build_hypr() {
       [ -f "$tdir" ] || continue
       themedir=$(dirname "$tdir")
       chroot "$TGT" /usr/bin/gtk-update-icon-cache -f -t "${themedir#"$TGT"}" \
-        >"$WORK/hypr-icontheme.log" 2>&1 \
+        >"$WORK/niri-icontheme.log" 2>&1 \
         || echo "  (icon cache failed for ${themedir#"$TGT"})"
     done
   fi
   if [ -x "$TGT/usr/bin/update-desktop-database" ]; then
     chroot "$TGT" /usr/bin/update-desktop-database /usr/share/applications \
-      >"$WORK/hypr-desktop.log" 2>&1 \
+      >"$WORK/niri-desktop.log" 2>&1 \
       || echo "  (update-desktop-database failed; menu cache will be stale)"
   else
     echo "  (no update-desktop-database in the image; menu cache left unbuilt)"
@@ -2104,23 +2062,23 @@ build_hypr() {
 
   # ---- the configuration, pinned and hashed -----------------------------
   # The tree lives in its own repo so it can be re-pinned without a kernel
-  # build. The fetch is verified against HYPR_CFG_SHA256; a mismatch is a hard
+  # build. The fetch is verified against NIRI_CFG_SHA256; a mismatch is a hard
   # stop, because a config tree that is not the one that was reviewed is exactly
   # the thing this pin exists to prevent. Retried once, because a truncated
   # download is a transport failure and not a changed artifact.
-  local cfg="$DL/hypr-cfg-$HYPR_CFG_SHA.tar.gz" got try
+  local cfg="$DL/niri-cfg-$NIRI_CFG_SHA.tar.gz" got try
   for try in 1 2; do
     if [ -s "$cfg" ] \
-       && [ "$(sha256sum "$cfg" | cut -d' ' -f1)" = "$HYPR_CFG_SHA256" ]; then
+       && [ "$(sha256sum "$cfg" | cut -d' ' -f1)" = "$NIRI_CFG_SHA256" ]; then
       break
     fi
     rm -f "$cfg"
-    echo "  < $HYPR_CFG_URL" >&2
-    wget -q -t 3 -O "$cfg.part" "$HYPR_CFG_URL" || {
+    echo "  < $NIRI_CFG_URL" >&2
+    wget -q -t 3 -O "$cfg.part" "$NIRI_CFG_URL" || {
       rm -f "$cfg.part"; continue; }
     got=$(sha256sum "$cfg.part" | cut -d' ' -f1)
-    if [ "$got" != "$HYPR_CFG_SHA256" ]; then
-      echo "hypr: configuration tarball sha256 is $got, expected $HYPR_CFG_SHA256" >&2
+    if [ "$got" != "$NIRI_CFG_SHA256" ]; then
+      echo "niri: configuration tarball sha256 is $got, expected $NIRI_CFG_SHA256" >&2
       rm -f "$cfg.part"
       continue
     fi
@@ -2128,74 +2086,51 @@ build_hypr() {
     break
   done
   if [ ! -s "$cfg" ] \
-     || [ "$(sha256sum "$cfg" | cut -d' ' -f1)" != "$HYPR_CFG_SHA256" ]; then
-    echo "hypr: could not fetch the configuration tree at the pinned commit" >&2
-    echo "      $HYPR_CFG_URL" >&2
+     || [ "$(sha256sum "$cfg" | cut -d' ' -f1)" != "$NIRI_CFG_SHA256" ]; then
+    echo "niri: could not fetch the configuration tree at the pinned commit" >&2
+    echo "      $NIRI_CFG_URL" >&2
     exit 1
   fi
-  echo "  configuration tree verified ($HYPR_CFG_SHA)"
+  echo "  configuration tree verified ($NIRI_CFG_SHA)"
 
-  local cfgd="$WORK/hypr-cfg" top
+  local cfgd="$WORK/niri-cfg" top
   rm -rf "$cfgd"; mkdir -p "$cfgd"
   tar -xzf "$cfg" -C "$cfgd"
-  top="$cfgd/copper-hyprland-configs-$HYPR_CFG_SHA"
+  top="$cfgd/copper-niriconfig-$NIRI_CFG_SHA"
   if [ ! -d "$top/dotfiles" ]; then
-    echo "hypr: the configuration tarball has no dotfiles/ tree" >&2
+    echo "niri: the configuration tarball has no dotfiles/ tree" >&2
     exit 1
   fi
-  rm -rf "$TGT/usr/share/copper/hyprland-skel"
-  mkdir -p "$TGT/usr/share/copper/hyprland-skel"
-  cp -a "$top/dotfiles/." "$TGT/usr/share/copper/hyprland-skel/"
-  if [ ! -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ]; then
-    echo "hypr: the seeded config has no hypr/hyprland.lua" >&2
+  rm -rf "$TGT/usr/share/copper/niri-skel"
+  mkdir -p "$TGT/usr/share/copper/niri-skel"
+  cp -a "$top/dotfiles/." "$TGT/usr/share/copper/niri-skel/"
+  if [ ! -e "$TGT/usr/share/copper/niri-skel/.config/niri/config.kdl" ]; then
+    echo "niri: the seeded config has no niri/config.kdl" >&2
     exit 1
   fi
 
-  # git does not carry the exec bit across platforms, so the tree arrived with
-  # every script mode 0644 (verified: all 438 blobs are 100644). ML4W's config
-  # runs several of them by path -- ~/.config/ml4w/scripts/ml4w-autostart,
-  # waybar/launch.sh, listeners.sh -- and a bare path is execve: without +x they
-  # fail with "permission denied" and the desktop comes up with no bar. Anything
-  # that starts with a shebang is meant to run, so restore exactly that set.
+  # git does not carry the exec bit across platforms, so the tree can arrive
+  # with every script mode 0644. The bar runs its helper scripts by path, and a
+  # bare path is execve: without +x they fail with "permission denied" and the
+  # bar comes up with no workspace chips. Anything that starts with a shebang
+  # is meant to run, so restore exactly that set.
   n=0
   while IFS= read -r -d '' f; do
     if [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ]; then
       chmod 0755 "$f"; n=$((n + 1))
     fi
-  done < <(find "$TGT/usr/share/copper/hyprland-skel" -type f -print0)
+  done < <(find "$TGT/usr/share/copper/niri-skel" -type f -print0)
   echo "  $n scripts in the config tree marked executable"
 
-  # A CR in any of those scripts fails on the target and the target has no
-  # editor to fix it with; the config repo states the LF policy, and this proves
-  # it held for the artifact that actually arrived.
-  if grep -rIl $'\r' "$TGT/usr/share/copper/hyprland-skel" 2>/dev/null \
+  # A CR in any of those files fails on the target and the target has no editor
+  # to fix it with; the config repo states the LF policy, and this proves it
+  # held for the artifact that actually arrived.
+  if grep -rIl $'\r' "$TGT/usr/share/copper/niri-skel" 2>/dev/null \
        | head -n 1 | grep -q .; then
-    echo "hypr: the configuration tree contains CR bytes; the session would fail" >&2
-    grep -rIl $'\r' "$TGT/usr/share/copper/hyprland-skel" 2>/dev/null | head -n 5 >&2
+    echo "niri: the configuration tree contains CR bytes; the session would fail" >&2
+    grep -rIl $'\r' "$TGT/usr/share/copper/niri-skel" 2>/dev/null | head -n 5 >&2
     exit 1
   fi
-
-  # ---- Copper's defaults over the pinned tree ---------------------------
-  # The tree arrived from upstream with its defaults intact, which is the whole
-  # point of a pin -- and also why it still asks for Quickshell, Walker and
-  # awww. Editing the vendored files would turn every future bump into a merge
-  # argument, so hypr-defaults makes the few changes a Copper image actually
-  # needs. starthyprland runs the same script over a user's home, which means a
-  # tree from the ISO and a tree from the hypr-configs ingot payload get the
-  # same answers instead of two different flavours of "almost works".
-  local defaults="$TGT/usr/lib/copper/hypr-defaults.sh"
-  if [ ! -f "$defaults" ]; then
-    echo "hypr: $defaults is missing from the rootfs overlay" >&2
-    exit 1
-  fi
-  chmod 0755 "$defaults"
-  if ! sh "$defaults" "$TGT/usr/share/copper/hyprland-skel" \
-       >"$WORK/hypr-defaults.log" 2>&1; then
-    echo "hypr: hypr-defaults failed on the shipped configuration tree:" >&2
-    cat "$WORK/hypr-defaults.log" >&2 2>/dev/null || :
-    exit 1
-  fi
-  echo "  Copper defaults applied (waybar bar, rofi launcher, custom.lua)"
 
   # ---- the seat group ---------------------------------------------------
   # seatd's package postinst would create _seatd, and no postinst runs here.
@@ -2214,32 +2149,33 @@ build_hypr() {
   # looks like it didn't -- and each is far clearer here than as a failed exec
   # on a live tty.
   local seatd_bin=""
-  for f in usr/bin/Hyprland usr/bin/hyprctl usr/bin/hyprpaper usr/bin/hypridle \
-           usr/bin/hyprlock usr/bin/waybar usr/bin/fuzzel usr/bin/rofi \
-           usr/bin/swaync usr/bin/kitty usr/libexec/hyprpolkitagent \
-           usr/libexec/xdg-desktop-portal-hyprland \
+  for f in usr/bin/niri usr/bin/waybar usr/bin/fuzzel usr/bin/swaybg \
+           usr/bin/swaync usr/bin/kitty \
+           usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1 \
            usr/lib/polkit-1/polkitd \
            usr/lib/polkit-1/polkit-agent-helper-1 \
            usr/share/dbus-1/system-services/org.freedesktop.PolicyKit1.service \
            usr/share/dbus-1/system.d/org.freedesktop.PolicyKit1.conf \
+           usr/share/xdg-desktop-portal/niri-portals.conf \
            etc/polkit-1/rules.d/10-copper-wheel.rules \
-           usr/lib/copper/hypr-defaults.sh \
            usr/share/copper/wallpapers/copper-default.png \
-           etc/copper/hypr-apps \
-           usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua; do
+           etc/copper/niri-apps \
+           usr/share/copper/niri-skel/.config/niri/config.kdl \
+           usr/share/copper/niri-skel/.config/waybar/config.jsonc \
+           usr/share/copper/niri-skel/.config/waybar/scripts/workspaces.sh; do
     if [ ! -e "$TGT/$f" ]; then
-      echo "hypr: $f did not arrive from the packages" >&2
+      echo "niri: $f did not arrive from the packages" >&2
       exit 1
     fi
   done
-  # custom.lua starts the agent and the portal only when its `[ -x ]` guard
-  # passes. A file that exists but is not executable is a guard that silently
-  # skips the piece, which is how the portal's real path (/usr/libexec, not
-  # /usr/bin) went unnoticed until a boot. Check what the guard checks.
-  for f in usr/libexec/hyprpolkitagent \
-           usr/libexec/xdg-desktop-portal-hyprland; do
+  # The config spawns these by absolute path. A file that exists but is not
+  # executable is a session that silently skips it, which is how a portal's real
+  # path went unnoticed on the desktop side until a boot. Check what runs.
+  for f in usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1 \
+           usr/share/copper/niri-skel/.config/waybar/scripts/workspaces.sh \
+           usr/share/copper/niri-skel/.config/waybar/scripts/window.sh; do
     if [ ! -x "$TGT/$f" ]; then
-      echo "hypr: $f is not executable; custom.lua's guard would skip it" >&2
+      echo "niri: $f is not executable; the session would silently skip it" >&2
       exit 1
     fi
   done
@@ -2247,12 +2183,12 @@ build_hypr() {
   # is what the agent's password check needs, and a cache restore is the
   # easiest way to lose it.
   if [ "$(stat -c '%a' "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" 2>/dev/null)" != "4755" ]; then
-    echo "hypr: polkit-agent-helper-1 is mode $(stat -c '%a' "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" 2>/dev/null || echo missing), not 4755; polkit authentication would fail" >&2
+    echo "niri: polkit-agent-helper-1 is mode $(stat -c '%a' "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" 2>/dev/null || echo missing), not 4755; polkit authentication would fail" >&2
     exit 1
   fi
 
   # The component manifest has to agree with the tree. Every "image" probe is a
-  # file starthyprland expects to be present; if the package that supplies it
+  # file startniri expects to be present; if the package that supplies it
   # renames a binary, the launcher reports a broken image on every start instead
   # of a boot failure here. "ingot" probes are absent on purpose, so skip those.
   while read -r cname cprobe corigin; do
@@ -2260,10 +2196,10 @@ build_hypr() {
     [ -n "$cprobe" ] || continue
     [ "$corigin" = image ] || continue
     if [ ! -e "$TGT/$cprobe" ]; then
-      echo "hypr: manifest lists '$cname' as image but $cprobe is missing" >&2
+      echo "niri: manifest lists '$cname' as image but $cprobe is missing" >&2
       exit 1
     fi
-  done < "$TGT/etc/copper/hypr-apps"
+  done < "$TGT/etc/copper/niri-apps"
 
   # seatd has lived in both /usr/bin and /usr/sbin across releases, so find it
   # rather than name a directory. -print -quit: grep -q closes the pipe on its
@@ -2271,53 +2207,51 @@ build_hypr() {
   # reads as "not found" no matter what was found.
   seatd_bin=$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)
   if [ -z "$seatd_bin" ]; then
-    echo "hypr: seatd did not arrive from the packages; the session would have no seat" >&2
+    echo "niri: seatd did not arrive from the packages; the session would have no seat" >&2
     exit 1
   fi
 
-  # The chroot is the honest test: the loader resolves and every library
-  # Hyprland links is present at the path it names. --version prints and exits
-  # without a compositor, so this needs no display and no seat of its own.
-  #
-  # Because Hyprland --version does not touch every symbol, also check that
-  # the staged libxkbcommon actually carries the V_1.11.0 soname-version that
-  # Hyprland (from this PPA) was built against. The pre-1.11 versions the
-  # compositor would silently take and fail on at boot are rejected here.
-  if [ -e "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" ]; then
-    echo "  libxkbcommon versions: $(strings "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null | sed -n '/^V_/p' | tr '\n' ' ')"
-    if ! strings "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null | grep -qx 'V_1.11.0'; then
-      echo "hypr: staged libxkbcommon does not provide V_1.11.0; Hyprland would refuse to start (see its log at /tmp/hyprland.log on the booted image)" >&2
-      exit 1
-    fi
-  fi
-  if ! chroot "$TGT" /usr/bin/Hyprland --version \
-       >"$WORK/hypr-version.log" 2>&1; then
-    echo "hypr: Hyprland --version failed inside the staged rootfs:" >&2
-    cat "$WORK/hypr-version.log" >&2 2>/dev/null || :
+  # The chroot is the honest test: the loader resolves and every library niri
+  # links is present at the path it names. `validate` parses the shipped config
+  # and exits without a compositor, so this needs no display and no seat. It is
+  # also the only place the config is checked against the niri that will read it
+  # -- a KDL syntax error found here costs a build, found on a boot it costs a
+  # machine nobody can type on.
+  if ! chroot "$TGT" /usr/bin/niri validate \
+       -c /usr/share/copper/niri-skel/.config/niri/config.kdl \
+       >"$WORK/niri-validate.log" 2>&1; then
+    echo "niri: the shipped config did not validate inside the staged rootfs:" >&2
+    cat "$WORK/niri-validate.log" >&2 2>/dev/null || :
     exit 1
   fi
-  echo "  $(head -n 1 "$WORK/hypr-version.log" 2>/dev/null)"
+  echo "  $(head -n 1 "$WORK/niri-validate.log" 2>/dev/null)"
+  if ! chroot "$TGT" /usr/bin/niri --version \
+       >"$WORK/niri-version.log" 2>&1; then
+    echo "niri: niri --version failed inside the staged rootfs:" >&2
+    cat "$WORK/niri-version.log" >&2 2>/dev/null || :
+    exit 1
+  fi
   if ! chroot "$TGT" /usr/bin/waybar --version \
-       >"$WORK/hypr-waybar.log" 2>&1; then
-    echo "hypr: waybar --version failed inside the staged rootfs:" >&2
-    cat "$WORK/hypr-waybar.log" >&2 2>/dev/null || :
+       >"$WORK/niri-waybar.log" 2>&1; then
+    echo "niri: waybar --version failed inside the staged rootfs:" >&2
+    cat "$WORK/niri-waybar.log" >&2 2>/dev/null || :
     exit 1
   fi
 
-  # The Hyprland closure is the one that carries systemd-sysv (an empty dpkg
-  # status makes apt keep every Priority: important package systemd ships),
-  # and that is where /usr/sbin/reboot|poweroff|halt|shutdown ->
-  # ../bin/systemctl came from in the shipped ISO. Re-point them after the
-  # copy, or `sudo reboot` resolves to systemctl first (bug 29). power_links()
-  # answers from the tree's own PID 1, so this stage cannot undo the systemd
-  # flavour's links on a tree that has already been swapped.
+  # The niri closure can carry systemd-sysv (an empty dpkg status makes apt keep
+  # every Priority: important package systemd ships), and that is where
+  # /usr/sbin/reboot|poweroff|halt|shutdown -> ../bin/systemctl came from in the
+  # shipped ISO. Re-point them after the copy, or `sudo reboot` resolves to
+  # systemctl first (bug 29). power_links() answers from the tree's own PID 1,
+  # so this stage cannot undo the systemd flavour's links on a tree that has
+  # already been swapped.
   power_links "$TGT"
 
-  echo "  Hyprland session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
-  stamp_set "$WORK/hypr.stamp" "$SELF" \
-    "$ROOT/rootfs-overlay/usr/lib/copper/hypr-defaults.sh" \
+  echo "  niri session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
+  stamp_set "$WORK/niri.stamp" "$SELF" \
     "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"
 }
+
 
 # ---------------------------------------------------------------
 # 6g. the boot splash: Plymouth, staged the way the desktop is
@@ -2572,8 +2506,8 @@ build_sudo() {
 #     is retired, because units do those now.
 #
 #   - it does not enable logind. The seat still comes from seatd, which is
-#     what starthyprland looks for and what HANDOFF.md documents. Moving the
-#     seat to logind is a later step; doing both at once would mean a Hyprland
+#     what startniri looks for and what HANDOFF.md documents. Moving the
+#     seat to logind is a later step; doing both at once would mean a niri
 #     failure with two possible causes.
 build_systemd() {
   # The unit files ARE the inputs this stage is stamped on: touch one and the
@@ -2608,7 +2542,7 @@ build_systemd() {
   echo "==> systemd as PID 1 (migration, opt-in)"
   local DS="$DL/systemd" STAGE="$WORK/systemd-root" deb p ndeb
 
-  # The gui/hypr closures bring their own os-release with them; the
+  # The gui/niri closures bring their own os-release with them; the
   # systemd stage inherits that tree, so re-assert Copper's identity as the
   # other stages do before anything reads it.
   copper_identity
@@ -2618,7 +2552,7 @@ build_systemd() {
 
   # systemd and udev are named here; everything else is their dependency
   # closure, and --download-only resolves it. The empty dpkg status is the
-  # same device the gui and hypr stages use: apt is told nothing is installed,
+  # same device the gui and niri stages use: apt is told nothing is installed,
   # so it fetches the packages AND their dependencies rather than assuming the
   # build host's own copy. --no-install-recommends keeps the closure to what
   # systemd actually links, not the distro's opinion of a complete system.
@@ -2870,7 +2804,7 @@ build_systemd() {
 
   # ---- ldconfig: mask a unit that cannot succeed here ----------------------
   # systemd ships ldconfig.service as ExecStart=/sbin/ldconfig -X, and this
-  # image has no ldconfig at all -- the gui and hypr closures never brought one,
+  # image has no ldconfig at all -- the gui and niri closures never brought one,
   # and there is no DEB postinst on this build to run it. On the booted ISO it
   # therefore failed every time, and it was one of the two entries in
   # `systemctl --failed`. A live image with no /etc/ld.so.cache and no ldconfig
@@ -2961,7 +2895,7 @@ build_systemd() {
   # must exist, or seatd exits before it binds the socket. A boot found the
   # first of these wrong (the unit named /usr/bin/seatd; noble installs
   # /usr/sbin/seatd) and the second missing (build_rootfs overwrote /etc/group
-  # after build_hypr had appended it). Neither was caught here, so both are
+  # after build_niri had appended it). Neither was caught here, so both are
   # asserted here now.
   if [ ! -x "$TGT/usr/bin/seatd" ] && [ ! -x "$TGT/usr/sbin/seatd" ]; then
     echo "systemd: no seatd binary at /usr/bin/seatd or /usr/sbin/seatd;" >&2
@@ -3271,8 +3205,8 @@ build_iso() {
   # not among them -- but re-assert it anyway: build_sudo set this bit earlier
   # and a silent drop here is exactly the failure this function exists to stop.
   chmod 4755 "$TGT/usr/bin/sudo"
-  # polkit's authentication helper, for exactly the same reason. build_hypr
-  # sets its bit too, but a cache restore can strip it and the hypr stage can
+  # polkit's authentication helper, for exactly the same reason. build_niri
+  # sets its bit too, but a cache restore can strip it and the niri stage can
   # then skip on its stamp. Re-assert here, before the tree hash, then read it
   # back off the disc below.
   if [ -e "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" ]; then
@@ -3297,7 +3231,7 @@ build_iso() {
   # Whose distribution is about to be written to the disc. build_gui repairs
   # this after it copies base-files in (see copper_identity), and this is the
   # last look before the ISO is produced, so a stage that runs after gui and
-  # brings its own os-release with it -- the Hyprland PPA closure is the
+  # brings its own os-release with it -- the niri PPA closure is the
   # candidate -- cannot ship a Copper ISO that calls itself something else.
   local osid; osid=$(sed -n 's/^ID=//p' "$TGT/etc/os-release" 2>/dev/null | head -n1)
   if [ "$osid" != copper ]; then
@@ -3559,32 +3493,31 @@ WRAP
   fi
   echo "  iso: splash switches, quiet, and tty0-last console order on the disc's grub.cfg"
 
-  # The Hyprland skeleton, read back off the disc -- bug 26's second half, in
-  # one check. The session config is Lua whose include stubs are DELIBERATELY
-  # empty: a stub exists to be require()d and holds nothing. The one tree-wide
-  # empty-file sweep, in build_rootfs, used to delete them -- its guards were
-  # written for `find .` against a tree named by an absolute path, so they
-  # matched nothing, and the skeleton had no guard at all. rootfs runs before
-  # hypr, so only a cached tree that re-ran rootfs lost the stubs, and hypr's
-  # stamp then reported "already staged" and did not put them back: the ISO
-  # shipped a skeleton missing the file its own config requires, and every home
-  # seeded from it came up half-loaded. That is what the human hit. Same
-  # readback discipline as sudo's mode above -- check the artifact, on the disc.
+  # The niri skeleton, read back off the disc. Same readback discipline as
+  # sudo's mode above -- check the artifact that actually shipped, not the tree
+  # the build believes it produced. Bug 26 was a skeleton missing files its own
+  # config needed: an empty-file sweep in build_rootfs matched nothing because
+  # its guards were written for `find .` against a tree named by an absolute
+  # path, the desktop stage's stamp then said "already staged", and every home
+  # seeded from the disc came up half-loaded. The niri tree carries no empty
+  # files, but the stage unpacks it from a pinned tarball and a re-pin can
+  # change the layout, so the files the session reads are named here.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
-      -extract /usr/share/copper/hyprland-skel/.config/hypr \
-      "$ex/hypr-config" >/dev/null 2>&1 || true
-  for f in hyprland.lua input.lua custom.lua conf/environments/default.lua; do
-    if [ ! -f "$ex/hypr-config/$f" ]; then
-      echo "iso: the Hyprland skeleton in the ISO has no $f" >&2
+      -extract /usr/share/copper/niri-skel/.config \
+      "$ex/niri-config" >/dev/null 2>&1 || true
+  for f in niri/config.kdl waybar/config.jsonc waybar/style.css \
+           waybar/scripts/workspaces.sh waybar/scripts/window.sh; do
+    if [ ! -f "$ex/niri-config/$f" ]; then
+      echo "iso: the niri skeleton in the ISO has no $f" >&2
       echo "iso: the session config must be present on the ISO; do not defer it to Ingot" >&2
       exit 1
     fi
   done
-  if [ ! -s "$ex/hypr-config/custom.lua" ]; then
-    echo "iso: the Hyprland skeleton's Copper startup configuration is empty" >&2
+  if [ ! -s "$ex/niri-config/niri/config.kdl" ]; then
+    echo "iso: the niri skeleton's session config is empty" >&2
     exit 1
   fi
-  echo "  iso: Hyprland's session configuration is on the disc"
+  echo "  iso: niri's session configuration is on the disc"
 
   echo "$want" > "$WORK/iso.stamp"
   ls -lh "$OUT/copper.iso"
@@ -3602,7 +3535,7 @@ full() {
   build_copper
   build_rootfs
   build_gui
-  build_hypr
+  build_niri
   build_plymouth
   build_sudo
   build_initramfs
@@ -3616,7 +3549,7 @@ full() {
 # runs, and a cached tree can hold either flavour. A default build that
 # inherited the systemd flavour's state would ship an image that boots systemd
 # while calling itself the default one -- the half-done swap
-# SYSTEMD-MIGRATION.md warns about -- and would fail to copy the Hyprland
+# SYSTEMD-MIGRATION.md warns about -- and would fail to copy the niri
 # packages into the tree at all.
 #
 # The `iso` chain is deliberately NOT in this list: the CI builds the default
@@ -3633,7 +3566,7 @@ full() {
 # re-runnable: running it twice leaves the same tree, not a tree that has been
 # swapped twice.
 case "$STAGE" in
-  rootfs|gui|hypr|plymouth|sudo|initramfs|copper|systemd|all|"")
+  rootfs|gui|niri|plymouth|sudo|initramfs|copper|systemd|all|"")
     default_flavour ;;
 esac
 
@@ -3644,9 +3577,9 @@ case "$STAGE" in
   copper)     build_musl; build_copper ;;
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
-  hypr)       build_rootfs; build_gui; build_hypr ;;
-  plymouth)   build_rootfs; build_gui; build_hypr; build_plymouth ;;
-  sudo)       build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo ;;
+  niri)       build_rootfs; build_gui; build_niri ;;
+  plymouth)   build_rootfs; build_gui; build_niri; build_plymouth ;;
+  sudo)       build_rootfs; build_gui; build_niri; build_plymouth; build_sudo ;;
   # build_musl and build_busybox lead every stage that compiles or links
   # Copper's own binaries, because build_musl is what exports $CC/$CFLAGS/PATH.
   # This line did not, and CI proved the cost: `bash iso/build.sh systemd` on a
@@ -3655,10 +3588,10 @@ case "$STAGE" in
   # default `all`/`full` path never showed it because full() runs build_musl
   # first; the opt-in stage has to say so itself. It is why this stage is
   # spelled like initramfs/iso and not like sudo.
-  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_copper; build_systemd ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_hypr; build_plymouth; build_sudo; build_initramfs; build_iso ;;
+  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_copper; build_systemd ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|hypr|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
 esac
 echo "==> done"

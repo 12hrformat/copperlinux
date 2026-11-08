@@ -1,25 +1,26 @@
 #!/bin/sh
-# starthyprland -- start Hyprland on the tty.
+# startniri -- start the niri session on the tty.
 #
-# The compositor and its session tools are in the image: the hypr stage bakes
-# them from the cppiber PPA. The apps on top -- browsers, editors, media, the
-# extra themes -- are ingot packages, and before anything starts this asks
-# whether to install the missing ones (manifest at /etc/copper/hypr-apps). What
-# is genuinely absent still gets its own exit code and its own sentence naming
-# the piece, instead of a bare "not found" that is indistinguishable from a
-# broken PATH or a missing library.
+# The compositor and its session tools are in the image: the niri stage bakes
+# them from the praksharma PPA. The apps on top -- browsers, editors, media --
+# are ingot packages, and before anything starts this asks whether to install
+# the missing ones (manifest at /etc/copper/niri-apps). What is genuinely absent
+# still gets its own exit code and its own sentence naming the piece, instead of
+# a bare "not found" that is indistinguishable from a broken PATH or a missing
+# library.
 #
-# Hyprland is a Wayland compositor, so there is no second process to hand a
-# display to the way startxfce hands one to startxfce4: the compositor IS the
-# session. What startxfce does for X -- find a display, prove it answers, export
-# DISPLAY -- has no analogue here. What it does for the seat, the runtime
-# directory and the session bus does, and this does the same, in the same order,
-# so a reader who knows one launcher can read the other.
+# niri is a Wayland compositor, so there is no second process to hand a display
+# to the way startxfce hands one to startxfce4: the compositor IS the session.
+# What startxfce does for X -- find a display, prove it answers, export DISPLAY
+# -- has no analogue here. What it does for the seat, the runtime directory and
+# the session bus does, and this does the same, in the same order, so a reader
+# who knows one launcher can read the other.
 #
 # No logind and no systemd: the seat comes from seatd (started by PID 1 before
-# the session shell), the session bus is a dbus daemon this script starts, and
-# ML4W's systemd units are not used -- its own hyprland.lua/conf/autostart.lua
-# is the startup path, exactly as it is on a systemd distro.
+# the session shell) and the session bus is a dbus daemon this script starts.
+# niri's own startup spawns (wallpaper, bar, notifications, the polkit agent)
+# are in config.kdl, so the session has one startup path rather than a
+# compositor plus a separate autostart daemon.
 #
 # POSIX sh, not bash: the image's shell is busybox ash, and build.sh checks these
 # scripts against /bin/sh. A bashism here is a script that works on the build
@@ -27,11 +28,11 @@
 #
 # Exit codes, which are a contract rather than decoration:
 #
-#   0   Hyprland ran and exited cleanly
-#   20  no Hyprland in the image
+#   0   niri ran and exited cleanly
+#   20  no niri in the image
 #   21  no session configuration for this user
 #   22  the session runtime could not be prepared
-#   23  Hyprland exited while starting up
+#   23  niri exited while starting up
 #   24  usage error
 #   25  a component is missing but there is no terminal to ask on, and
 #       neither --yes nor --no was given, so nothing was decided
@@ -41,28 +42,27 @@
 #   - The compositor runs on the console VT through the DRM backend, which needs
 #     a seat and a DRM master. Without logind that seat is seatd; if PID 1 did
 #     not start it, libseat's only remaining backend is logind, which is not
-#     here, and Hyprland exits at start. The seat's presence is not something
-#     this script can create -- starting a daemon needs root and this runs as
-#     the session user -- so it checks, says so, and lets the compositor's own
-#     log carry the rest.
+#     here, and niri exits at start. The seat's presence is not something this
+#     script can create -- starting a daemon needs root and this runs as the
+#     session user -- so it checks, says so, and lets the compositor's own log
+#     carry the rest.
 #   - A machine whose framebuffer has a DRM node but no render node (a VM with no
 #     3D) gets software rendering forced, because GL there fails in a way that
 #     looks like a compositor bug. On real hardware nothing is forced.
-#   - Only the instance socket under $XDG_RUNTIME_DIR/hypr is ever examined to
-#     decide "it came up". If Hyprland starts but writes no socket there, the
-#     wait expires and the launch proceeds anyway -- a compositor that is alive
-#     and drawing is not something to declare dead because a probe could not see
-#     it.
+#   - niri's IPC has no device listing, so this cannot ask the compositor
+#     whether it holds a keyboard. Input shown here is the input libinput is
+#     willing to accept, not proof the compositor claimed it; the udev records
+#     below are the half that can be checked.
+#   - Only the instance socket under $XDG_RUNTIME_DIR is ever examined to decide
+#     "it came up". If niri starts but writes no socket there, the wait expires
+#     and the launch proceeds anyway -- a compositor that is alive and drawing is
+#     not something to declare dead because a probe could not see it.
 
 set -u
 
-HYPRLAND=${COPPER_HYPRLAND:-/usr/bin/Hyprland}
-# The compositor's own control-socket client (Hyprland ships hyprctl), and the
-# instance socket it talks to. Both default to the real paths; overridable so the
-# gate can point the probe at a stub instead of a daemon it cannot run here.
-HYPRCTL=${COPPER_HYPRCTL:-/usr/bin/hyprctl}
-SKEL=${COPPER_HYPR_SKEL:-/usr/share/copper/hyprland-skel}
-SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/hyprland.log}
+NIRI=${COPPER_NIRI:-/usr/bin/niri}
+SKEL=${COPPER_NIRI_SKEL:-/usr/share/copper/niri-skel}
+SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/niri.log}
 WAIT_TRIES=${WAIT_TRIES:-100}
 # Where the DRM devices live and where seatd listens. Both default to the real
 # paths and exist only so the gate can exercise the branches that read them
@@ -76,24 +76,19 @@ SEATD=${COPPER_SEATD_SOCK:-/run/seatd.sock}
 INPUT_SYS=${COPPER_INPUT_SYS:-/sys/class/input}
 UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
 
-# The component manifest and the installer it drives. starthyprland only offers
+# The component manifest and the installer it drives. startniri only offers
 # components; it does not hardcode which ones.
-APPS=${COPPER_HYPR_APPS:-/etc/copper/hypr-apps}
+APPS=${COPPER_NIRI_APPS:-/etc/copper/niri-apps}
 INGOT=${COPPER_INGOT:-ingot}
 SUDO=${COPPER_SUDO-sudo}
-# The Copper defaults applied to a user's tree after seeding. The image build
-# runs the same script over the shipped skeleton, so a home seeded from the ISO
-# and one seeded from the hypr-configs ingot payload are made usable the same
-# way. Overridable only so the gate can point it at a scratch tree.
-DEFAULTS=${COPPER_HYPR_DEFAULTS:-/usr/lib/copper/hypr-defaults.sh}
 # Root needs no sudo, and the image may not even have it. "-" (not ":-") so an
 # empty COPPER_SUDO really does disable sudo instead of reviving the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
-say() { printf 'starthyprland: %s\n' "$1"; }
+say() { printf 'startniri: %s\n' "$1"; }
 
 # libseat opens the input devices through seatd, and seatd only serves a client
-# whose account is in _seatd. The group is created by the hypr build stage,
+# whose account is in _seatd. The group is created by the niri build stage,
 # copper-init recreates it at boot, and both the first-boot wizard and
 # copper-init put the user in it. None of that can help a session that is
 # already logged in, so if this one is somehow missing the group the compositor
@@ -168,27 +163,25 @@ fi
 
 usage() {
     cat <<'EOF'
-starthyprland -- start the Hyprland compositor on the tty
+startniri -- start the niri compositor on the tty
 
-  starthyprland            set up the session and start Hyprland
-  starthyprland --check    report what is installed and exit, starting nothing
-  starthyprland --yes      install any missing components without asking
-  starthyprland --no       do not install components, just start the session
-  starthyprland --help     this text
+  startniri            set up the session and start niri
+  startniri --check    report what is installed and exit, starting nothing
+  startniri --yes      install any missing components without asking
+  startniri --no       do not install components, just start the session
+  startniri --help     this text
 
 Environment, all optional:
-  COPPER_HYPRLAND    path to the compositor       (default /usr/bin/Hyprland)
-  COPPER_HYPR_SKEL   the shipped config tree that seeds a user's home
-                     (default /usr/share/copper/hyprland-skel)
-  COPPER_SESSIONLOG  where the compositor logs    (default /tmp/hyprland.log)
-  COPPER_HYPR_APPS   where the component manifest lives
-                     (default /etc/copper/hypr-apps; absence disables the
+  COPPER_NIRI        path to the compositor       (default /usr/bin/niri)
+  COPPER_NIRI_SKEL   the shipped config tree that seeds a user's home
+                     (default /usr/share/copper/niri-skel)
+  COPPER_SESSIONLOG  where the compositor logs    (default /tmp/niri.log)
+  COPPER_NIRI_APPS   where the component manifest lives
+                     (default /etc/copper/niri-apps; absence disables the
                      offer entirely)
   COPPER_INGOT       installer for the components  (default ingot)
   COPPER_SUDO        how to gain root for the install (default sudo; empty
                      means already root or never use it)
-  COPPER_HYPR_DEFAULTS  Copper's defaults for the ML4W tree
-                     (default /usr/lib/copper/hypr-defaults.sh)
   COPPER_DRM_DIR     where DRM nodes live        (default /dev/dri)
   COPPER_SEATD_SOCK  seatd's socket              (default /run/seatd.sock)
   COPPER_INPUT_SYS   where the input devices live (default /sys/class/input)
@@ -196,39 +189,38 @@ Environment, all optional:
   XDG_RUNTIME_DIR    the session's private runtime directory (default
                      /run/user/<uid>, made here when missing)
 
-Exit codes: 0 ok, 20 no Hyprland, 21 no session config, 22 no runtime,
-23 Hyprland exited while starting, 24 usage, 25 no way to ask about components,
-26 Hyprland started without a keyboard and was stopped to return to the shell.
+Exit codes: 0 ok, 20 no niri, 21 no session config, 22 no runtime,
+23 niri exited while starting, 24 usage, 25 no way to ask about components.
 EOF
 }
 
 # What is installed. Echoed as words so --check and the launch path agree, and so
 # there is exactly one place that knows what the image contains.
-have_hypr=0
-[ -x "$HYPRLAND" ] && have_hypr=1
+have_niri=0
+[ -x "$NIRI" ] && have_niri=1
 
 # Where this user's configuration lives, and whether the shipped tree is there
 # to seed it from.
-user_hypr="$HOME/.config/hypr"
+user_niri="$HOME/.config/niri"
 user_config=0
-[ -e "$user_hypr/hyprland.lua" ] && user_config=1
+[ -e "$user_niri/config.kdl" ] && user_config=1
 skel_config=0
-[ -e "$SKEL/.config/hypr/hyprland.lua" ] && skel_config=1
+[ -e "$SKEL/.config/niri/config.kdl" ] && skel_config=1
 
 report() {
-    if [ "$have_hypr" = 1 ]; then
-        say "found Hyprland: $HYPRLAND"
+    if [ "$have_niri" = 1 ]; then
+        say "found niri: $NIRI"
     else
-        say "NO Hyprland at $HYPRLAND"
-        say "  this is the compositor, built from the cppiber PPA by the hypr"
+        say "NO niri at $NIRI"
+        say "  this is the compositor, staged from the praksharma PPA by the niri"
         say "  stage of the image build. Nothing can start until it is staged."
     fi
     if [ "$user_config" = 1 ]; then
-        say "found a session config: $user_hypr"
+        say "found a session config: $user_niri"
     elif [ "$skel_config" = 1 ]; then
-        say "no config in $user_hypr; will seed it from $SKEL on launch"
+        say "no config in $user_niri; will seed it from $SKEL on launch"
     else
-        say "NO session config in $user_hypr, and none to seed from at $SKEL"
+        say "NO session config in $user_niri, and none to seed from at $SKEL"
     fi
 }
 
@@ -259,20 +251,20 @@ fi
 # The compositor. Checked before anything else, and outside any branch that
 # starts a session: a machine with the config but no compositor must say so with
 # exit 20, not die on a bare exec failure.
-if [ "$have_hypr" != 1 ]; then
+if [ "$have_niri" != 1 ]; then
     report
-    say "cannot start the session: there is no compositor at $HYPRLAND"
-    say "the hypr stage of the image build stages it; see HANDOFF.md, Hyprland."
+    say "cannot start the session: there is no compositor at $NIRI"
+    say "the niri stage of the image build stages it; see HANDOFF.md, niri."
     exit 20
 fi
 
-# The configuration. ML4W's tree is shipped in the image and copied into the home
-# on first boot, but a home that was made another way -- a second user, a home
+# The configuration. The tree is shipped in the image and copied into the home
+# on first start, but a home that was made another way -- a second user, a home
 # wiped by hand, a wizard path that skipped the copy -- should still get a
 # working session rather than an empty compositor and a black screen. So when
 # the user has no config and the image has one to give, seed it. When neither is
-# true there is nothing to start: an unconfigured Hyprland is not the session
-# anyone asked for, and 21 names that.
+# true there is nothing to start: an unconfigured niri is not the session anyone
+# asked for, and 21 names that.
 
 # Copy everything the shipped tree has and the home does not: make the missing
 # directories, then copy the files and symlinks that are absent. A file that is
@@ -285,8 +277,8 @@ fi
 # ~/.config that already exists it skips the whole directory, copies nothing
 # below it, and reports success while doing so. That is invisible on a bare home
 # and permanent on a used one -- and it is why a home seeded before bug 26 (when
-# the build's empty-file gate dropped the zero-byte Lua stubs the config
-# require()s) stayed broken: the hyprland.lua that was there kept the seeding
+# the build's empty-file gate dropped the zero-byte stubs the old config
+# require()d) stayed broken: the config file that was there kept the seeding
 # branch from running, and the seeding branch could not have repaired it anyway.
 #
 # Walking the tree is a few hundred stat() calls and no surprises. seed_added
@@ -295,7 +287,7 @@ fi
 seed_added=0
 seed_config() {
     seed_added=0
-    seed_list=${TMPDIR:-/tmp}/starthyprland-seed.$$
+    seed_list=${TMPDIR:-/tmp}/startniri-seed.$$
     if [ ! -d "$SKEL" ]; then
         return 1
     fi
@@ -325,42 +317,13 @@ seed_config() {
 
 if [ "$user_config" != 1 ]; then
     if [ "$skel_config" = 1 ]; then
-        do_cfg=
-        case "$choice" in
-            yes) do_cfg=1 ;;
-            no)  say "not installing the config files (--no)" ;;
-            *)
-                if [ -t 0 ]; then
-                    printf 'starthyprland: would you like your hyprland config files? (Y/n) '
-                    read -r answer || answer=
-                    case "$answer" in
-                        [Nn]*) printf '...\n'
-                               sleep 2
-                               printf 'its now l-like i wanted you to u-use my config anyways b-baka! humph~! (,,>﹏<,,)\n'
-                               printf '\n\n\n' ;;
-                        *) do_cfg=1 ;;
-                    esac
-                else
-                    say "no terminal to ask about the config files; using the shipped config"
-                fi
-                ;;
-        esac
-        if [ -n "$do_cfg" ]; then
-            say "installing the hyprland config files (hypr-configs)"
-            if $SUDO $INGOT install hypr-configs; then
-                say "hyprland config files installed"
-            else
-                say "could not install hypr-configs; using the shipped config"
-            fi
-        fi
         say "seeding the session config from $SKEL into $HOME"
-        # The whole shipped home, not just .config/hypr: the tree carries the
-        # ml4w/, waybar/, quickshell/ and gtk configuration the session reads
-        # from the same place.
+        # The whole shipped home, not just .config/niri: the tree carries the
+        # waybar configuration the session starts from the same place.
         if ! seed_config; then
             say "the shipped config tree at $SKEL is not readable"
         fi
-        if [ -e "$user_hypr/hyprland.lua" ]; then
+        if [ -e "$user_niri/config.kdl" ]; then
             say "session config seeded"
         else
             say "could not seed the session config from $SKEL"
@@ -369,7 +332,7 @@ if [ "$user_config" != 1 ]; then
         fi
     else
         report
-        say "cannot start the session: no config in $user_hypr"
+        say "cannot start the session: no config in $user_niri"
         say "  and the image has no shipped tree to seed it from."
         exit 21
     fi
@@ -384,32 +347,9 @@ else
         if seed_config && [ "$seed_added" -gt 0 ]; then
             say "repaired the session config: added $seed_added missing file(s) from $SKEL"
             say "  (a home seeded by an older image can be missing files the config"
-            say "  require()s; the shipped tree has them, and the session now does)"
+            say "  refers to; the shipped tree has them, and the session now does)"
         fi
     fi
-fi
-
-# ---- Copper's defaults over the ML4W tree -----------------------------
-# ML4W's tree is vendored exactly as upstream shipped it, which is a virtue
-# right up until the session starts and asks for Quickshell. Quickshell is not
-# here. Neither is Walker. awww is also a stranger. What is here: waybar, rofi,
-# hyprpaper. hypr-defaults makes the introductions, and it only touches a
-# setting that is still the ML4W default, so anyone who has already picked their
-# own bar or launcher keeps it.
-#
-# It runs on every start, not only after seeding, because the hypr-configs ingot
-# payload is the untouched upstream tree: a home filled from it arrives with
-# exactly the defaults that do not work. A missing script is not fatal -- an
-# older image without it still has a compositor -- but it earns a warning,
-# because the desktop will then come up with no bar and a launcher keybind that
-# does a very convincing impression of a dead key.
-if [ -f "$DEFAULTS" ]; then
-    if ! sh "$DEFAULTS" "$HOME" >/dev/null 2>&1; then
-        say "warning: could not apply Copper's Hyprland defaults ($DEFAULTS)"
-    fi
-else
-    say "warning: no hypr-defaults at $DEFAULTS; the bar and launcher will use"
-    say "  ML4W's Quickshell/walker defaults, which this image does not ship"
 fi
 
 # Components. The session is in the image; the apps on top of it are ingot
@@ -439,7 +379,7 @@ if [ -n "$missing" ]; then
         no)  say "not installing components (--no)" ;;
         *)
             if [ -t 0 ]; then
-                printf 'starthyprland: before running hyprland do you want to install its suggested apps? (Y/n) '
+                printf 'startniri: before running niri do you want to install its suggested apps? (Y/n) '
                 answer=
                 read -r answer || answer=
                 case "$answer" in
@@ -448,8 +388,8 @@ if [ -n "$missing" ]; then
                 esac
             else
                 say "a component is missing and there is no way to ask: stdin is not a terminal."
-                say "  starthyprland --yes   install the missing components first"
-                say "  starthyprland --no    start the session without them"
+                say "  startniri --yes   install the missing components first"
+                say "  startniri --no    start the session without them"
                 exit 25
             fi
             ;;
@@ -479,7 +419,7 @@ if [ -n "$missing" ]; then
         if [ -n "$failed" ]; then
             say "some components could not be installed; starting the session anyway"
         else
-            say "components installed, running hyprland now"
+            say "components installed, running niri now"
         fi
     fi
 fi
@@ -522,23 +462,22 @@ mkdir -p /dev/shm 2>/dev/null || :
 # Who this session says it is. A compositor started from a bare tty has no
 # display manager to stamp the session, and the readers are not cosmetic:
 # xdg-desktop-portal chooses a backend by XDG_CURRENT_DESKTOP, so without it the
-# Hyprland portal is started and then ignored in favour of the GTK one (no
-# screencopy, no global shortcuts), and toolkits read XDG_SESSION_TYPE to pick
-# Wayland over X11. These describe the session this script is starting, so they
-# are set even if an outer shell carried something else. Set before the session
-# bus below: dbus-daemon is where D-Bus-activated services get their
-# environment, and the portal frontend is one of them.
+# GTK fallback is started instead of the niri one, and toolkits read
+# XDG_SESSION_TYPE to pick Wayland over X11. niri --session sets both for its
+# own children; exporting them here covers everything this script starts first,
+# and the session bus below, which is where D-Bus-activated services get their
+# environment.
 XDG_SESSION_TYPE=wayland
-XDG_CURRENT_DESKTOP=Hyprland
-XDG_SESSION_DESKTOP=Hyprland
-DESKTOP_SESSION=Hyprland
+XDG_CURRENT_DESKTOP=niri
+XDG_SESSION_DESKTOP=niri
+DESKTOP_SESSION=niri
 export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
 
 # libxkbcommon uses these as its fallback when the config does not provide a
 # keyboard layout. Set an explicit installed rules tree and US layout so a
 # missing inherited desktop setting cannot leave an enumerated keyboard
 # without a usable keymap. A caller can still select another layout through
-# the environment or the Hyprland configuration.
+# the environment or the niri configuration.
 XKB_CONFIG_ROOT=${XKB_CONFIG_ROOT:-/usr/share/X11/xkb}
 XKB_DEFAULT_LAYOUT=${XKB_DEFAULT_LAYOUT:-us}
 export XKB_CONFIG_ROOT XKB_DEFAULT_LAYOUT
@@ -559,13 +498,13 @@ if command -v fc-cache >/dev/null 2>&1; then
     fi
 fi
 
-# The session bus. Quickshell, the portals, swaync and the polkit agent all want
-# one, and there is no session manager to have started it. Prefer dbus-launch,
-# which sets both the address and the pid; fall back to dbus-daemon directly,
-# which only prints the address. Either way it is exported into the compositor's
-# environment, and a machine that turns out to have neither still starts -- the
-# compositor runs without a bus, the pieces that want one say so, and that is a
-# degraded session rather than no session.
+# The session bus. The portals, swaync, gnome-keyring and the polkit agent all
+# want one, and there is no session manager to have started it. Prefer
+# dbus-launch, which sets both the address and the pid; fall back to
+# dbus-daemon directly, which only prints the address. Either way it is exported
+# into the compositor's environment, and a machine that turns out to have
+# neither still starts -- the compositor runs without a bus, the pieces that
+# want one say so, and that is a degraded session rather than no session.
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     if command -v dbus-launch >/dev/null 2>&1; then
         bus=$(dbus-launch --sh-syntax 2>/dev/null) || bus=
@@ -610,26 +549,25 @@ if [ -S "${SEATD_SOCK:-$SEATD}" ]; then
     say "seat: ${SEATD_SOCK:-$SEATD}"
 else
     say "no seatd socket at ${SEATD_SOCK:-$SEATD}."
-    say "  with no logind, Hyprland needs seatd to take the DRM master; if PID 1"
-    say "  did not start it the compositor will exit and its log will say so."
+    say "  with no logind, niri needs seatd to take the DRM master; if PID 1 did"
+    say "  not start it the compositor will exit and its log will say so."
 fi
 
 # The renderer. A framebuffer with a DRM node but no render node is a VM with no
 # 3D, where GL fails in a way that reads as a compositor bug rather than a
 # missing GPU. Force the software path there, and only there: on a machine with
-# a render node nothing is overridden, and COPPER_HYPR_SOFTWARE=1 forces it by
+# a render node nothing is overridden, and COPPER_NIRI_SOFTWARE=1 forces it by
 # hand for a machine the heuristic gets wrong.
 soft=0
-if [ "${COPPER_HYPR_SOFTWARE:-0}" = 1 ]; then
+if [ "${COPPER_NIRI_SOFTWARE:-0}" = 1 ]; then
     soft=1
 elif [ -e "$DRM_DIR" ] && ! ls "$DRM_DIR"/renderD* >/dev/null 2>&1; then
     soft=1
 fi
 if [ "$soft" = 1 ]; then
-    WLR_RENDERER=pixman
     LIBGL_ALWAYS_SOFTWARE=1
-    export WLR_RENDERER LIBGL_ALWAYS_SOFTWARE
-    say "no render node; forcing software rendering (pixman)"
+    export LIBGL_ALWAYS_SOFTWARE
+    say "no render node; forcing software rendering"
 fi
 
 # Hand the session over. Background first so the launch can be watched: a
@@ -638,25 +576,35 @@ fi
 # process would hand back a bare nonzero status with the reason already gone
 # from the screen. The wait is bounded and checks whether the process is still
 # alive, because "still starting" and "already died" look identical if all you
-# do is count to a limit. The live/up test is the instance socket under the
-# runtime directory's hypr/ subtree.
-say "starting Hyprland, log in $SESSIONLOG"
-"$HYPRLAND" > "$SESSIONLOG" 2>&1 &
-hypid=$!
+# do is count to a limit.
+#
+# --session is what makes this the main instance: niri sets
+# XDG_CURRENT_DESKTOP/XDG_SESSION_TYPE, imports them into the bus, and starts
+# the D-Bus services the session needs. It is passed directly rather than
+# through niri-session, which wants a systemd --user or dinit to talk to.
+say "starting niri, log in $SESSIONLOG"
+"$NIRI" --session > "$SESSIONLOG" 2>&1 &
+niripid=$!
 
-# Where Hyprland keeps its per-instance sockets. The signature is not known
-# ahead of time, so the test is for any .socket.sock below this directory.
-hyprrt="$XDG_RUNTIME_DIR/hypr"
+# niri's IPC socket is `$XDG_RUNTIME_DIR/niri.<wayland socket name>.<pid>.sock`
+# and NIRI_SOCKET is set for its children, not for us. The pid makes the path
+# ours to find; the wayland half is whichever number was free. Wait for that
+# socket, then prove it answers: a socket file left by an earlier instance would
+# otherwise read as a live compositor.
 up=0
 i=0
+nirisock=
 while [ "$i" -lt "$WAIT_TRIES" ]; do
-    if [ -n "$(find "$hyprrt" -name .socket.sock -print -quit 2>/dev/null)" ]; then
+    nirisock=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 \
+        -name "niri.*.$niripid.sock" -print -quit 2>/dev/null)
+    if [ -n "$nirisock" ] &&
+       NIRI_SOCKET=$nirisock "$NIRI" msg --json version >/dev/null 2>&1; then
         up=1
         break
     fi
-    if ! kill -0 "$hypid" 2>/dev/null; then
-        wait "$hypid" 2>/dev/null || :
-        say "Hyprland exited while starting up. Its log says:"
+    if ! kill -0 "$niripid" 2>/dev/null; then
+        wait "$niripid" 2>/dev/null || :
+        say "niri exited while starting up. Its log says:"
         sed 's/^/  /' "$SESSIONLOG" 2>/dev/null
         exit 23
     fi
@@ -665,117 +613,15 @@ while [ "$i" -lt "$WAIT_TRIES" ]; do
 done
 
 if [ "$up" = 1 ]; then
-    say "Hyprland is up"
-    # The compositor holding input is the last unproved half of the session, and
-    # the one nothing before this could vouch for: the seat was taken, the DRM
-    # master was granted, the config parsed, and still the pointer will not move
-    # and nothing types. Ask the compositor itself over the instance socket the
-    # wait loop found -- the same socket libinput came in through, so the answer
-    # is the compositor's own view of what it holds -- and name the half that came
-    # back empty. A missing half here means the session comes up and cannot be
-    # used at all, which is exactly the shape the seat fixes could not reach (bug
-    # 30).
-    hysock=$(find "$hyprrt" -name .socket.sock -print -quit 2>/dev/null)
-    # How to point hyprctl at this instance. The version the PPA ships (0.57.1)
-    # has no -s/--socket switch: an unknown flag prints usage and exits, so
-    # `hyprctl -s <sock> devices` asked nothing and the probe then reported a
-    # working session as having no keyboard and no pointer. hyprctl builds the
-    # socket path from HYPRLAND_INSTANCE_SIGNATURE, and the socket's directory
-    # is that signature, so hand it over that way -- the same path hyprctl
-    # computes for itself, with no version-specific flag.
-    his=
-    [ -n "$hysock" ] && his=$(basename "$(dirname "$hysock")")
-    # Ask, and keep asking for a bounded while: the instance socket shows up
-    # when the compositor starts and device enumeration can trail it by a beat,
-    # and one sample taken at the wrong moment reads as "no input" on a session
-    # that is perfectly alive. Same bound and same shape as the wait above, so a
-    # compositor that never answers the question still gets its verdict in
-    # bounded time, and a compositor that answers gets its answer.
-    kbd=no
-    ptr=no
-    answered=no
-    polled=0
-    if [ ! -x "$HYPRCTL" ]; then
-        say "could not ask the compositor what input it holds: $HYPRCTL is not executable"
-        say "  hyprctl ships with Hyprland; without it, input is unverified, not absent"
-        kbd=
-        ptr=
-    else
-        while [ "$polled" -lt 30 ]; do
-            devs=$(HYPRLAND_INSTANCE_SIGNATURE=$his "$HYPRCTL" devices 2>/dev/null || :)
-            [ -n "$devs" ] && answered=yes
-            # What hyprctl devices prints, in the version the image ships:
-            #
-            #   mice:
-            #       Mouse at <addr>:
-            #   ...
-            #   Keyboards:
-            #       Keyboard at <addr>:
-            #
-            # Older versions use lowercase headers and a bare device name, so
-            # both are accepted. A section header has no leading tab, a device
-            # line has exactly one, and everything belonging to the device has
-            # two -- which is what separates "the section exists" (it is always
-            # printed, even with nothing in it) from "the section holds a
-            # device". Matching the words "keyboard"/"pointer" instead would
-            # read the empty headers as devices and the word "Mouse" as
-            # neither.
-            seen=$(printf '%s\n' "$devs" | awk '
-                /^mice:[[:space:]]*$/         { sec = "p"; next }
-                /^[Kk]eyboards:[[:space:]]*$/ { sec = "k"; next }
-                /^[A-Za-z]+:[[:space:]]*$/    { sec = "";  next }
-                sec == "p" && /^[[:space:]][^[:space:]]/ { p = 1 }
-                sec == "k" && /^[[:space:]][^[:space:]]/ { k = 1 }
-                END { if (p) printf "p"; if (k) printf "k" }
-            ')
-            kbd=no
-            ptr=no
-            case "$seen" in *k*) kbd=yes ;; esac
-            case "$seen" in *p*) ptr=yes ;; esac
-            if [ "$kbd" = yes ] && [ "$ptr" = yes ]; then
-                break
-            fi
-            polled=$((polled + 1))
-            sleep 0.1 2>/dev/null || sleep 1
-        done
-        if [ "$answered" != yes ]; then
-            say "could not ask the compositor what input it holds (hyprctl gave no answer)"
-            say "  so input is unverified, not absent; the compositor log is $SESSIONLOG"
-            kbd=
-            ptr=
-        fi
-    fi
-    if [ "$kbd" = yes ]; then
-        say "compositor sees a keyboard"
-    elif [ "$kbd" = no ]; then
-        say "compositor sees no keyboard; the session will not type"
-    fi
-    if [ "$ptr" = yes ]; then
-        say "compositor sees a pointer"
-    elif [ "$ptr" = no ]; then
-        say "compositor sees no pointer; the cursor will not move"
-    fi
-
-    # Do not strand the user inside a compositor that cannot accept keyboard
-    # input. Copper has a shell on tty1, not gettys on every VT; leaving
-    # Hyprland alive after this positive failure makes Ctrl-Alt-F3 lead to a
-    # blank screen and leaves no usable way back. Stop it cleanly so this
-    # command returns to the tty1 shell. Unknown input status is not enough to
-    # stop a session: only do this when hyprctl answered and found no keyboard.
-    if [ "$kbd" = no ] && [ "$answered" = yes ]; then
-        say "stopping Hyprland because it has no keyboard; returning to the shell"
-        kill -TERM "$hypid" 2>/dev/null || :
-        wait "$hypid" 2>/dev/null || :
-        exit 26
-    fi
+    say "niri is up"
 else
-    # Alive but no socket seen. A compositor that is running and drawing is not
-    # something to declare dead, so say what was not found and keep waiting
+    # Alive but no answering socket. A compositor that is running and drawing is
+    # not something to declare dead, so say what was not found and keep waiting
     # rather than fail a session that may be perfectly well on screen.
-    say "no instance socket appeared under $hyprrt; waiting for Hyprland anyway"
+    say "no answering IPC socket appeared under $XDG_RUNTIME_DIR; waiting for niri anyway"
 fi
 
-wait "$hypid"
+wait "$niripid"
 rc=$?
-say "Hyprland exited (status $rc)"
+say "niri exited (status $rc)"
 exit "$rc"

@@ -1,0 +1,33 @@
+# Copper Linux -- the components startniri offers before it starts niri.
+#
+# Three whitespace-separated columns:
+#
+#   <name>   <probe>                       <how>
+#
+# <probe> is a path that exists when the component is present. startniri
+# installs the missing ones whose <how> is "ingot", by asking ingot for them.
+# <how> of "image" means this stage already ships it in the ISO: it is kept
+# in this list so the report is honest about what a desktop is supposed to
+# have, but ingot has no such package and startniri will not try to install
+# one -- a missing "image" component is a broken image, said out loud.
+#
+# The ingot payloads here are the ones copper-ingot-repo carries for every
+# desktop (firefox, mousepad, ristretto, xarchiver, htop). They are not needed
+# for the session to start, but they work under Wayland and are the ones that
+# exist in the repo. Each deb payload carries its full closure, so declining the
+# prompt costs nothing and accepting it downloads a few hundred MB; the session
+# starts either way.
+
+firefox             /usr/bin/firefox             ingot
+mousepad            /usr/bin/mousepad            ingot
+ristretto           /usr/bin/ristretto           ingot
+xarchiver           /usr/bin/xarchiver           ingot
+htop                /usr/bin/htop                ingot
+
+niri                /usr/bin/niri                image
+kitty               /usr/bin/kitty               image
+waybar              /usr/bin/waybar              image
+swaybg              /usr/bin/swaybg              image
+swaync              /usr/bin/swaync              image
+fuzzel              /usr/bin/fuzzel              image
+polkit-agent        /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1  image

@@ -43,7 +43,7 @@ hardware.
 
 ## Recommendation (unchanged)
 
-Ship v0.9 on busybox; treat the swap as a v1.5 project. Hyprland's `seatd` path
+Ship v0.9 on busybox; treat the swap as a v1.5 project. niri's `seatd` path
 works fine as-is, and the real blockers are library-version issues, not the
 init system. Phase 1 below is groundwork that can be done without committing to
 the timeline — and without risking the launch image.
@@ -116,7 +116,7 @@ All Copper-owned, so nothing here patches a package's own units:
 same tty is the two-shells bug in unit form.
 
 **Ordering is `After=`, never `Requires=`.** The wizard must run before the
-console and the seat before the user can start Hyprland, and that is ordering —
+console and the seat before the user can start niri, and that is ordering —
 so the units spell it `After=` and pull each other in with `Wants=`. The first
 cut used `Requires=`, which is a hard dependency in both directions and turns any
 single failure into the "unbootable, not degraded" outcome this document opens
@@ -141,7 +141,7 @@ with three possible causes.
 
 - `apt-get download` closure for `systemd udev systemd-sysv`, unpacked with
   `dpkg-deb -x` and copied in with `cp -a -n` — the same empty-dpkg-status
-  pattern the `gui` and `hypr` stages use. Existing files win (`-n`): a library
+  pattern the `gui` and `niri` stages use. Existing files win (`-n`): a library
   the desktop closure already staged was chosen by the desktop's resolver.
 - installs and wires the units by hand rather than `systemctl enable` (which
   wants a chroot, a running dbus, and a systemd being called into from a build).
@@ -192,7 +192,7 @@ with three possible causes.
   no-opping on the squatter), the gate's own fixture un-merged-usr'd and its
   udevd unit mis-modelled, the seatd binary and the `_seatd` group missing, the
   seatd unit back to one hard-coded path, `ldconfig.service` unmasked, the
-  hypr/gui skip guards blinded, the ordering cycle that shipped, the stage's own
+  niri/gui skip guards blinded, the ordering cycle that shipped, the stage's own
   cycle check dropped, and `power_links()` blind to the tree's init — and every
   one is caught. That suite is
   what found three real bugs during development, including a `readelf | sed |
@@ -423,12 +423,12 @@ body and the closing `fi` behind, so `build.sh` could not be sourced at all,
 and the gate went red for a reason that had nothing to do with the case); one
 was anchored to a line of `build.sh` that had since been re-wrapped, so its
 exact-string edit no longer applied; and two asked the gate to catch something
-in a stage the gate **does not run** — `build_gui` and `build_hypr` are never
+in a stage the gate **does not run** — `build_gui` and `build_niri` are never
 called by `tests/systemd-gate.sh`, so no planting can make the gate notice
 their skip guards.
 
 The last pair is the dangerous kind: read at face value, they say "the gate is
-blind to the hypr/gui skip guards", which is a false conclusion you would act
+blind to the niri/gui skip guards", which is a false conclusion you would act
 on. The gate now **can** say that — section 8 reads the shipped skip guards
 out of `build.sh` and fails if they stop asking about `seatd` and the
 `_seatd` group — so the two cases assert a real claim instead of a fiction.
@@ -485,7 +485,7 @@ commands were busybox's. Both facts were true of the same tree.
 The cause is that **the swap was undone on the way to the disc**. The `iso`
 chain re-runs the desktop stages over the tree: `build_rootfs` clobbers
 `/etc/group`, which takes the `_seatd` group with it, and that group is part of
-what the gui and hypr stages' skip guards ask about — so those stages run
+what the gui and niri stages' skip guards ask about — so those stages run
 again, and each of them calls `power_links()`. `power_links()` did not know
 which init the tree carried; it always wrote busybox's applets. The systemd
 stage had done the right thing, and then the desktop stages overwrote it.
@@ -635,7 +635,7 @@ same way the boot closed the sixth and the seventh.
 
 ## risks expected during a migration (the bad case)
 
-1. **Layout chroots fail**: `build_hypr` chains `chroot $TGT /usr/bin/Hyprland
+1. **Layout chroots fail**: `build_niri` chains `chroot $TGT /usr/bin/niri
    --version`; we need `systemctl status` equivalent.
 2. **Compose manager depends on `u...`**: every package tends to depend on
    `systemd` after a swap.

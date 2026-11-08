@@ -35,16 +35,16 @@ machine.
 |---|---|
 | `startxfce` | Starts the X server if one isn't already running, then XFCE on it. |
 | `startxfce --check` | Reports what's installed and exits, starting nothing. |
-| `starthyprland` | Starts Hyprland — the optional second desktop — on the tty. |
-| `starthyprland --check` | Reports what's installed and exits, starting nothing. |
+| `startniri` | Starts niri — the optional second desktop — on the tty. |
+| `startniri --check` | Reports what's installed and exits, starting nothing. |
 
 On the default Copper-init image, **Ctrl+Alt+F3** opens a password-protected
 login prompt on tty3. Use the account and password created during first boot;
 Ctrl+Alt+F1 returns to the main session. The systemd image provides login
 prompts on tty2 through tty6 as well.
 
-First boot also asks which desktop you want, `xfce` or `hyprland`; XFCE is the
-default and Hyprland is opt-in. Either launcher works from the prompt whatever
+First boot also asks which desktop you want, `xfce` or `niri`; XFCE is the
+default and niri is opt-in. Either launcher works from the prompt whatever
 you picked.
 
 `startxfce` exits **20** if there's no X server in the image, **21** if XFCE is

@@ -6,14 +6,14 @@ Working notes for AI coding agents (and their humans) in this repository.
 
 Copper Linux is a hobby Linux distribution: a from-source built kernel + musl +
 busybox + coreutils base, Copper's own shell (`copper-sh`) and first-boot wizard,
-an XFCE/Hyprland desktop, a Plymouth boot splash, and systemd integration.
+an XFCE/niri desktop, a Plymouth boot splash, and systemd integration.
 Everything that ships lives in this tree and is either built or asserted on by
 the gates below.
 
 ## Build
 
 `sudo bash iso/build.sh <stage>` — stages: `kernel`, `base`, `tools`, `copper`,
-`rootfs`, `gui`, `hypr`, `plymouth`, `sudo`, `systemd`, `initramfs`, `iso`, `all`.
+`rootfs`, `gui`, `niri`, `plymouth`, `sudo`, `systemd`, `initramfs`, `iso`, `all`.
 
 The `iso` stage is the packaging + read-back gate: it builds the ISO and then
 extracts files back out of the artifact with xorriso to verify modes, ownership

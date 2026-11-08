@@ -175,7 +175,7 @@ else
 fi
 
 # ------------------------------------------------- 2. run the real stage ----
-# A mock staged rootfs shaped like the one gui+hypr+copper would leave, then
+# A mock staged rootfs shaped like the one gui+niri+copper would leave, then
 # the real build_systemd() out of iso/build.sh, with apt-get/dpkg-deb stubbed.
 TGT="$TMP/work/rootfs"; WORK="$TMP/work"; DL="$TMP/work/downloads"
 ROOT="$REPO/iso"; REPO_V="$REPO"; SELF="$BUILD"; JOBS=2
@@ -1035,7 +1035,7 @@ check_c "ignores 'Command ... is not executable'" no  "$ncmd"
 check_c "ignores 'not found'"                     no  "$nmiss"
 
 # ---------------- 8. the desktop stages' skip guards still ask about seatd --
-# build_gui and build_hypr decide whether a CACHED tree can be skipped. A
+# build_gui and build_niri decide whether a CACHED tree can be skipped. A
 # guard that asks only about the desktop stack skips a tree that has LOST
 # seatd -- or the _seatd group build_gui appends and build_rootfs' second
 # pass clobbers -- and the tree that ships points copper-seatd.service at a
@@ -1045,15 +1045,15 @@ check_c "ignores 'not found'"                     no  "$nmiss"
 # asking.
 #
 # This gate runs the systemd stage over a mocked tree; it does not run
-# build_gui or build_hypr, so there is no runtime path here to exercise. What
+# build_gui or build_niri, so there is no runtime path here to exercise. What
 # can be checked -- and what is checked -- is the shipped condition itself,
 # read out of build.sh rather than paraphrased. The window is the two lines
 # before the skip call: that is where the guards' own conditions live.
-if extract build_hypr | grep -B2 'stamped_skip "\$WORK/hypr.stamp"' \
+if extract build_niri | grep -B2 'stamped_skip "\$WORK/niri.stamp"' \
      | grep -q 'name seatd -type f'; then
-    ok "build_hypr's skip guard still checks for seatd"
+    ok "build_niri's skip guard still checks for seatd"
 else
-    bad "build_hypr's skip guard still checks for seatd" \
+    bad "build_niri's skip guard still checks for seatd" \
         "the guard no longer asks whether the tree still has a seatd binary"
 fi
 if extract build_gui | grep -B2 'stamped_skip "\$WORK/gui.stamp"' \

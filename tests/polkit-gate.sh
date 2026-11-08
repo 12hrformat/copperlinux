@@ -1,8 +1,8 @@
 #!/bin/sh
 # Prove the system bus, the polkit daemon and the session agent can meet.
 #
-# Hyprland starts hyprpolkitagent, but an agent with nothing to talk to is a
-# process and a promise. Four separate pieces have to exist before a password
+# The niri session config starts the polkit agent, but an agent with nothing
+# to talk to is a process and a promise. Four separate pieces have to exist before a password
 # prompt can actually authorise anything:
 #
 #   * a system bus, because polkitd is D-Bus-activated on it and is not run by
@@ -129,9 +129,9 @@ else
 fi
 fixes=$(grep -c 'chmod 4755 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"' "$BUILD" 2>/dev/null || true)
 if [ "$fixes" -ge 2 ]; then
-    ok "both the hypr stage and the iso pin make it setuid root"
+    ok "both the niri stage and the iso pin make it setuid root"
 else
-    bad "both the hypr stage and the iso pin make it setuid root" \
+    bad "both the niri stage and the iso pin make it setuid root" \
         "$fixes chmod site(s), wanted at least 2"
 fi
 if grep -q 'extract /usr/lib/polkit-1/polkit-agent-helper-1' "$BUILD"; then

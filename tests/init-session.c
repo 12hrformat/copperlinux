@@ -453,37 +453,37 @@ int main(void) {
     }
 
     /* ------------------------------------------------- the desktop marker */
-    /* chose_hyprland() decides which launcher the boot hint names. It must be
-       conservative: only the exact word "hyprland" selects Hyprland, and
-       anything else -- missing file, empty file, a stray word, a half-written
-       line -- means XFCE, the desktop that is always present. */
+    /* chose_niri() decides which launcher the boot hint names. It must be
+       conservative: only the exact word "niri" selects niri, and anything else
+       -- missing file, empty file, a stray word, a half-written line -- means
+       XFCE, the desktop that is always present. */
     {
         static const struct { const char *text; int want; } cases[] = {
-            { "hyprland\n",   1 },
-            { "hyprland",     1 },
-            { "hyprland\r\n", 1 },
+            { "niri\n",       1 },
+            { "niri",         1 },
+            { "niri\r\n",    1 },
             { "xfce\n",       0 },
             { "\n",           0 },
             { "",             0 },
-            { "hyprland2",    0 },
-            { " Hyprland\n",  0 },   /* no trimming: exact word only */
-            { "Hyprland\n",   0 },   /* case matters */
+            { "niri2",        0 },
+            { " niri\n",      0 },   /* no trimming: exact word only */
+            { "Niri\n",       0 },   /* case matters */
         };
         for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
             put(marker, cases[i].text);
-            int got = chose_hyprland(marker);
+            int got = chose_niri(marker);
             if (got == cases[i].want) {
-                printf("ok   chose_hyprland(%s) -> %s\n",
+                printf("ok   chose_niri(%s) -> %s\n",
                        cases[i].text[0] ? cases[i].text : "(empty)",
-                       got ? "hyprland" : "xfce");
+                       got ? "niri" : "xfce");
             } else {
-                printf("FAIL chose_hyprland(%s) gave %d, wanted %d\n",
+                printf("FAIL chose_niri(%s) gave %d, wanted %d\n",
                        cases[i].text, got, cases[i].want);
                 fails++;
             }
         }
         unlink(marker);
-        if (chose_hyprland(marker) == 0) {
+        if (chose_niri(marker) == 0) {
             printf("ok   a missing marker means XFCE\n");
         } else {
             printf("FAIL a missing marker means XFCE\n");
@@ -492,7 +492,7 @@ int main(void) {
     }
 
     /* ------------------------------------------------- the libudev records */
-    /* Hyprland gets its keyboard and pointer from libinput, and libinput drops
+    /* niri gets its keyboard and pointer from libinput, and libinput drops
        every device libudev calls uninitialized. With no udev daemon in the
        image nothing ever writes the record that clears that flag, so
        seed_udev_input_db writes it by hand. Point it at a fake

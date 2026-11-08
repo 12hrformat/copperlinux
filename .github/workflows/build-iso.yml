@@ -56,7 +56,7 @@ jobs:
                    tests/persist.sh tests/branch-gate.sh tests/startxfce-gate.sh \
                    tests/account.sh tests/init-session.sh \
                    tests/ingot-gate.sh tests/shutdown-gate.sh tests/xprobe-gate.sh \
-                   tests/starthyprland-gate.sh tests/hypr-defaults-gate.sh \
+                   tests/startniri-gate.sh \
                    tests/plymouth-gate.sh tests/polkit-gate.sh \
                    tests/network-gate.sh tests/console-gate.sh \
                    tests/systemd-gate.sh tests/systemd-gate-sabotage.sh \
@@ -168,14 +168,14 @@ jobs:
       - name: Stage Xorg + XFCE into the rootfs
         run: sudo bash iso/build.sh gui
 
-      # The optional second desktop: Hyprland from the cppiber PPA plus the
-      # ML4W config tree, fetched at a pinned commit and checked against its
-      # sha256 (build_hypr). Its own step for the same reason as gui and
+      # The optional second desktop: niri from the praksharma PPA plus the
+      # session config tree, fetched at a pinned commit and checked against
+      # its sha256 (build_niri). Its own step for the same reason as gui and
       # plymouth -- it downloads at build time and a failure should name the
       # line that asked for it. rootfs and gui above are stamp-checked and
-      # skip, so this resolves to just the Hyprland session.
-      - name: Stage the Hyprland session
-        run: sudo bash iso/build.sh hypr
+      # skip, so this resolves to just the niri session.
+      - name: Stage the niri session
+        run: sudo bash iso/build.sh niri
 
       # The boot splash: the prebuilt Plymouth packages plus the owner's frames,
       # unpacked into the rootfs. Its own step for the same reason as gui --
@@ -232,12 +232,12 @@ jobs:
       # systemd-flavoured tree: sbin/init pointing at /lib/systemd/systemd,
       # the power commands pointing at systemctl, and lib/systemd a symlink to
       # ../usr/lib/systemd (the merged-usr bridge). The next run restored that
-      # tree and died in the Hyprland stage:
+      # tree and died in the second-desktop stage:
       #
       #     cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
-      #         directory '.../hypr-root/./lib/systemd'
+      #         directory '.../desktop-root/./lib/systemd'
       #
-      # because cp cannot merge a directory into a symlink, and the Hyprland
+      # because cp cannot merge a directory into a symlink, and the desktop
       # closure ships a real lib/systemd. Two CI runs in a row failed on
       # exactly that line, on a tree that had been perfectly good a moment
       # before.

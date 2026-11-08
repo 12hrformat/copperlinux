@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Twenty-three gates: smoke.sh always; startxfce-gate.sh,
+# Twenty-one gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
 # calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
-# starthyprland-gate.sh, hypr-defaults-gate.sh, plymouth-gate.sh,
-# polkit-gate.sh, network-gate.sh and console-gate.sh do not --
+# startniri-gate.sh, plymouth-gate.sh, polkit-gate.sh, network-gate.sh
+# and console-gate.sh do not --
 # ingot's install lands in a scratch INGOT_ROOT and its repo is served on
-# localhost, starthyprland's compositor is a stub under a private home,
-# hypr-defaults only writes into a scratch tree, plymouth-gate.sh only reads
-# grub.cfg, copper-init.c and the Plymouth units/helpers, polkit-gate.sh only
-# reads the init source, the
+# localhost, startniri's compositor is a stub under a private home,
+# plymouth-gate.sh only reads grub.cfg, copper-init.c and the Plymouth
+# units/helpers, polkit-gate.sh only reads the init source, the
 # overlay and build.sh, network-gate.sh runs the real lease script against
 # a stub ip(8), and console-gate.sh reads the startup files and runs their
-# TERM block against a stubbed tty(1) -- so all seven run unprivileged too.
+# TERM block against a stubbed tty(1) -- so all six run unprivileged too.
 # kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
 # the shipped require_kernel_config() against synthetic configs rather than
 # building a kernel.
@@ -26,7 +25,7 @@
 # the font's unicode table.
 # xprobe-gate.sh needs a C
 # compiler and python3, which CI and the build VM have, and skips cleanly where
-# neither exists; starthyprland-gate.sh needs python3 for one case and skips the
+# neither exists; startniri-gate.sh needs python3 for one case and skips the
 # same way; plymouth-gate.sh checks options against a real plymouthd when the
 # host has one and skips that part when it does not. CI runs this same file with
 # sudo, so a green build there means every
@@ -139,7 +138,7 @@ fi
 
 # ---------------------------------------------------------------------------
 echo
-echo "--- tests/starthyprland-gate.sh: the Hyprland launcher ---"
+echo "--- tests/startniri-gate.sh: the niri launcher ---"
 # Unprivileged, like xprobe-gate.sh: it stubs the compositor and points the
 # launcher at a private home, runtime directory, DRM path and seatd socket, so
 # it never touches this machine's session. It needs python3 for the one case
@@ -147,29 +146,12 @@ echo "--- tests/starthyprland-gate.sh: the Hyprland launcher ---"
 # where python3 is absent -- the same shape as xprobe-gate.sh without a
 # compiler.
 if ! command -v python3 >/dev/null 2>&1; then
-    record starthyprland-gate.sh skipped "no python3 on this host"
-elif out=$(sh tests/starthyprland-gate.sh 2>&1); then
+    record startniri-gate.sh skipped "no python3 on this host"
+elif out=$(sh tests/startniri-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^  ok' || true)
-    record starthyprland-gate.sh ok "$n checks"
+    record startniri-gate.sh ok "$n checks"
 else
-    record starthyprland-gate.sh bad "a Hyprland launcher check failed"
-    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
-fi
-
-# ---------------------------------------------------------------------------
-echo
-echo "--- tests/hypr-defaults-gate.sh: the defaults over the pinned ML4W tree ---"
-# Unprivileged and self-contained. The vendored tree is upstream's, so its
-# defaults still name a full ML4W installation -- Quickshell, Walker, awww --
-# none of which this image carries. This gate proves the rewrite that makes the
-# bar, launcher and wallpaper behave, that a second run is a no-op, and that a
-# choice the user made is never quietly overwritten. It writes only into a
-# scratch tree, so there is nothing here to break.
-if out=$(sh tests/hypr-defaults-gate.sh 2>&1); then
-    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
-    record hypr-defaults-gate.sh ok "$n checks"
-else
-    record hypr-defaults-gate.sh bad "a Hyprland-defaults check failed"
+    record startniri-gate.sh bad "a niri launcher check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
 fi
 

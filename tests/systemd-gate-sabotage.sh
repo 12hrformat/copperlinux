@@ -307,22 +307,22 @@ run_case "ldconfig.service left unmasked" "$B" \
     ':' \
     "ldconfig.service is masked"
 
-# 20. The hypr skip guard stops checking seatd. The guard decides whether a
+# 20. The niri skip guard stops checking seatd. The guard decides whether a
 #     cached tree can be skipped; a guard that doesn't check its own guarantees
 #     skips the stage that would rebuild a missing binary -- and the tree that
 #     ships points copper-seatd.service at a binary that is not there, which is
 #     what the first boot found (bug 47).
 #
-#     The gate does not run build_hypr -- it runs the systemd stage over a
+#     The gate does not run build_niri -- it runs the systemd stage over a
 #     mocked tree -- so there is no runtime path here to break. What the gate
 #     CAN do, and what section 8 of the gate does, is hold the shipped guard to
 #     its contract: so this case plants the blindness and expects the gate to
 #     say so.
-run_case "hypr skip guard blind to seatd" "$B" \
+run_case "niri skip guard blind to seatd" "$B" \
     '     && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
 ' \
     $'     && true \\\n' \
-    "build_hypr's skip guard still checks for seatd"
+    "build_niri's skip guard still checks for seatd"
 
 # 21. The gui skip guard stops checking _seatd. The group is appended by build_gui;
 #     build_rootfs' second pass clobbers it. A guard that stops asking skips the

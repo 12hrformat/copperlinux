@@ -27,7 +27,7 @@
 [Unit]
 Description=Copper console (login shell on tty1)
 # The wizard has to have finished before there is anything to log in AS, and
-# the seat has to exist before the user can start Hyprland -- but that is
+# the seat has to exist before the user can start niri -- but that is
 # ORDERING, and ordering is what After= is for. It is deliberately Wants=, not
 # Requires=, for both: a failed wizard (a disk that could not be formatted, a
 # seatd that would not start) must not take the console with it. On a machine

@@ -151,22 +151,22 @@ static int ok_host(const char *s) { return !s[0] || valid_host(s); }
 static int ok_tz(const char *s)   { return !s[0] || valid_tz(s); }
 static int ok_pw(const char *s)   { return s[0] != '\0'; }
 
-/* The desktop question: `xfce` or `hyprland`, either case, or Enter for XFCE.
+/* The desktop question: `xfce` or `niri`, either case, or Enter for XFCE.
 
-   `ok_session` gates both editors; `is_hyprland` is the one place that turns an
+   `ok_session` gates both editors; `is_niri` is the one place that turns an
    answer into the marker's value, so the table check and the value written can
    never disagree about which spelling means which desktop. The marker is read
-   back by copper-init (chose_hyprland in iso/src-init/copper-init.c), which
-   matches the exact word "hyprland" on the first line -- so whatever is typed
+   back by copper-init (chose_niri in iso/src-init/copper-init.c), which
+   matches the exact word "niri" on the first line -- so whatever is typed
    here has to be reduced to that word, or to "xfce", before it is written. */
 static int word_is(const char *s, const char *w) {
     for (; *s && *w; s++, w++)
         if (tolower((unsigned char)*s) != tolower((unsigned char)*w)) return 0;
     return *s == *w;
 }
-static int is_hyprland(const char *s) { return word_is(s, "hyprland"); }
+static int is_niri(const char *s) { return word_is(s, "niri"); }
 static int ok_session(const char *s) {
-    return !s[0] || is_hyprland(s) || word_is(s, "xfce");
+    return !s[0] || is_niri(s) || word_is(s, "xfce");
 }
 
 /* All members, always. A partial initialiser silently zeroes the rest, and
@@ -193,9 +193,9 @@ static struct field fields[F_COUNT] = {
     FIELD("Timezone",      "Enter alone to use \"UTC\", or Europe/London",
           "Timezone, e.g. Europe/London",
           "That does not look like a timezone", 0, ok_tz),
-    FIELD("Desktop",       "xfce or hyprland (Enter = xfce)",
-          "Which desktop, xfce or hyprland?",
-          "Type xfce or hyprland", 0, ok_session),
+    FIELD("Desktop",       "xfce or niri (Enter = xfce)",
+          "Which desktop, xfce or niri?",
+          "Type xfce or niri", 0, ok_session),
 };
 
 /* |   label(18)   value */
@@ -835,7 +835,7 @@ static void collect(int idx) {
             fflush(stdout);
             if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
             if (ok_session(buf)) break;
-            printf("Type xfce or hyprland, or Enter for xfce.\n");
+            printf("Type xfce or niri, or Enter for xfce.\n");
         }
         break;
     }
@@ -1484,10 +1484,10 @@ int main(void) {
     run_quiet("/bin/busybox cp -a /etc/skel/.bashrc /home/%s/.bashrc", user);
     run_quiet("/bin/busybox chown %s:%s /home/%s/.bashrc", user, user, user);
 
-    /* _seatd is for the Hyprland session: seatd runs as root and the session
+    /* _seatd is for the niri session: seatd runs as root and the session
        user reaches its socket by group membership, not by being root
        (copper-init starts it as `seatd -g _seatd`; the group is created by the
-       hypr build stage). On an image without that stage the group is absent and
+       niri build stage). On an image without that stage the group is absent and
        this is a quiet no-op, exactly like any other missing supplementary group
        below. */
     const char *supp[] = {"wheel", "users", "audio", "video", "dialout", "cdrom",
@@ -1548,14 +1548,15 @@ int main(void) {
        started either way when it is present, so both launchers work from the
        prompt. The launchers themselves do not read it, and anything unreadable
        or unrecognised means XFCE, the desktop that has always been here. The
-       value is always the exact word copper-init matches -- "hyprland" or
-       "xfce" -- never the raw answer, so "Hyprland" or a stray word can never
+       value is always the exact word copper-init matches -- "niri" or
+       "xfce" -- never the raw answer, so "niri" in another case or a stray
+       word can never
        become a machine that tries to start a desktop it was not told to. */
     {
         FILE *d = fopen("/etc/copper-desktop", "w");
         if (d) {
             fprintf(d, "%s\n",
-                    is_hyprland(fields[F_SESSION].value) ? "hyprland" : "xfce");
+                    is_niri(fields[F_SESSION].value) ? "niri" : "xfce");
             fclose(d);
         }
     }

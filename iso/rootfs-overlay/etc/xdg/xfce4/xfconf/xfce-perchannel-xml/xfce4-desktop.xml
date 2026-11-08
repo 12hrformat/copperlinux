@@ -6,8 +6,8 @@
   is exactly the behaviour a default should have.
 
   The image ships at /usr/share/copper/wallpapers/copper-default.png and the
-  Hyprland side points hyprpaper at the same file (hypr-defaults.sh), so both
-  desktops wear the same picture.
+  niri config points swaybg at the same file, so both desktops wear the same
+  picture.
 -->
 <channel name="xfce4-desktop" version="1.0">
   <property name="backdrop" type="empty">

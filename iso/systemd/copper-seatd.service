@@ -1,9 +1,9 @@
 # Copper Linux — the seat daemon.
 #
 # The under-systemd home for what copper-init's start_seatd() does: run
-# `seatd -g _seatd`, which is what starthyprland then finds on
+# `seatd -g _seatd`, which is what startniri then finds on
 # /run/seatd.sock. The migration document's eventual answer is logind, but
-# retiring seatd is a separate step: Hyprland's seat path is tested as-is and
+# retiring seatd is a separate step: niri's seat path is tested as-is and
 # a seat swap and a PID-1 swap in the same boot would be two suspects for one
 # dark screen.
 #
@@ -34,7 +34,7 @@ Before=copper-console.service
 # -- the first-boot wizard owns that tty, and systemd's status lines over it
 # corrupt the form the user is typing into. Five fast attempts then give up; the
 # unit is still wanted, so a later `systemctl restart copper-seatd` works, and a
-# machine that cannot run seatd (no Hyprland) is not a machine that cannot boot.
+# machine that cannot run seatd (no niri) is not a machine that cannot boot.
 # Both keys live in [Unit], which is where systemd reads them from -- in
 # [Service] they are "Unknown key ... ignoring", a silent no-op AND a line the
 # stage's verify filter rejects, so this was a build failure waiting on a runner.
@@ -57,7 +57,7 @@ RestartSec=5
 RuntimeDirectory=seatd
 # seatd creates /run/seatd.sock itself with the _seatd group. There is no
 # socket unit here on purpose: socket activation would mean systemd binds the
-# socket and hands it over, and seatd's own bind is the path starthyprland
+# socket and hands it over, and seatd's own bind is the path startniri
 # already tests. A socket unit would also make "seatd is not running" look
 # like "the seat is up", because the socket file would still exist.
 
