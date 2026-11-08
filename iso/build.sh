@@ -1941,6 +1941,9 @@ build_niri() {
   #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
   #                         the GL/GBM stack the renderer needs; the gui
   #                         closure may not have brought the DRI drivers
+  #   libgtk-layer-shell0    the Wayland Layer Shell library waybar is linked
+  #                         against; without it the staged bar dies on a
+  #                         missing gtk_layer_try_force_commit
   set -- niri=25.11ppa4 waybar swaybg sway-notification-center fuzzel kitty \
          seatd brightnessctl playerctl wl-clipboard cliphist jq \
          policykit-1-gnome polkitd pkexec \
@@ -1949,7 +1952,7 @@ build_niri() {
          xdg-user-dirs gvfs-backends udisks2 power-profiles-daemon \
          bibata-cursor-theme \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
-         libxkbcommon0 libinput10
+         libxkbcommon0 libinput10 libgtk-layer-shell0
   apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
     >"$WORK/niri-apt.log" 2>&1 \
     || { echo "niri: apt could not resolve the session closure:" >&2
