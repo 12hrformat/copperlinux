@@ -1997,6 +1997,23 @@ build_niri() {
   # /usr/lib would leave the compositor unable to start. Identical version ->
   # the copy is the same bytes and this is a no-op; newer -> the newer library
   # is the one its consumer was built against.
+  #
+  # The Wayland Layer Shell library the bar is linked against is staged by
+  # name, the same way the plymouth stage stages the libraries its splash
+  # needs: an install would resolve the closure, and a closure that silently
+  # dropped the bar's own library is what turned the first exec of
+  # /usr/bin/waybar into a bare "undefined symbol: gtk_layer_try_force_commit"
+  # rather than a missing-file error. Fetch and unpack it, and the pass below
+  # carries it into the tree.
+  rm -rf "$WORK/niri-layer"; mkdir -p "$WORK/niri-layer"
+  ( cd "$WORK/niri-layer" && apt-get -o APT::Sandbox::User=root download libgtk-layer-shell0 ) \
+    >"$WORK/niri-layer.log" 2>&1 \
+    || { echo "niri: could not fetch the Wayland Layer Shell library" >&2; cat "$WORK/niri-layer.log" >&2 2>/dev/null; exit 1; }
+  for deb in "$WORK/niri-layer"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  echo "  $(ls "$WORK/niri-layer"/*.deb 2>/dev/null | wc -l) layer-shell packages unpacked"
+
   while IFS= read -r so; do
     rel=${so#"$STAGE"/}
     mkdir -p "$TGT/$(dirname "$rel")"
