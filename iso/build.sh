@@ -1913,7 +1913,11 @@ build_niri() {
   #   niri=25.11ppa4        the compositor, pinned to the version this stage was
   #                         written against; a silent PPA bump is how a config
   #                         stops parsing on a machine nobody can type on
-  #   waybar                the bar (0.9.24; see the note above)
+  #   waybar=0.9.24-1build3   the bar, pinned to noble's build. The ppa carries
+  #                         a newer waybar, and that one is built against a newer
+  #                         GTK Layer Shell than noble's libgtk-layer-shell0, so
+  #                         the staged tree ended up with a bar the library could
+  #                         not serve (missing gtk_layer_try_force_commit).
   #   swaybg                the wallpaper, a layer-shell client
   #   sway-notification-center  notifications (the swaync binary)
   #   fuzzel                the launcher
@@ -1944,7 +1948,7 @@ build_niri() {
   #   libgtk-layer-shell0    the Wayland Layer Shell library waybar is linked
   #                         against; without it the staged bar dies on a
   #                         missing gtk_layer_try_force_commit
-  set -- niri=25.11ppa4 waybar swaybg sway-notification-center fuzzel kitty \
+  set -- niri=25.11ppa4 waybar=0.9.24-1build3 swaybg sway-notification-center fuzzel kitty \
          seatd brightnessctl playerctl wl-clipboard cliphist jq \
          policykit-1-gnome polkitd pkexec \
          xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-gnome \
