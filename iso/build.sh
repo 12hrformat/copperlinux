@@ -1970,6 +1970,12 @@ build_niri() {
   n=$(ls "$DH"/*.deb | wc -l)
   echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
 
+  # A cached build tree keeps the files an earlier run staged, and this stage's
+  # copy does not overwrite what is already there, so a bar or compositor that a
+  # later run re-resolved would keep the previous run's bytes. Drop this stage's
+  # own files before copying, so the pinned ones land.
+  rm -f "$TGT/usr/bin/niri" "$TGT/usr/bin/waybar" "$TGT/usr/bin/fuzzel" \
+        "$TGT/usr/bin/swaybg" "$TGT/usr/bin/swaync" "$TGT/usr/bin/kitty"
   copy_stage_in "$STAGE" "$TGT"
 
   # polkitd's package postinst makes its authentication helper setuid root and
