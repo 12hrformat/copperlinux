@@ -12,7 +12,7 @@
 
 ---
 
-Copper is our distro. Built from source, with a small, curated set of packages. It's designed to be a daily driver for Linux nerds, coders, and students who want something that feels like theirs. It's small, fast, and has a minimal base so you can add what you want. It has a GUI, but the default is a shell — so you can learn Linux without being forced into a desktop environment. It's built to be simple, but not simplistic.
+Copper is our distro. Built from source, with a small, curated set of packages. It's designed to be a daily driver for Linux nerds, coders, and students who want something that feels like theirs. It's small, fast, and has a minimal base so you can add what you want. It has a GUI, Niri and XFCE.
 
 Copper has a twin: **Deadlight linux**, a cybersecurity-focused distro by the
 same team. Same base, different goal — a sibling build with the useful
@@ -73,12 +73,6 @@ or check the Actions logs for a CI run. A finished build uploads `copper.iso`
 (~300 MB) as an Actions artifact.
 
 ---
-
-## copper-sh
-
-A small POSIX-style shell, written in C. Mostly builtins for now, so it can do
-useful things before the rest of the userland is on the system. Anything not
-built in falls through to `execvp` and runs from `$PATH`.
 
 ## Contact
 
