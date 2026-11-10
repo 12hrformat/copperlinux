@@ -63,9 +63,9 @@ KPATH="v${KREL%%.*}.x"
 # lives in 12hrformat/copper-niriconfig and is fetched at build time,
 # pinned to a commit and checked against a hash (build_niri does the fetch and
 # the check).
-NIRI_CFG_SHA=fdab48c39d03143910449847849a9555f8b186c4
+NIRI_CFG_SHA=38941b4fe3d4b7f208a350dfa4dc168df12511c1
 NIRI_CFG_URL="https://codeload.github.com/12hrformat/copper-niriconfig/tar.gz/$NIRI_CFG_SHA"
-NIRI_CFG_SHA256=d4e5791bde750acbe537a629efef30c8a46d2d774df4456264ef4ebe50691964
+NIRI_CFG_SHA256=77db2c5fdae9fa872fd87fc6f306153b11fdaef6d75cfddabcdd744e0b5c8bf2
 
 # The praksharma/ubuntu-niri PPA for noble, with a verified fingerprint.
 NIRI_PPA_URL="https://ppa.launchpadcontent.net/praksharma/ubuntu-niri/ubuntu"
