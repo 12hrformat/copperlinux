@@ -115,7 +115,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential gcc-13 bison flex bc cpio rsync curl wget \
             xz-utils texinfo help2man autoconf automake libtool pkg-config libelf-dev \
-            python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin
+            python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin \
+            libglib2.0-dev-bin
+
+      # libglib2.0-dev-bin is glib-compile-schemas, and nothing else on the
+      # runner provides it. build.sh's iso stage compiles the staged
+      # *.gschema.xml files into gschemas.compiled -- the trigger dpkg would
+      # run at install time, which dpkg-deb -x never does -- and without this
+      # package the iso stage dies on its own "glib-compile-schemas is not on
+      # the build host" check rather than shipping an ISO whose Firefox
+      # aborts with "No GSettings schemas are installed on the system".
 
       # build.sh pins the kernel compiler itself, and says why: gcc 15 rejects
       # this kernel's ACPI signature table under -Werror, so an unpinned runner

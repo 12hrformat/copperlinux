@@ -3258,6 +3258,75 @@ build_iso() {
   mkdir -p "$TGT/tmp"
   chmod 1777 "$TGT/tmp"
 
+  # GSettings schemas are the third postinst artifact this build has to run
+  # by hand (mime above, icon caches in gui and niri, and this). The debs
+  # stage 46 *.gschema.xml files under /usr/share/glib-2.0/schemas/ and
+  # nothing ever compiles them: dpkg runs glib-compile-schemas as a trigger
+  # at install time, and this image is assembled with dpkg-deb -x, which
+  # runs no triggers. On the booted image every GSettings user then aborted
+  # on the missing cache -- Firefox with "GLib-GIO-ERROR: No GSettings
+  # schemas are installed on the system", xdg-desktop-portal and gvfs'
+  # UDisks2VolumeMonitor with SIGTRAP (signal 5), and xfsettingsd before it
+  # could hand the session its XSETTINGS, which is half of the cursor bug
+  # below. Compile here, after every stage that can stage a schema (gui and
+  # niri both do), so what the disc carries is what an installed system
+  # would have.
+  #
+  # The compiler is the build HOST's, not the image's: nothing on the image
+  # ships it, and the cache it writes is what the image's glib reads at
+  # runtime -- a file format that has not moved since GSettings exists, so
+  # a host glib newer than the image's is fine. It runs over the staged
+  # tree directly: it reads xml and writes one file, it needs no chroot.
+  local gcs gsc
+  gcs=$(command -v glib-compile-schemas) || {
+    echo "iso: glib-compile-schemas is not on the build host" >&2
+    echo "iso: on Debian/Ubuntu it is in libglib2.0-dev-bin; CI installs it in the workflow" >&2
+    exit 1
+  }
+  if ! "$gcs" "$TGT/usr/share/glib-2.0/schemas" >"$WORK/gcs.log" 2>&1; then
+    echo "iso: glib-compile-schemas rejected the staged schemas:" >&2
+    sed 's/^/iso:   /' "$WORK/gcs.log" >&2
+    exit 1
+  fi
+  gsc="$TGT/usr/share/glib-2.0/schemas/gschemas.compiled"
+  if [ ! -s "$gsc" ]; then
+    echo "iso: compiling the staged schemas produced no gschemas.compiled" >&2
+    exit 1
+  fi
+  # The cache is a serialised GVariant and the schema ids are plain strings
+  # inside it, so a byte-grep proves the desktop schemas really landed in
+  # the file rather than it merely being non-empty.
+  if ! grep -aqF 'org.gnome.desktop.background' "$gsc"; then
+    echo "iso: gschemas.compiled does not carry org.gnome.desktop.background" >&2
+    exit 1
+  fi
+  # The find above has already run, so the two files this block creates pin
+  # their own ownership -- on a warm cache the runner owns the tree, and -R
+  # would carry that to the disc.
+  chown 0:0 "$gsc"; chmod 0644 "$gsc"
+
+  # /usr/share/icons/default is an empty directory in this tree, and that is
+  # the other half of the Firefox symptoms. GTK falls back to the cursor
+  # theme named "default" when nothing else says one -- xfsettingsd, which
+  # would say one, is among the crashers above -- and Debian's
+  # dmz-cursor-theme turns that empty directory into a selection by making
+  # /usr/share/icons/default/index.theme an update-alternatives symlink to
+  # DMZ-White's cursor.theme in its postinst, which no dpkg-deb -x ever
+  # runs. So every cursor lookup failed and Firefox logged "Unable to load
+  # pointer from the cursor theme" for its whole life. A real file, not a
+  # symlink: the alternatives machinery that would keep one honest is not
+  # on the image, and the bytes are DMZ-White's own cursor.theme verbatim,
+  # which is exactly what the symlink would point at.
+  if [ ! -f "$TGT/usr/share/icons/DMZ-White/cursor.theme" ]; then
+    echo "iso: DMZ-White/cursor.theme is not staged; the default cursor theme cannot inherit it" >&2
+    exit 1
+  fi
+  mkdir -p "$TGT/usr/share/icons/default"
+  cp "$TGT/usr/share/icons/DMZ-White/cursor.theme" \
+     "$TGT/usr/share/icons/default/index.theme"
+  chown 0:0 "$TGT/usr/share/icons/default/index.theme"
+  chmod 0644 "$TGT/usr/share/icons/default/index.theme"
+
   # Whose distribution is about to be written to the disc. build_gui repairs
   # this after it copies base-files in (see copper_identity), and this is the
   # last look before the ISO is produced, so a stage that runs after gui and
@@ -3406,6 +3475,35 @@ WRAP
     fi
     echo "  iso: polkit-agent-helper-1 is 4755 root:root, on the disc"
   fi
+
+  # The GSettings cache, read back off the disc. This is the file whose
+  # absence took Firefox down ("No GSettings schemas are installed") and
+  # SIGTRAPped the portal and gvfs' volume monitor, so what ships is
+  # checked, not what the staging tree says it wrote -- extraction is the
+  # only witness that cannot be wrong about the disc.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/share/glib-2.0/schemas/gschemas.compiled \
+      "$ex/gschemas.compiled" >/dev/null 2>&1 || true
+  if [ ! -s "$ex/gschemas.compiled" ]; then
+    echo "iso: the ISO has no gschemas.compiled under /usr/share/glib-2.0/schemas" >&2
+    echo "iso: every GSettings user (firefox, the portal, gvfs, xfsettingsd) would abort on it" >&2
+    exit 1
+  fi
+  if ! grep -aqF 'org.gnome.desktop.background' "$ex/gschemas.compiled"; then
+    echo "iso: the disc's gschemas.compiled does not carry the desktop schemas" >&2
+    exit 1
+  fi
+  # The default cursor theme, same readback discipline. Its absence is the
+  # "Unable to load pointer from the cursor theme" flood.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/share/icons/default/index.theme "$ex/index.theme" \
+      >/dev/null 2>&1 || true
+  if ! grep -q '^Inherits=DMZ-White$' "$ex/index.theme" 2>/dev/null; then
+    echo "iso: /usr/share/icons/default/index.theme on the disc does not select DMZ-White" >&2
+    echo "iso: GTK would fall back to a cursor theme that does not exist" >&2
+    exit 1
+  fi
+  echo "  iso: gschemas.compiled and the default cursor theme are on the disc"
 
   # The power commands, read back off the disc -- bug 29 in one check. PATH
   # (copper-init's setenv, /etc/profile) and sudo's secure_path all search
