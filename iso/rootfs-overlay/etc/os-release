@@ -1,7 +1,7 @@
 NAME="Copper Linux"
-PRETTY_NAME="Copper Linux 0.1 (Ingot)"
-VERSION_ID="0.1"
-VERSION="0.1 (Ingot)"
+PRETTY_NAME="Copper Linux 1.2.0-alpha.1"
+VERSION_ID="1.2.0-alpha.1"
+VERSION="1.2.0-alpha.1 (Ingot)"
 VERSION_CODENAME=ingot
 ID=copper
 PKG_MANAGER="Ingot"

@@ -1614,6 +1614,78 @@ static void load_console_font(void) {
    another init (--console). Nothing in here mounts anything, installs a
    signal handler or waits on a global child, so it is safe to reach from
    either. */
+/* One field out of /etc/os-release, quotes stripped, into `out`. An empty
+   string when the file or the field is absent. os-release is the image's
+   identity -- `copper version` reads it too -- and a second copy of the
+   version string here is how v0.1.0-dev shipped against VERSION_ID=0.1. */
+static void os_release_field(const char *want, char *out, size_t cap) {
+    out[0] = '\0';
+    FILE *f = fopen("/etc/os-release", "r");
+    if (!f)
+        return;
+    char line[256];
+    size_t wl = strlen(want);
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, want, wl) != 0 || line[wl] != '=')
+            continue;
+        char *v = line + wl + 1;
+        v[strcspn(v, "\r\n")] = '\0';
+        size_t n = strlen(v);
+        if (n >= 2 && v[0] == '"' && v[n - 1] == '"') {
+            v[n - 1] = '\0';
+            v++;
+            n -= 2;
+        }
+        if (n >= cap)
+            n = cap - 1;
+        memcpy(out, v, n);
+        out[n] = '\0';
+        break;
+    }
+    fclose(f);
+}
+
+/* The welcome banner on the session tty: clear the screen, then say what
+   this machine is and how to start a desktop on it.
+
+   Written to stdout directly, not through say(). say() under --console is
+   deliberately serial-only diagnostic chatter, because the console is about
+   to draw the wizard's form and stray "copper:" lines corrupt it -- which is
+   also why the "type startniri" hint in run_session() never reached the
+   screen and only ever landed in the serial log. This is the opposite case:
+   intentional UI, on the tty the user is looking at, printed just before the
+   shell takes it over.
+
+   The clear is the escape sequence `clear` itself sends (cursor home, erase
+   in display, erase scrollback) rather than a run of the command: by this
+   point nothing guarantees /usr/bin/clear or a terminfo database exists,
+   and the Linux VT answers these codes by definition. It wipes what came
+   before -- the kernel's boot text, systemd's [ OK ] lines, and whatever
+   the wizard left drawn -- so the shell starts on a clean screen.
+
+   Called inside run_session()'s respawn loop, not once before it: every
+   terminal start gets it, from the first shell after the wizard to every
+   login after a logout. */
+static void print_welcome(void) {
+    char id[32], version[64];
+    os_release_field("ID", id, sizeof id);
+    os_release_field("VERSION_ID", version, sizeof version);
+
+    printf("\033[H\033[2J\033[3J");
+    printf("welcome to copper linux!\n");
+    printf("\n");
+    printf("type 'startniri' for niri and 'startxfce' for xfce\n");
+    /* The version line is gated on ID the same way `copper version` gates:
+       a copper-init running somewhere that is not Copper (a chroot on a
+       build host with the source mounted) must not report that machine's
+       os-release as ours. VERSION_ID, with the "v" the user types; when it
+       is absent the banner simply omits the line rather than guessing. */
+    if (strcmp(id, "copper") == 0 && version[0])
+        printf("\nv%s\n", version);
+    printf("\n");
+    fflush(stdout);
+}
+
 static void run_session(void) {
     /* UTF-8, before anything draws. Nothing else in the image set a locale,
        so every program that calls setlocale("") got "C" -- one byte per
@@ -1778,6 +1850,7 @@ static void run_session(void) {
         }
         grant_devices(&g_session);
         prepare_session_dirs(&g_session);
+        print_welcome();
         pid_t session = spawn_tty(1);
         int session_status, rescue_status;
         while (session > 0) {
