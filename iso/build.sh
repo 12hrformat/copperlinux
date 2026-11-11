@@ -201,7 +201,7 @@ require_kernel_config() {
   for sym in \
       DEVTMPFS DEVTMPFS_MOUNT TMPFS OVERLAY_FS ISO9660_FS BLK_DEV_SR \
       VT VGA_CONSOLE UNIX98_PTYS \
-      EXT4_FS BLK_DEV_SD ATA ATA_PIIX BLK_DEV_NVME \
+      EXT4_FS BLK_DEV_SD ATA ATA_PIIX SATA_AHCI BLK_DEV_NVME \
       VIRTIO_PCI VIRTIO_BLK \
       NET NETDEVICES INET PACKET UNIX E1000 E1000E VMXNET3 VIRTIO_NET ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
@@ -268,18 +268,33 @@ require_kernel_config() {
   # would drop both: that is why SCSI and SCSI_LOWLEVEL are asserted here and not
   # merely enabled.
   #
+  # SATA_AHCI is asserted in the base loop above even though x86_64 defconfig
+  # already carries it: a symbol that arrives by accident disappears by accident,
+  # and silent coverage of exactly that kind hid the VMware gap for months.
+  # Being a SATA host rather than a SCSI one, it belongs beside ATA_PIIX in the
+  # base list, not with the host adapters below.
+  #
   #   SCSI            the base any SCSI disk needs (BLK_DEV_SD depends on it)
   #   SCSI_LOWLEVEL   the menu the host-adapter drivers live under
   #   SCSI_MPT3SAS    LSI Logic SAS/SPI/FC -- VMware's default guest controller
   #   VMWARE_PVSCSI   VMware Paravirtual SCSI (not VMWARE_VMXNET3: that is the
   #                   network adapter, a different symbol entirely)
   #   SCSI_VIRTIO     virtio-scsi, the common QEMU/KVM alternative to virtio-blk
+  #   SCSI_SYM53C8XX_2 the NCR53C8XX/SYM53C8XX family of PCI parallel SCSI
+  #                   controllers, plus the LSI53C10XX Ultra-160 subset -- and
+  #                   QEMU's lsi53c895a, the adapter a -drive if=scsi disk
+  #                   lands on when nobody picks a fancier one
+  #   MEGARAID_SAS    LSI Logic MegaRAID SAS RAID -- QEMU's megasas and the
+  #                   real SAS RAID cards; selects IRQ_POLL, so enabling it
+  #                   pulls that in too
   #
   # The same limit applies as to the display list: asserted =y means it compiles,
   # not that it has initialised on that hardware. SCSI_VIRTIO and VMWARE_PVSCSI
   # are untested until somebody boots a machine that uses them; SCSI_MPT3SAS is
-  # the one the VMware report is about.
-  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO ; do
+  # the one the VMware report is about, and SYM53C8XX/MEGARAID_SAS are covered
+  # by booting QEMU's lsi53c895a and megasas with a disk behind each.
+  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
+             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -343,9 +358,11 @@ build_kernel() {
       --enable VIRTIO_PCI --enable VIRTIO_BLK --enable VIRTIO_NET \
       --enable E1000 --enable E1000E \
       --enable VMXNET3 --enable VMWARE_VMXNET3 \
-      --enable ATA --enable ATA_PIIX --enable BLK_DEV_SD --enable BLK_DEV_NVME \
+      --enable ATA --enable ATA_PIIX --enable SATA_AHCI \
+      --enable BLK_DEV_SD --enable BLK_DEV_NVME \
       --enable SCSI --enable SCSI_LOWLEVEL \
       --enable SCSI_MPT3SAS --enable VMWARE_PVSCSI --enable SCSI_VIRTIO \
+      --enable SCSI_SYM53C8XX_2 --enable MEGARAID_SAS \
       --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
       --enable VGA_CONSOLE --enable INPUT \
       --enable DRM --enable DRM_FBDEV_EMULATION \
