@@ -1448,6 +1448,22 @@ build_gui() {
   # Package lists, refreshed when something is about to be downloaded
   # anyway. A cold runner has none; a warm one re-reads them in seconds.
   apt-get update -qq
+
+  # A name probe has to ask for an installable candidate, not for a name apt
+  # recognizes: apt-cache show answers recognition, and a name some other
+  # package Replaces or Provides is recognized without being installable.
+  # That is the rule on both build hosts, not a corner case -- firefox-esr on
+  # the ubuntu-24.04 runner is known to apt only through
+  # gnome-browser-connector's Replaces field, and firefox on kali is known
+  # only as a dropped transitional -- and the first cut of these probes
+  # accepted recognition, so the runner's build died on "Package 'firefox-esr'
+  # has no installation candidate". apt-cache policy states the version apt
+  # would choose; "(none)" is how it spells "nothing to choose", and a name
+  # apt never heard of prints no candidate line at all.
+  gui_carries() {
+    apt-cache policy "$1" 2>/dev/null | grep -q '^ *Candidate: [^ (]'
+  }
+
   # The pixbuf cache generator ships in a separate package from the library,
   # and only as a recommendation -- so --no-install-recommends would drop it
   # and the session would have loaders with nothing to find them from, which
@@ -1455,7 +1471,7 @@ build_gui() {
   # one it carries rather than naming one and hoping.
   local pixbuf="" p
   for p in libgdk-pixbuf2.0-bin libgdk-pixbuf-2.0-bin; do
-    if apt-cache show "$p" >/dev/null 2>&1; then pixbuf=$p; break; fi
+    if gui_carries "$p"; then pixbuf=$p; break; fi
   done
   # xfce4-terminal is named explicitly rather than assumed: the xfce4
   # metapackage does not depend on it (nor recommend it), so under
@@ -1472,19 +1488,23 @@ build_gui() {
   # host which name it carries, like the pixbuf bin above.
   local alsa="" p
   for p in libasound2t64 libasound2; do
-    if apt-cache show "$p" >/dev/null 2>&1; then alsa=$p; break; fi
+    if gui_carries "$p"; then alsa=$p; break; fi
   done
-  # firefox, under whichever name the host's distro carries it. Kali dropped
-  # the `firefox` transitional from its snapshot, so asking for that name there
-  # fails the whole stage with "no installation candidate"; ubuntu-24.04 (the
-  # CI runner) still carries `firefox` as the snap-transition stub and has no
-  # firefox-esr at all. Same treatment as pixbuf and alsa above: ask the host.
-  # On Kali this puts a real browser on the disc (firefox-esr, which also
-  # answers to /usr/bin/firefox); on the runner it keeps today's behaviour
-  # exactly -- the stub, and no browser binary either way.
+  # firefox, under whichever name the host's distro carries -- with
+  # "carries" settled by the candidate check, because the first cut of
+  # this probe accepted recognition and the runner died for it:
+  # firefox-esr is a name ubuntu-24.04 knows (gnome-browser-connector
+  # Replaces it) yet has no candidate for, so the probe chose it and apt
+  # stopped the stage with "Package 'firefox-esr' has no installation
+  # candidate". Kali is the mirror image -- it really carries firefox-esr,
+  # which also answers to /usr/bin/firefox so the desktop's helper finds
+  # it, and knows `firefox` only as a dropped transitional. With candidates,
+  # Kali puts a real browser on the disc and the runner falls through to
+  # firefox, the snap-transition stub -- no browser binary, exactly the
+  # image it shipped before this question was asked.
   local browser="" p
   for p in firefox-esr firefox; do
-    if apt-cache show "$p" >/dev/null 2>&1; then browser=$p; break; fi
+    if gui_carries "$p"; then browser=$p; break; fi
   done
   [ -z "$browser" ] && echo "gui: no firefox package on this host" \
     "(tried firefox-esr, firefox); the image will have no browser" >&2
