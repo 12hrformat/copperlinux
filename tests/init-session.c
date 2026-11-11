@@ -146,6 +146,41 @@ static void slurp(const char *path, char *buf, size_t bufsz) {
     fclose(f);
 }
 
+/* Run print_welcome(os_release_path) in a forked child with stdout on a
+   pipe and read back what it printed. Returns the byte count, or -1 when
+   the plumbing itself failed (a plumbing failure is the gate's, not the
+   init's). The child _exits rather than returning, so what it printed has
+   to have been flushed -- which print_welcome does itself, on purpose: the
+   real caller hands it a tty, and a banner still sitting in a stdio buffer
+   at spawn time would lose the race with the shell that follows it. */
+static int capture_welcome(const char *os_release_path, char *out, size_t cap) {
+    int pfd[2];
+    if (pipe(pfd) != 0) return -1;
+    pid_t pid = fork();
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return -1; }
+    if (pid == 0) {
+        /* The parent has an unflushed stdio buffer here (stdout to a pipe is
+           fully buffered and nothing has flushed since the ok lines). The
+           child inherits it and print_welcome's own fflush would flush the
+           inherited bytes first -- so clear the buffer before writing. */
+        fflush(NULL);
+        dup2(pfd[1], STDOUT_FILENO);
+        close(pfd[0]);
+        close(pfd[1]);
+        print_welcome(os_release_path);
+        _exit(0);
+    }
+    close(pfd[1]);
+    ssize_t r = read(pfd[0], out, cap - 1);
+    int n = r >= 0 ? (int)r : -1;
+    close(pfd[0]);
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) return -1;
+    if (n >= 0) out[n] = '\0';
+    return n;
+}
+
 int main(void) {
     /* An account that certainly exists, so the test never touches the account
        database. The wizard's own user cannot be used: it only exists after a
@@ -488,6 +523,109 @@ int main(void) {
         } else {
             printf("FAIL a missing marker means XFCE\n");
             fails++;
+        }
+    }
+
+    /* --------------------------------------------------- the welcome banner */
+    /* print_welcome() paints the tty the session is about to own: the clear,
+       the welcome line, the startniri/startxfce hint, and -- gated on the
+       image's own os-release -- the version. The hint used to go through
+       say(), which under --console is serial-only diagnostic chatter, so the
+       person at the screen never once saw it; these assertions pin the banner
+       to stdout and pin what it says, including the version gate: a
+       copper-init running somewhere that is not Copper must not report that
+       machine's version as the image's. print_welcome takes the os-release
+       path as its argument for exactly this fixture. */
+    {
+        char dir[] = "/tmp/copper-init-banner-XXXXXX";
+        char *d = mkdtemp(dir);
+        if (!d) {
+            printf("FAIL mkdtemp: %s\n", strerror(errno));
+            fails++;
+        } else {
+            char osr[320], out[512];
+            snprintf(osr, sizeof osr, "%s/os-release", d);
+
+            /* The image's own os-release, quoted values and all. */
+            put(osr, "NAME=\"Copper Linux\"\n"
+                     "ID=copper\n"
+                     "VERSION_ID=\"1.2.0-alpha.1\"\n"
+                     "PRETTY_NAME=\"Copper Linux 1.2.0-alpha.1\"\n");
+            int n = capture_welcome(osr, out, sizeof out);
+            if (n > 0 && memcmp(out, "\033[H\033[2J\033[3J", 9) == 0) {
+                printf("ok   the banner clears the screen first, with the raw escape codes\n");
+            } else {
+                printf("FAIL the banner does not open with the clear sequence (n %d)\n", n);
+                fails++;
+            }
+            if (n > 0 && strstr(out, "welcome to copper linux!") != NULL) {
+                printf("ok   it says welcome to copper linux!\n");
+            } else {
+                printf("FAIL no welcome line (n %d)\n", n);
+                fails++;
+            }
+            if (n > 0 && strstr(out, "type 'startniri' for niri and 'startxfce' for xfce") != NULL) {
+                printf("ok   it names both desktop launchers\n");
+            } else {
+                printf("FAIL the startniri/startxfce hint is missing (n %d)\n", n);
+                fails++;
+            }
+            if (n > 0 && strstr(out, "\nv1.2.0-alpha.1\n") != NULL) {
+                printf("ok   the version line comes from os-release's VERSION_ID\n");
+            } else {
+                printf("FAIL no version line for a copper os-release (n %d)\n", n);
+                fails++;
+            }
+
+            /* Not Copper: the version line must not appear at all. This is
+               the gate the banner's own comment promises -- a build host or
+               a chroot must not be reported as the image. */
+            put(osr, "NAME=\"Debian GNU/Linux\"\nID=debian\nVERSION_ID=\"12\"\n");
+            n = capture_welcome(osr, out, sizeof out);
+            if (n > 0 && strstr(out, "\nv") == NULL) {
+                printf("ok   a non-copper os-release prints no version line\n");
+            } else {
+                printf("FAIL a foreign os-release leaked a version line (n %d)\n", n);
+                fails++;
+            }
+
+            /* Copper, but no VERSION_ID: the line is omitted, not guessed. */
+            put(osr, "ID=copper\n");
+            n = capture_welcome(osr, out, sizeof out);
+            if (n > 0 && strstr(out, "\nv") == NULL) {
+                printf("ok   a missing VERSION_ID omits the line rather than guessing\n");
+            } else {
+                printf("FAIL a missing VERSION_ID produced a version line (n %d)\n", n);
+                fails++;
+            }
+
+            /* The parser itself, on the form the file also allows: an
+               unquoted value, and a field that is simply not there. */
+            put(osr, "ID=copper\nVERSION_ID=2.0\n");
+            char v[64];
+            os_release_field(osr, "VERSION_ID", v, sizeof v);
+            if (strcmp(v, "2.0") == 0) {
+                printf("ok   os_release_field reads an unquoted value\n");
+            } else {
+                printf("FAIL os_release_field read '%s' for an unquoted value\n", v);
+                fails++;
+            }
+            os_release_field(osr, "VERSION_CODENAME", v, sizeof v);
+            if (v[0] == '\0') {
+                printf("ok   an absent field is an empty string\n");
+            } else {
+                printf("FAIL an absent field read '%s'\n", v);
+                fails++;
+            }
+            os_release_field("/no/such/os-release-xyz", "ID", v, sizeof v);
+            if (v[0] == '\0') {
+                printf("ok   a missing file is an empty string\n");
+            } else {
+                printf("FAIL a missing file read '%s'\n", v);
+                fails++;
+            }
+
+            rmtree(d);
         }
     }
 

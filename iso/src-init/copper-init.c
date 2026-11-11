@@ -1614,13 +1614,19 @@ static void load_console_font(void) {
    another init (--console). Nothing in here mounts anything, installs a
    signal handler or waits on a global child, so it is safe to reach from
    either. */
-/* One field out of /etc/os-release, quotes stripped, into `out`. An empty
+/* One field out of an os-release file, quotes stripped, into `out`. An empty
    string when the file or the field is absent. os-release is the image's
    identity -- `copper version` reads it too -- and a second copy of the
-   version string here is how v0.1.0-dev shipped against VERSION_ID=0.1. */
-static void os_release_field(const char *want, char *out, size_t cap) {
+   version string here is how v0.1.0-dev shipped against VERSION_ID=0.1.
+
+   The path is an argument, not the constant /etc/os-release, for the same
+   reason ensure_system_user takes its database paths: the gate runs this
+   against a fixture, and the machine the gate runs on is not Copper and
+   must not be mistaken for it. */
+static void os_release_field(const char *path, const char *want,
+                             char *out, size_t cap) {
     out[0] = '\0';
-    FILE *f = fopen("/etc/os-release", "r");
+    FILE *f = fopen(path, "r");
     if (!f)
         return;
     char line[256];
@@ -1665,11 +1671,15 @@ static void os_release_field(const char *want, char *out, size_t cap) {
 
    Called inside run_session()'s respawn loop, not once before it: every
    terminal start gets it, from the first shell after the wizard to every
-   login after a logout. */
-static void print_welcome(void) {
+   login after a logout.
+
+   The os-release path is an argument for the same reason os_release_field
+   takes one: the gate proves this against a fixture, not the build host's
+   own /etc/os-release. */
+static void print_welcome(const char *os_release) {
     char id[32], version[64];
-    os_release_field("ID", id, sizeof id);
-    os_release_field("VERSION_ID", version, sizeof version);
+    os_release_field(os_release, "ID", id, sizeof id);
+    os_release_field(os_release, "VERSION_ID", version, sizeof version);
 
     printf("\033[H\033[2J\033[3J");
     printf("welcome to copper linux!\n");
@@ -1850,7 +1860,7 @@ static void run_session(void) {
         }
         grant_devices(&g_session);
         prepare_session_dirs(&g_session);
-        print_welcome();
+        print_welcome("/etc/os-release");
         pid_t session = spawn_tty(1);
         int session_status, rescue_status;
         while (session > 0) {
