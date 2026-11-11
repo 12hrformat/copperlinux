@@ -1474,6 +1474,20 @@ build_gui() {
   for p in libasound2t64 libasound2; do
     if apt-cache show "$p" >/dev/null 2>&1; then alsa=$p; break; fi
   done
+  # firefox, under whichever name the host's distro carries it. Kali dropped
+  # the `firefox` transitional from its snapshot, so asking for that name there
+  # fails the whole stage with "no installation candidate"; ubuntu-24.04 (the
+  # CI runner) still carries `firefox` as the snap-transition stub and has no
+  # firefox-esr at all. Same treatment as pixbuf and alsa above: ask the host.
+  # On Kali this puts a real browser on the disc (firefox-esr, which also
+  # answers to /usr/bin/firefox); on the runner it keeps today's behaviour
+  # exactly -- the stub, and no browser binary either way.
+  local browser="" p
+  for p in firefox-esr firefox; do
+    if apt-cache show "$p" >/dev/null 2>&1; then browser=$p; break; fi
+  done
+  [ -z "$browser" ] && echo "gui: no firefox package on this host" \
+    "(tried firefox-esr, firefox); the image will have no browser" >&2
   # openssl and ca-certificates: busybox wget's openssl helper (the path that
   # verifies certs and works against GitHub release CDNs) forks `openssl
   # s_client`. Without the binary busybox silently falls back to its internal
@@ -1514,13 +1528,13 @@ build_gui() {
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme dmz-cursor-theme librsvg2-common openssl ca-certificates e2fsprogs \
          libc-bin make nano bash ncurses-base \
-         firefox \
          fonts-dejavu-core fonts-noto-core fonts-noto-mono \
          fonts-noto-color-emoji fonts-symbola fonts-powerline fonts-font-awesome \
          fonts-hack fonts-jetbrains-mono fonts-firacode fonts-liberation \
          fontconfig
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
+  [ -n "$browser" ] && set -- "$@" "$browser"
   apt-get \
     -o Dir::State::status="$status" \
     -o Dir::Cache::archives="$DG" \
@@ -1564,6 +1578,16 @@ build_gui() {
       exit 1
     fi
   done
+
+  # When the host carries a real browser it has to actually land in the tree:
+  # a name that resolved but unpacked to nothing would ship a desktop with no
+  # browser and no complaint. ubuntu's firefox is the snap-transition stub and
+  # legitimately unpacks no binary, so only the real package is checked.
+  if [ "$browser" = firefox-esr ] &&
+     [ ! -x "$TGT/usr/lib/firefox-esr/firefox-esr" ]; then
+    echo "gui: firefox-esr resolved, but no browser landed in the tree" >&2
+    exit 1
+  fi
 
   # Every glibc ELF names /lib64/ld-linux-x86-64.so.2 as its interpreter, and
   # the kernel resolves that exact path before a single instruction of the
