@@ -547,7 +547,7 @@ require_bb_config() {
       BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP GETTY LOGIN \
       CHPASSWD FEATURE_SHADOWPASSWDS SETFONT CLEAR TTY \
-      SED CUT HEAD SLEEP SWAPONOFF ; do
+      SED CUT HEAD SLEEP SWAPON SWAPOFF ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
