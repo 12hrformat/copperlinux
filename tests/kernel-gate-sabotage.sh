@@ -66,8 +66,10 @@ echo "sabotaging the kernel config gate, one defect at a time:"
 #    shape of bug 46 itself: the flag list is right, the assert list forgot a
 #    controller, and a machine with that controller gets no disk.
 run_case "SCSI_MPT3SAS dropped from the assert loop" \
-    '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO ; do' \
-    '  for sym in SCSI SCSI_LOWLEVEL VMWARE_PVSCSI SCSI_VIRTIO ; do' \
+    '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
+             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do' \
+    '  for sym in SCSI SCSI_LOWLEVEL VMWARE_PVSCSI SCSI_VIRTIO \
+             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do' \
     "SCSI_MPT3SAS|not in the asserted symbol list"
 
 # 2. The controller is asked for under a name kconfig does not have. This is the
@@ -88,10 +90,15 @@ before = s
 # the enable flag
 s = s.replace('--enable VMWARE_PVSCSI', '--enable VMW_PVSCSI', 1)
 # the asserted loop
-s = s.replace('for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO ; do',
-              'for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMW_PVSCSI SCSI_VIRTIO ; do', 1)
-if s == before:
-    sys.exit('NO-MATCH: neither occurrence found')
+s = s.replace('for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \\\n'
+              '             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do',
+              'for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMW_PVSCSI SCSI_VIRTIO \\\n'
+              '             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do', 1)
+# both halves have to land: a flags-only misspelling is the negative
+# control's territory, not this case, so a half-applied planting is
+# reported as broken instead of run as something weaker than intended
+if s.count('VMW_PVSCSI') != 2:
+    sys.exit('NO-MATCH: expected to misspell both the flag and the assert loop')
 open(p, 'w', encoding='utf-8').write(s)
 PY
 if [ $? -ne 0 ]; then
@@ -113,7 +120,8 @@ rm -rf "$T"
 #    "somebody tidied up" case. Nothing asks, nothing asserts, and the gate has
 #    to notice SCSI is no longer claimed.
 run_case "the whole storage assert block is removed" \
-    '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO ; do
+    '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
+             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done' \
     '  true' \
@@ -123,7 +131,8 @@ run_case "the whole storage assert block is removed" \
 #    checks nothing. A gate that only greps for the loop's text passes this; a
 #    gate that enumerates the symbols it expects does not.
 run_case "the storage assert loop is emptied (looks present, checks nothing)" \
-    '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO ; do' \
+    '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
+             SCSI_SYM53C8XX_2 MEGARAID_SAS ; do' \
     '  for sym in ; do' \
     "SCSI|asserted symbol list|empty"
 
