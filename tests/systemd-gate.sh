@@ -195,6 +195,11 @@ done
 for b in usr/sbin/plymouthd usr/bin/plymouth; do
     printf '#!/bin/sh\nexit 0\n' > "$TGT/$b"; chmod 0755 "$TGT/$b"
 done
+# The getty units exec /sbin/agetty. Copper is not merged-usr and Debian's
+# util-linux puts the binary at usr/sbin, so the stage has to bridge the name.
+# Without a real agetty the stage fails, which is the point: a tree with no
+# agetty is a machine with no login prompt on any VT or serial console.
+printf '#!/bin/sh\nexit 0\n' > "$TGT/usr/sbin/agetty"; chmod 0755 "$TGT/usr/sbin/agetty"
 printf '#!/bin/sh\nexit 0\n' > "$TGT/sbin/shutdown"; chmod 0755 "$TGT/sbin/shutdown"
 # the loader PID 1 will name as its interpreter
 if [ -e /lib64/ld-linux-x86-64.so.2 ]; then
@@ -389,10 +394,29 @@ eq_link() {   # eq_link <label> <path> <want>
 }
 
 eq_link "sbin/init -> /lib/systemd/systemd" "$TGT/sbin/init" /lib/systemd/systemd
-for cmd in reboot poweroff halt shutdown; do
+for cmd in reboot poweroff halt; do
     eq_link "sbin/$cmd -> systemctl"      "$TGT/sbin/$cmd"      /usr/bin/systemctl
     eq_link "usr/sbin/$cmd -> systemctl"  "$TGT/usr/sbin/$cmd"  /usr/bin/systemctl
 done
+# shutdown is Copper's wrapper on the systemd tree too. systemd-sysv's
+# compatibility `shutdown` waits a minute on a bare invocation -- the defect a
+# user reports as "sudo shutdown does not work" -- and the wrapper's eventual
+# /sbin/poweroff execs this same systemctl. So it must be the real file here,
+# not a link to systemctl.
+if [ -f "$TGT/sbin/shutdown" ] && [ ! -L "$TGT/sbin/shutdown" ]; then
+    ok "sbin/shutdown is the Copper wrapper (a real file)"
+else
+    bad "sbin/shutdown is the Copper wrapper (a real file)" \
+        "$(ls -ld "$TGT/sbin/shutdown" 2>&1)"
+fi
+eq_link "usr/sbin/shutdown -> the wrapper" \
+        "$TGT/usr/sbin/shutdown" /sbin/shutdown
+
+# agetty: getty@.service and serial-getty@.service exec /sbin/agetty, and
+# Copper's /sbin is a real directory, not a merge of /usr/sbin. Debian ships
+# the binary at usr/sbin, so the stage must link the name the units use or
+# every getty restarts forever (the blank-VT report).
+eq_link "sbin/agetty -> the tree's agetty" "$TGT/sbin/agetty" /usr/sbin/agetty
 
 # ---- 3a. power_links asks the tree which init it carries ---------------------
 # This is the bug CI shipped and every gate here missed. The `iso` chain re-runs
@@ -416,12 +440,20 @@ ptree() {   # ptree <dir> <what sbin/init points at>
 }
 PS="$TMP/power-systemd"; ptree "$PS" /lib/systemd/systemd
 power_links "$PS"
-for cmd in reboot poweroff halt shutdown; do
+for cmd in reboot poweroff halt; do
     eq_link "power_links on a systemd tree: sbin/$cmd -> systemctl" \
             "$PS/sbin/$cmd" /usr/bin/systemctl
     eq_link "power_links on a systemd tree: usr/sbin/$cmd -> systemctl" \
             "$PS/usr/sbin/$cmd" /usr/bin/systemctl
 done
+if [ -f "$PS/sbin/shutdown" ] && [ ! -L "$PS/sbin/shutdown" ]; then
+    ok "power_links on a systemd tree: sbin/shutdown is the wrapper"
+else
+    bad "power_links on a systemd tree: sbin/shutdown is the wrapper" \
+        "$(ls -ld "$PS/sbin/shutdown" 2>&1)"
+fi
+eq_link "power_links on a systemd tree: usr/sbin/shutdown -> the wrapper" \
+        "$PS/usr/sbin/shutdown" /sbin/shutdown
 PB="$TMP/power-busybox"; ptree "$PB" /usr/bin/copper-init
 power_links "$PB"
 for cmd in reboot poweroff halt; do
@@ -478,6 +510,7 @@ for want in \
     copper.target.wants/copper-network.service \
     copper.target.wants/copper-plymouth-quit.service \
     sysinit.target.wants/copper-plymouth.service \
+    sysinit.target.wants/copper-zram.service \
     multi-user.target.wants/copper.target \
     sysinit.target.wants/systemd-udevd.service \
     getty.target.wants/getty@tty2.service \
@@ -561,7 +594,7 @@ fi
 # is one systemd reads with a warning, and the source tree is 777 on Windows.
 for u in copper.target copper-tty-clear.service copper-firstboot.service \
          copper-console.service copper-seatd.service copper-network.service \
-         copper-plymouth.service copper-plymouth-quit.service; do
+         copper-zram.service copper-plymouth.service copper-plymouth-quit.service; do
     f="$TGT/etc/systemd/system/$u"
     if [ ! -f "$f" ]; then
         bad "installed $u" "missing"
@@ -744,6 +777,52 @@ else
     bad "the dhcp helper discovers the interface from sysfs" \
         "$(grep -E 'iface_type|ether_type|radiotap' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
 fi
+# ... and never asks for a /dev node. Network interfaces are not devices;
+# devtmpfs never creates /dev/eth0, so the old `[ -e /dev/$ifname ]` gate was
+# always false and silently skipped DHCP on every systemd boot.
+if grep -q -- '-e "/dev/\$ifname"' "$TGT/usr/bin/copper-dhcp"; then
+    bad "the dhcp helper does not gate on a /dev node" \
+        "$(grep '/dev/\$ifname' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
+else
+    ok "the dhcp helper does not gate on a /dev node"
+fi
+# ... and runs udhcpc in the foreground. With -b the parent exits after the
+# lease and systemd's control-group kills the daemonised child that was meant
+# to keep renewing it.
+if grep -A2 '^exec /sbin/udhcpc' "$TGT/usr/bin/copper-dhcp" | grep -q -- ' -f '; then
+    ok "the dhcp helper keeps udhcpc in the foreground (-f)"
+else
+    bad "the dhcp helper keeps udhcpc in the foreground (-f)" \
+        "$(grep -A2 '^exec /sbin/udhcpc' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
+fi
+
+# ---- compressed swap, so a 4 GB machine can run the desktop ---------------
+if [ -x "$TGT/usr/bin/copper-zram" ]; then
+    ok "zram helper installed executable at /usr/bin/copper-zram"
+else
+    bad "zram helper installed executable at /usr/bin/copper-zram" \
+        "$(ls -l "$TGT/usr/bin/copper-zram" 2>&1)"
+fi
+if grep -qE '^ExecStart=/usr/bin/copper-zram$' \
+        "$TGT/etc/systemd/system/copper-zram.service"; then
+    ok "copper-zram.service execs the zram helper"
+else
+    bad "copper-zram.service execs the zram helper" \
+        "$(grep ExecStart "$TGT/etc/systemd/system/copper-zram.service" 2>&1 | tr '\n' '|')"
+fi
+if grep -q 'swapon /dev/zram0' "$TGT/usr/bin/copper-zram"; then
+    ok "the zram helper actually swaps the device on"
+else
+    bad "the zram helper actually swaps the device on" \
+        "$(grep -n swapon "$TGT/usr/bin/copper-zram" 2>&1 | tr '\n' '|')"
+fi
+if [ -f "$TGT/etc/systemd/journald.conf" ] \
+   && grep -qE '^RuntimeMaxUse=' "$TGT/etc/systemd/journald.conf"; then
+    ok "journald is capped (the live image has no journal to keep)"
+else
+    bad "journald is capped (the live image has no journal to keep)" \
+        "$(cat "$TGT/etc/systemd/journald.conf" 2>&1 | tr '\n' '|')"
+fi
 
 # ---- no Documentation= the image cannot open --------------------------------
 # The image ships no man and no man pages: the gui closure pulls in no man-db
@@ -894,7 +973,7 @@ fi
 # thing under test, not in a copy of it.
 sdin_block() { sed -n '/^  local sdin=/,/^  done$/p' "$BUILD"; }
 SB=$(sdin_block)
-for h in copper-tty-clear copper-dhcp copper-splash-show copper-splash-quit; do
+for h in copper-tty-clear copper-dhcp copper-zram copper-splash-show copper-splash-quit; do
     if printf '%s\n' "$SB" | grep -q "systemd/$h"; then
         ok "the systemd stage stamps on $h"
     else
@@ -915,7 +994,7 @@ done
 # it out of build_systemd, because build.sh has other `for cmd in` loops (the
 # power commands) that have nothing to do with this assertion.
 STAGE_EXEC_LOOPS=$(extract build_systemd | grep -oE 'for cmd in [^;]+;')
-for c in usr/bin/copper-dhcp sbin/udhcpc bin/sh; do
+for c in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/bin/copper-zram; do
     if printf '%s\n' "$STAGE_EXEC_LOOPS" | grep -qF "$c"; then
         ok "the stage asserts $c is in the tree"
     else

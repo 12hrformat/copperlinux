@@ -1,0 +1,87 @@
+#!/bin/sh
+# Copper Linux -- compressed swap in RAM.
+#
+# The live image has no swap at all: /init builds the writable overlay on a
+# tmpfs capped at 50% of RAM, and the desktop (niri + kitty + a browser) is the
+# other half. On a 4 GB machine that leaves little headroom, and the moment
+# something allocates hard the kernel starts reclaiming and the session stalls
+# -- which reads as "niri froze", especially on a VM whose page cache is a
+# virtio/SVGA round trip away.
+#
+# A zram block device is RAM shaped like a disk: pages written to it are
+# compressed (lzo-rle by default, ~2-3x for the text and zero pages a desktop
+# swap mostly holds) and stored back in RAM. Swapping to it costs CPU, not I/O,
+# and it turns "out of memory at 4 GB" into "slower for a moment at 4 GB".
+#
+# Sizes: half of RAM, clamped to [256 MiB, 4 GiB]. Half is the usual live-image
+# balance -- enough to absorb a window burst, not so much that the compressed
+# store itself competes with the working set it is meant to protect.
+#
+# POSIX sh: this runs under the image's busybox ash, where `local`, arrays and
+# [[ ]] do not exist. See assert_shell_scripts_parse() in iso/build.sh.
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+
+Z=/sys/block/zram0
+if [ ! -e "$Z" ]; then
+    # Not fatal: a kernel without zram still boots, it just has no swap. Say so
+    # on the serial log (where a post-mortem looks) and leave the boot alone.
+    echo "copper-zram: no /dev/zram0, the kernel has no zram" >&2
+    exit 0
+fi
+
+mem_kb=$(sed -n 's/^MemTotal:[[:space:]]*\([0-9]*\).*/\1/p' /proc/meminfo)
+[ -n "$mem_kb" ] || mem_kb=0
+size_mb=$((mem_kb / 2 / 1024))
+[ "$size_mb" -lt 256 ] && size_mb=256
+[ "$size_mb" -gt 4096 ] && size_mb=4096
+
+# Initialise once. The unit is oneshot with RemainAfterExit=yes, so a normal
+# boot writes this once; the disksize guard also makes a manual re-run safe.
+cur=$(cat "$Z/disksize" 2>/dev/null || echo 0)
+if [ "$cur" = 0 ]; then
+    # Pick a fast compressor the kernel actually carries. lzo-rle is the 6.x
+    # default and the best speed/ratio point for swap; lz4 and zstd are the
+    # fallbacks if a config ever changes the default.
+    algos=$(cat "$Z/comp_algorithm" 2>/dev/null || echo "")
+    comp=""
+    case "$algos" in
+        *lzo-rle*) comp=lzo-rle ;;
+        *lz4*)     comp=lz4 ;;
+        *zstd*)    comp=zstd ;;
+    esac
+    if [ -n "$comp" ]; then
+        echo "$comp" > "$Z/comp_algorithm" 2>/dev/null || true
+    fi
+    if ! echo "${size_mb}M" > "$Z/disksize"; then
+        echo "copper-zram: could not set zram0 disksize" >&2
+        exit 1
+    fi
+fi
+
+if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+    if command -v swapon >/dev/null 2>&1; then
+        swapon /dev/zram0 || {
+            echo "copper-zram: swapon /dev/zram0 failed" >&2
+            exit 1
+        }
+    elif /bin/busybox --list 2>/dev/null | grep -qx swapon; then
+        /bin/busybox swapon /dev/zram0 || {
+            echo "copper-zram: busybox swapon /dev/zram0 failed" >&2
+            exit 1
+        }
+    else
+        echo "copper-zram: no swapon (neither util-linux nor busybox)" >&2
+        exit 1
+    fi
+fi
+
+# zram's "seek" is free, so read back single pages rather than a cluster, and
+# reclaim anonymous pages (the expensive thing to keep) before page cache (the
+# cheap thing to re-read from the ISO). These are the two tuning knobs that
+# make zram behave like swap should; both are best effort.
+echo 100 > /proc/sys/vm/swappiness 2>/dev/null || true
+echo 0   > /proc/sys/vm/page-cluster 2>/dev/null || true
+
+echo "copper-zram: ${size_mb}M compressed swap on /dev/zram0"

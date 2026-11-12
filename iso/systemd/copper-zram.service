@@ -1,0 +1,35 @@
+# Copper Linux -- compressed swap in RAM, set up before anything heavy starts.
+#
+# The live image has no swap. /init's writable overlay is a tmpfs capped at
+# half of RAM, and niri + kitty + a browser want the other half. On a 4 GB
+# machine the first allocation burst makes the kernel reclaim and the session
+# stalls -- reported as "niri froze", and blamed on 8 GB not being enough.
+# copper-zram builds a compressed swap device out of RAM so the same burst has
+# somewhere to go.
+#
+# Why DefaultDependencies=no: the unit has to run INSIDE sysinit, and a normal
+# service gets an implicit After=sysinit.target from the defaults, which would
+# contradict Before=sysinit.target below and is a cycle on the target (the same
+# shape that once made the boot's initial transaction fail). zram is a built-in
+# block device, so nothing has to be loaded first.
+#
+# ConditionPathExists: a kernel built without CONFIG_ZRAM has no zram0, and a
+# live image must still boot. A skipped unit is not a failed one, so this stays
+# off the wizard's tty (bug 47's rule: no [FAILED] lines over the form).
+[Unit]
+Description=Copper compressed swap (zram)
+DefaultDependencies=no
+ConditionPathExists=/sys/block/zram0
+Before=sysinit.target swap.target
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The helper prints one line to the serial log and nothing to the screen. Its
+# exit status is honest: a kernel that has zram0 but cannot swapon is a defect,
+# and the unit should say so in `systemctl --failed` rather than pretend.
+ExecStart=/usr/bin/copper-zram
+
+[Install]
+WantedBy=sysinit.target

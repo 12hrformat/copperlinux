@@ -470,7 +470,7 @@ run_case "the stage stops stamping on the splash helper" \
 #     start, and the verify filter treats "not executable" as host noise.
 run_case "the stage stops asserting sbin/udhcpc is in the tree" \
     "$B" \
-    'for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth; do' \
+    'for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth usr/bin/copper-zram; do' \
     'for cmd in usr/bin/copper-dhcp bin/sh; do' \
     "FAIL.*asserts sbin/udhcpc is in the tree"
 

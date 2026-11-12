@@ -117,13 +117,14 @@ if [ -z "$ifname" ]; then
     exit 0
 fi
 
-# The device node has to be there before udhcpc is asked to use it. sysfs can
-# name an interface whose /dev entry has not been created yet, and udhcpc
-# exits non-zero on a missing device rather than waiting for one.
-if [ ! -e "/dev/$ifname" ]; then
-    say "$ifname has no device node yet, skipping DHCP"
-    exit 0
-fi
+# There used to be a device-node existence test on the interface here, and it
+# was wrong in a way that silently disabled DHCP on every systemd boot: network
+# interfaces are not character or block devices, so devtmpfs never creates
+# /dev/eth0. The test was always false, the helper said "has no device node
+# yet" and exited 0, and the unit looked healthy while the machine came up
+# offline. Found on the booted green ISO's serial log, after a user had to run
+# `udhcpc -i eth0` by hand. An interface is reachable through sockets, not a
+# /dev path; nothing here should ever look for one.
 
 # Raise the link before the client tries to use it, the way copper-init's
 # link_up() does. Best effort: the lease script's deconfig branch runs
@@ -136,5 +137,16 @@ say "$ifname is up, asking DHCP for an address"
 
 # exec, so this process IS udhcpc: the unit tracks the client, and a signal
 # to the unit reaches the client rather than a shell wrapper.
+#
+# -f is load-bearing, and is the one place this helper deliberately differs
+# from copper-init's start_dhcp() in the busybox image. There, -b lets udhcpc
+# daemonise and the forked child outlives its parent because copper-init does
+# not own a cgroup for it. Under systemd it does: Type=simple tracks THIS
+# process, and when the -b parent exits after handing the daemon its lease,
+# systemd treats the unit as finished and, with the default KillMode=
+# control-group, kills everything left in that cgroup -- including the client
+# that was supposed to keep renewing the lease. -f keeps udhcpc in the
+# foreground for the life of the boot, so the unit IS the client, the lease
+# keeps renewing, and a machine that had no cable at boot picks one up later.
 exec /sbin/udhcpc -i "$ifname" -s /usr/share/udhcpc/default.script \
-    -b -p "/run/udhcpc.$ifname.pid"
+    -f -p "/run/udhcpc.$ifname.pid"

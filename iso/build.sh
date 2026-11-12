@@ -203,7 +203,8 @@ require_kernel_config() {
       VT VGA_CONSOLE UNIX98_PTYS \
       EXT4_FS BLK_DEV_SD ATA ATA_PIIX SATA_AHCI BLK_DEV_NVME \
       VIRTIO_PCI VIRTIO_BLK \
-      NET NETDEVICES INET PACKET UNIX E1000 E1000E VMXNET3 VIRTIO_NET ; do
+      NET NETDEVICES INET PACKET UNIX E1000 E1000E VMXNET3 VIRTIO_NET \
+      SWAP ZRAM ZSMALLOC ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -365,6 +366,7 @@ build_kernel() {
       --enable SCSI_SYM53C8XX_2 --enable MEGARAID_SAS \
       --enable EXT4_FS --enable PACKET --enable UNIX --enable VT \
       --enable VGA_CONSOLE --enable INPUT \
+      --enable SWAP --enable ZSMALLOC --enable ZRAM \
       --enable DRM --enable DRM_FBDEV_EMULATION \
       --enable DRM_BOCHS --enable DRM_SIMPLEDRM \
       --enable DRM_VMWGFX --enable DRM_VIRTIO_GPU \
@@ -545,7 +547,7 @@ require_bb_config() {
       BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP GETTY LOGIN \
       CHPASSWD FEATURE_SHADOWPASSWDS SETFONT CLEAR TTY \
-      SED CUT HEAD SLEEP ; do
+      SED CUT HEAD SLEEP SWAPONOFF ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -672,11 +674,21 @@ build_tools() {
 # remembered in a variable: the staged tree outlives any one build.sh run, so
 # init_flavour() reads sbin/init and answers. The two answers are:
 #
-#   - busybox (the shipped default): the applets, which signal PID 1 the way
-#     copper-init reads it. /usr/sbin/shutdown points at our own wrapper,
-#     because busybox ships no shutdown applet.
-#   - systemd (the migration): systemctl, in both directories. A busybox applet
-#     there signals a PID 1 convention systemd does not read at all.
+#   - busybox (the shipped default): reboot/poweroff/halt are the applets,
+#     which signal PID 1 the way copper-init reads it.
+#   - systemd (the migration): reboot/poweroff/halt are systemctl links in both
+#     directories. A busybox applet there signals a PID 1 convention systemd
+#     does not read at all.
+#
+# shutdown is Copper's own wrapper on BOTH flavours, and it is installed as a
+# real file at /sbin/shutdown with /usr/sbin/shutdown pointing at it. There are
+# two reasons. busybox ships no shutdown applet, so on the default tree the
+# wrapper is the only implementation. And systemd-sysv's compatibility
+# `shutdown` treats a bare invocation as "power off in one minute" -- a real
+# util-linux default, but on a live ISO it looks like the command did nothing,
+# which is exactly the report (`sudo shutdown` was silent; `sudo reboot`
+# worked). The wrapper maps bare/`now` to an immediate poweroff and, like
+# reboot/poweroff/halt, it ends up exec'ing systemctl on the systemd tree.
 #
 # This has to be right on EVERY call, not only the first. The `iso` chain
 # re-runs the desktop stages over the tree -- build_rootfs clobbers /etc/group
@@ -696,22 +708,22 @@ power_links() {          # power_links <staged-root>
   local root=$1 cmd
   mkdir -p "$root/sbin" "$root/usr/sbin"
   if [ "$(init_flavour "$root")" = systemd ]; then
-    # /usr/sbin/shutdown currently points at our own wrapper (/sbin/shutdown),
-    # and /sbin/shutdown is about to become a link to systemctl. The chain
-    # would still RESOLVE to systemctl, but the ISO's read-back gate reads the
-    # link's own target -- and a chain is not what it expects to find there.
-    # So remove it and write the link that answers the question directly.
-    rm -f "$root/usr/sbin/shutdown"
-    for cmd in reboot poweroff halt shutdown; do
+    for cmd in reboot poweroff halt; do
       ln -sf /usr/bin/systemctl "$root/sbin/$cmd"
       ln -sf /usr/bin/systemctl "$root/usr/sbin/$cmd"
     done
-    return
+  else
+    for cmd in reboot poweroff halt; do
+      ln -sf /bin/busybox "$root/sbin/$cmd"
+      ln -sf /bin/busybox "$root/usr/sbin/$cmd"
+    done
   fi
-  for cmd in reboot poweroff halt; do
-    ln -sf /bin/busybox "$root/sbin/$cmd"
-    ln -sf /bin/busybox "$root/usr/sbin/$cmd"
-  done
+  # shutdown: the wrapper, on both flavours, as a real file. rm first so a
+  # leftover systemctl/busybox link from an earlier run is replaced rather than
+  # left as a link that answers a different question (install copies over it,
+  # but the explicit removal is what the read-back gate expects to read).
+  rm -f "$root/sbin/shutdown" "$root/usr/sbin/shutdown"
+  install -m 0755 "$ROOT/shutdown.sh" "$root/sbin/shutdown"
   ln -sf /sbin/shutdown "$root/usr/sbin/shutdown"
 }
 
@@ -2636,6 +2648,7 @@ build_systemd() {
   local sdin=("$SELF" "$ROOT/systemd"/*.service "$ROOT/systemd"/*.target)
   for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network \
            "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp" \
+           "$ROOT/systemd/copper-zram" \
            "$ROOT/systemd/copper-splash-show" \
            "$ROOT/systemd/copper-splash-quit"; do
     [ -e "$p" ] && sdin+=("$p")
@@ -2828,6 +2841,8 @@ build_systemd() {
           "$TGT/usr/bin/copper-tty-clear"
   install -D -m 0755 "$ROOT/systemd/copper-dhcp" \
           "$TGT/usr/bin/copper-dhcp"
+  install -D -m 0755 "$ROOT/systemd/copper-zram" \
+          "$TGT/usr/bin/copper-zram"
   install -D -m 0755 "$ROOT/systemd/copper-splash-show" \
           "$TGT/usr/bin/copper-splash-show"
   install -D -m 0755 "$ROOT/systemd/copper-splash-quit" \
@@ -2854,6 +2869,11 @@ build_systemd() {
   done
   ln -sf /etc/systemd/system/systemd-udevd.service \
          "$TGT/etc/systemd/system/sysinit.target.wants/systemd-udevd.service"
+  # Compressed swap has to be up before the desktop allocates, so it is pulled
+  # into sysinit rather than copper.target. The unit itself carries
+  # DefaultDependencies=no and Before=sysinit.target (see its header).
+  ln -sf /etc/systemd/system/copper-zram.service \
+         "$TGT/etc/systemd/system/sysinit.target.wants/copper-zram.service"
 
   # The netconf is read by systemd-udevd's built-in naming scheme. Copper
   # names its NICs the kernel's way (eth0, not ens33), because the DHCP client
@@ -2903,6 +2923,47 @@ build_systemd() {
   # systemctl enable does, and systemd making one itself won't stop it making
   # the same one, so nothing doubles up.
   local vt
+  # ---- agetty has to exist at the path the getty units name ---------------
+  # getty@.service and serial-getty@.service both have
+  #
+  #     ExecStart=-/sbin/agetty -o '-p -- \u' --noclear - $TERM
+  #
+  # and Copper is NOT merged-usr: /sbin is a real directory, so an absolute
+  # /sbin/agetty is not bridged to /usr/sbin. Debian's util-linux installs the
+  # binary at /usr/sbin/agetty and leaves /sbin/agetty absent. On the green
+  # systemd ISO that made every getty -- tty2..tty6 AND serial-getty@ttyS0 --
+  # fail and restart forever: the stock getty@ unit is Restart=always, so the
+  # serial log showed the same "Started getty@ttyN.service" line ten times a
+  # minute and never a login prompt. That is the user's "Ctrl-Alt-F3 shows a
+  # blinking cursor", and it also meant no console login existed at all.
+  # The wizard on tty1 hid it until first boot finished.
+  #
+  # So: find the real agetty in the tree, and make /sbin/agetty point at it.
+  # If there is no agetty anywhere, fail the stage -- a machine whose every
+  # getty restarts forever is not a bootable desktop, and shipping it silently
+  # is how this defect reached a user.
+  local agetty=""
+  for c in usr/sbin/agetty usr/bin/agetty sbin/agetty bin/agetty; do
+    if [ -f "$TGT/$c" ] && [ -x "$TGT/$c" ]; then agetty=$c; break; fi
+  done
+  if [ -z "$agetty" ]; then
+    echo "systemd: no agetty anywhere in the tree; every getty unit would" >&2
+    echo "          restart forever (getty@.service execs /sbin/agetty)." >&2
+    echo "          util-linux is what ships it; make sure the closure has it." >&2
+    exit 1
+  fi
+  # A merged-usr tree has /sbin as a symlink to usr/sbin, so the name already
+  # resolves and writing a link there would try to replace the binary with a
+  # link to itself. Copper is not merged-usr today (only /lib/systemd is
+  # bridged), but the check costs nothing and the failure would be confusing.
+  if [ "$agetty" != sbin/agetty ] && [ ! -L "$TGT/sbin" ]; then
+    ln -sf "/$agetty" "$TGT/sbin/agetty"
+    if [ "$(readlink "$TGT/sbin/agetty")" != "/$agetty" ]; then
+      echo "systemd: could not point /sbin/agetty at /$agetty" >&2
+      exit 1
+    fi
+  fi
+
   for vt in tty2 tty3 tty4 tty5 tty6; do
     ln -sf /lib/systemd/system/getty@.service \
            "$TGT/etc/systemd/system/getty.target.wants/getty@$vt.service"
@@ -3059,7 +3120,7 @@ build_systemd() {
   # defect there -- the image is missing a binary a Copper unit names, and
   # that unit can never start. That is the seatd bug again, one unit over:
   # the unit named a path the image did not have, and nothing here said so.
-  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth; do
+  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth usr/bin/copper-zram; do
     if [ ! -x "$TGT/$cmd" ]; then
       echo "systemd: $cmd is missing or not executable; a Copper unit names it" >&2
       echo "          and that unit would fail to start on every boot" >&2
@@ -3155,7 +3216,7 @@ build_systemd() {
       local vlist=""
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service \
-                copper-tty-clear.service copper.target \
+                copper-tty-clear.service copper.target copper-zram.service \
                 copper-plymouth.service copper-plymouth-quit.service; do
         vlist="$vlist /etc/systemd/system/$ul"
       done
@@ -3175,7 +3236,7 @@ build_systemd() {
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service \
                 copper-tty-clear.service copper-plymouth.service \
-                copper-plymouth-quit.service; do
+                copper-plymouth-quit.service copper-zram.service; do
         out=$(chroot "$TGT" "$sa" verify "/etc/systemd/system/$ul" 2>&1 || true)
         # A message counts only if it is ABOUT this unit AND is a real defect.
         #
@@ -3612,18 +3673,40 @@ WRAP
     exit 1
   fi
   if [ "$flavour" = systemd ]; then
-    for cmd in reboot poweroff halt shutdown; do
+    for cmd in reboot poweroff halt; do
       for d in "$ex/sbin" "$ex/usr-sbin"; do
         pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
         [ "$pt" = "/usr/bin/systemctl" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
       done
     done
+    # shutdown is Copper's wrapper on the systemd image too, and NOT systemd's
+    # compatibility link: a bare `shutdown` there means "power off in one
+    # minute", which reads as "the command did nothing". The wrapper is a real
+    # file at /sbin/shutdown and /usr/sbin/shutdown points at it.
+    pt=$(readlink "$ex/usr-sbin/shutdown" 2>/dev/null || echo missing)
+    [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad usr-sbin/shutdown -> $pt"
+    if [ ! -f "$ex/sbin/shutdown" ] || [ -L "$ex/sbin/shutdown" ]; then
+      pbad="$pbad sbin/shutdown (not the wrapper file)"
+    fi
+    # agetty: getty@.service and serial-getty@.service exec /sbin/agetty, and
+    # Copper is not merged-usr -- /sbin is a real directory, so the Debian
+    # /usr/sbin/agetty is not reachable under that name unless the stage made
+    # the link. Without it every VT restart-forever'd with no login prompt.
+    pt=$(readlink "$ex/sbin/agetty" 2>/dev/null || echo missing)
+    case "$pt" in
+      /usr/sbin/agetty)
+        [ -f "$ex/usr-sbin/agetty" ] || pbad="$pbad (sbin/agetty target missing)" ;;
+      /sbin/agetty)
+        [ -f "$ex/sbin/agetty" ] || pbad="$pbad (sbin/agetty target missing)" ;;
+      *) pbad="$pbad sbin/agetty -> $pt" ;;
+    esac
     if [ -n "$pbad" ]; then
-      echo "iso: the ISO boots systemd but its power commands are wrong:$pbad" >&2
-      echo "iso: systemd expects /usr/bin/systemctl there, not a busybox applet" >&2
+      echo "iso: the ISO boots systemd but its power/login commands are wrong:$pbad" >&2
+      echo "iso: expected systemctl for reboot/poweroff/halt, the Copper shutdown" >&2
+      echo "iso: wrapper, and an agetty the getty units can exec by name" >&2
       exit 1
     fi
-    echo "  iso: systemd is PID 1 and the power commands point at systemctl, on the disc"
+    echo "  iso: systemd is PID 1, power commands are right, and agetty is on the disc"
   else
     for cmd in reboot poweroff halt; do
       for d in "$ex/sbin" "$ex/usr-sbin"; do

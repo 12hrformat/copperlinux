@@ -1,4 +1,4 @@
-# Copper Linux — one-shot DHCP client for the machine's real interface.
+# Copper Linux — DHCP client for the machine's real interface.
 #
 # This is the busybox udhcpc that copper-init used to launch, as a unit: same
 # binary, same lease script, same pid file location. The migration is moving
@@ -7,11 +7,15 @@
 # on a booted machine and both are new, neither is easy to find. networkd is
 # a later step (SYSTEMD-MIGRATION.md, "not in this phase").
 #
-# Type=simple and the client's own -b: udhcpc runs in the foreground, obtains
-# a lease, then daemonises itself with -b and leaves a short-lived parent.
-# systemd tracks the parent, and once it exits the unit is "dead" -- which is
-# correct for a one-shot lease, and is why there is no Restart= here. A lease
-# that later expires is udhcpc's own business (it re-acquires), not systemd's.
+# Type=simple, and the client stays in the foreground (-f, set by the helper):
+# udhcpc obtains a lease and then keeps running, renewing it. That matters
+# because this unit OWNS the client under systemd. The original version ran
+# with -b, which daemonises: the short-lived parent exited, systemd called the
+# unit finished, and the default KillMode=control-group then killed the
+# daemonised child it had just been handed. -f makes the unit's main process
+# the lease's lifetime, so lease renewal and a cable plugged in after boot both
+# work. No Restart= is needed for that: the client itself runs until it is
+# stopped, so a dead unit means the NIC really is gone.
 #
 # There is no Restart= on purpose, and it is worth saying why, because the
 # obvious fix for a failed DHCP client is to add one: systemd prints [FAILED]
@@ -19,7 +23,8 @@
 # wizard is drawing its form on. A unit that retries on the console corrupts
 # the form exactly the way the seatd unit did before it was fixed (bug 47).
 # So this unit does not retry. It waits, it tries once, and if it cannot get a
-# lease it says so and stays out of the way.
+# lease it says so and stays out of the way. (With -f it keeps trying in the
+# foreground, so "cannot get a lease yet" no longer means "gives up".)
 #
 # After=network.target is not enough on its own -- nothing else defines
 # network.target meaningfully in this image -- so the unit also waits for udev
@@ -68,7 +73,9 @@ Environment=PATH=/sbin:/usr/sbin:/bin:/usr/bin
 # so on a Copper machine the helper still finds something called eth0 -- it
 # just no longer depends on that being true.
 ExecStart=/usr/bin/copper-dhcp
-# Nothing to stop: udhcpc's own lifetime is the lease's.
+# Stop the client with the unit; -f makes it the unit's main process, so this
+# is the client that was asked for and not a daemon that outlived its parent.
+KillMode=mixed
 RemainAfterExit=no
 
 [Install]
