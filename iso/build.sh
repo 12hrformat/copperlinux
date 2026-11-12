@@ -1920,11 +1920,21 @@ build_niri() {
   rm -rf "$HA"
   mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
   local asc="$WORK/praksharma-ubuntu-niri.asc" fpr
-  if ! wget -q -t 3 -O "$asc" \
-       "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$NIRI_PPA_FPR"; then
-    echo "niri: could not fetch the PPA archive key from the keyserver" >&2
-    exit 1
-  fi
+  # keyserver.ubuntu.com is Launchpad's own keyserver, and it degrades in
+  # blips -- the 2026-11-11 CI run died here while the same runner could
+  # still reach github and archive.ubuntu.com. wget's -t retries are
+  # back-to-back, which a minutes-long blip outrides, so give the fetch a
+  # few more lives spread over a couple of minutes instead of failing the
+  # stage on the first minute of an outage.
+  local try=0
+  until wget -q -t 3 -T 15 -O "$asc" \
+         "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$NIRI_PPA_FPR"; do
+    try=$((try + 1))
+    [ "$try" -ge 6 ] \
+      && { echo "niri: could not fetch the PPA archive key from the keyserver" >&2; exit 1; }
+    echo "niri: keyserver attempt $try failed; retrying in 20s" >&2
+    sleep 20
+  done
   fpr=$(gpg --show-keys --with-colons "$asc" 2>/dev/null \
         | awk -F: '/^fpr:/{print $10; exit}')
   if [ "$fpr" != "$NIRI_PPA_FPR" ]; then
@@ -1963,6 +1973,11 @@ build_niri() {
     -o Dir::State::status="$status"
     -o Dir::Cache::archives="$DH"
     -o APT::Sandbox::User=root
+    # no translation indexes: this apt tree is a throwaway downloader and
+    # nothing reads them, while the PPA's Release file can list a
+    # Translation-en the archive then 404s -- a file nobody uses killing
+    # the stage (seen 2026-11-11).
+    -o Acquire::Languages=none
   )
   apt-get "${AOPT[@]}" update -qq
 
