@@ -2586,17 +2586,15 @@ build_hyprland() {
          dbus-x11 \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
          libxkbcommon0 libinput10 libgtk-layer-shell0
-  local p
-  for p in "$@"; do
-    # Same options as the downloader below: without them apt-cache reads the
-    # host's /etc/apt/sources.list.d, which does not contain the PPA, and every
-    # Hyprland package reports "no candidate" however correct the stage is.
-    if ! apt-cache "${AOPT[@]}" policy "$p" 2>/dev/null \
-         | grep -q '^ *Candidate: [^ ()]'; then
-      echo "hyprland: '$p' is not a resolvable candidate (see build log)" >&2
-      exit 1
-    fi
-  done
+  # No pre-flight candidate check here, deliberately. Two ways of writing one
+  # were tried and both reported packages that resolve perfectly well:
+  #   - `apt-cache policy "pkg=ver"` prints nothing at all for a versioned spec
+  #     on the apt in noble (2.7), not even an error;
+  #   - `apt-cache ... | grep -q PATTERN` under `set -o pipefail` fails even on
+  #     a match, because grep -q exits at the first hit and apt-cache dies of
+  #     SIGPIPE before the pipeline can report success.
+  # apt-get below names the package it cannot resolve, and its log is what this
+  # stage reports, exactly as build_niri does.
   apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
     >"$WORK/hyprland-apt.log" 2>&1 \
     || { echo "hyprland: apt could not resolve the session closure:" >&2
