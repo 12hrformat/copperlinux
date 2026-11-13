@@ -1015,12 +1015,19 @@ static int is_upper_disk(const char *disk) {
 }
 
 /* A whole-disk name /sys/block could hold that a person might attach: sd*,
-   vd*, nvme*, mmcblk*. sr* is the disc, and loop, ram, dm- and md are not
+   vd*, nvme*, mmcblk*, hd*. sr* is the disc, and loop, ram, dm- and md are not
    storage anyone hands over. /sys/block lists whole disks only -- partitions
-   live below them -- so nothing here can be a partition. */
+   live below them -- so nothing here can be a partition.
+
+   hd* is the ATA/IDE class and is not optional: an IDE disk -- the kind a
+   VirtualBox guest, or very old hardware, uses -- enumerates as /dev/hdX and
+   never as sd* or nvme*, so a predicate that forgets it hands over persistence
+   on nothing but the user's NVMe and calls the rest of their storage
+   invisible. */
 static int is_disk_name(const char *n) {
     return strncmp(n, "sd", 2) == 0 || strncmp(n, "vd", 2) == 0 ||
-           strncmp(n, "nvme", 4) == 0 || strncmp(n, "mmcblk", 6) == 0;
+           strncmp(n, "nvme", 4) == 0 || strncmp(n, "mmcblk", 6) == 0 ||
+           strncmp(n, "hd", 2) == 0;
 }
 
 /* Is any part of `disk` mounted? /proc/mounts names the source of every mount,

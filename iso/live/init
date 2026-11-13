@@ -96,6 +96,7 @@ UPPER_DEV=""
 find_upper() {
     for dev in /dev/sd[a-z][0-9]* /dev/sd[a-z] \
                /dev/vd[a-z][0-9]* /dev/vd[a-z] \
+               /dev/hd[a-z] /dev/hd[a-z][0-9]* \
                /dev/nvme[0-9]n[0-9]p[0-9]* /dev/nvme[0-9]n[0-9] \
                /dev/mmcblk[0-9]p[0-9]* /dev/mmcblk[0-9]; do
         [ -b "$dev" ] || continue

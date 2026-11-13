@@ -413,6 +413,32 @@ else
     ok "nothing was formatted when the disk held foreign data"
 fi
 
+# -------------------------- 11. an IDE spare is offered like any other class
+# The user report this guards: persistence only ever landed on NVMe, so the
+# candidate predicate stopped at sd/vd/nvme/mmcblk and never looked at the
+# ATA/IDE class, whose disks enumerate as /dev/hdX rather than sd*. With hd*
+# missing, an IDE spare was invisible to the wizard and never reached the
+# format; /init's find_upper had the same hole, so even a hand-made labelled
+# IDE disk could not become the writable layer.
+mkdir -p "$ROOT/sys/block/hda"
+echo 20971520 > "$ROOT/sys/block/hda/size"   # 10 GiB, IDE spare
+run_wizard "Disk to keep files on|hda" \
+           "Type ERASE (capital letters) to go ahead|ERASE" \
+           "Press Enter to continue|"
+if printf '%s' "$out" | grep -q 'hda'; then
+    ok "an IDE spare was offered as the persistence disk"
+else
+    bad "an IDE spare was not offered"
+    show
+fi
+if grep -q -- '-q -F -L COPPER /dev/hda' "$ROOT/calls/mkfs"; then
+    ok "the IDE disk was the one formatted: $(cat "$ROOT/calls/mkfs")"
+else
+    bad "the IDE disk was not the one formatted"
+    printf '      calls recorded: %s\n' "$(cat "$ROOT/calls/mkfs" 2>/dev/null || echo none)"
+fi
+rm -rf "$ROOT/sys/block/hda"
+
 echo
 if [ $fail -gt 0 ]; then
     echo "$fail check(s) failed"
