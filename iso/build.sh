@@ -205,12 +205,20 @@ unpack() {                  # unpack tarball -> prints its dir
 # Only symbols that really exist in $KREL belong in this list. 6.12 dropped
 # `ETHERNET` (the driver menu is unconditional once NET is on) and moved
 # BLK_DEV_NVME to drivers/nvme/host, so grepping the old paths lies.
+#
+# BLK_DEV_IDE is deliberately absent, and must stay absent: the legacy IDE
+# subsystem was deleted from the kernel before 6.12 (drivers/ide does not
+# exist in v6.12), so the symbol can never be enabled and requiring it fails
+# every build with "these options did not survive olddefconfig: BLK_DEV_IDE".
+# Requiring it without ever passing --enable for it could not have worked
+# either way. PIIX IDE disks are not lost: libata serves a PIIX controller
+# in IDE compatibility mode through ATA and ATA_PIIX, both enabled below.
 require_kernel_config() {
   local cfg="$1" sym missing=""
   for sym in \
       DEVTMPFS DEVTMPFS_MOUNT TMPFS OVERLAY_FS ISO9660_FS BLK_DEV_SR \
       VT VGA_CONSOLE UNIX98_PTYS \
-      EXT4_FS BLK_DEV_SD ATA ATA_PIIX SATA_AHCI BLK_DEV_NVME BLK_DEV_IDE \
+      EXT4_FS BLK_DEV_SD ATA ATA_PIIX SATA_AHCI BLK_DEV_NVME \
       VIRTIO_PCI VIRTIO_BLK \
       NET NETDEVICES INET PACKET UNIX E1000 E1000E VMXNET3 VIRTIO_NET \
       SWAP ZRAM ZSMALLOC ; do
