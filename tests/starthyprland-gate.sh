@@ -241,7 +241,17 @@ else
 fi
 
 out=$(COPPER_SEATD_SOCK="$TMP/run/absent.sock" run_launcher --check 2>&1)
-has "--check reports a missing seatd socket" "NO seatd socket" "$out"
+# The wording of this line depends on the host: without logind the launcher says
+# "NO seatd socket", with logind it says "logind present (no seatd socket at
+# ...)". Both name the path it looked at and both deny that it is live, which is
+# what is actually under test here.
+has "--check names the absent seatd socket it checked" "absent.sock" "$out"
+case "$out" in
+    *"seatd socket present"*)
+        bad "--check did not mistake the absent socket for a live one" \
+            "it said: $(printf '%s' "$out" | tr '\n' '|')" ;;
+    *) ok "--check did not mistake the absent socket for a live one" ;;
+esac
 
 # --check covers the categories a session can die on.
 out=$(run_launcher --check 2>&1)
