@@ -71,12 +71,14 @@ NIRI_CFG_SHA256=2fcbc7b07a15975251f92d80cbe08b13dc605ab55186b528124440b032615cd8
 NIRI_PPA_URL="https://ppa.launchpadcontent.net/praksharma/ubuntu-niri/ubuntu"
 NIRI_PPA_FPR="B2AA0C43F73505B5A65A53D26EE0350540BB4F59"
 
-# The Hyprland PPA for noble. The fingerprint is pinned against the Hyprland
-# release channel and MUST be re-verified before every build (see the final
-# report of this integration) -- a wrong fingerprint stops the build instead of
+# The community Hyprland PPA for noble, with a verified fingerprint. Ubuntu
+# 24.04 carries no hyprland of its own (the package only appears from 25.10),
+# and the Hypr* team maintains no packages -- this archive is the one the
+# Hyprland wiki points Ubuntu users at. The key is fetched by fingerprint and
+# checked before it is trusted; a wrong fingerprint stops the build instead of
 # shipping an unsigned compositor.
-HYPRELLMAN_PPA_URL="https://ppa.launchpadcontent.net/hyprwm/hyprland/ubuntu"
-HYPRELLMAN_PPA_FPR="REPLACE_WITH_HYPRELLMAN_PPA_FPR"
+HYPRELLMAN_PPA_URL="https://ppa.launchpadcontent.net/cppiber/hyprland/ubuntu"
+HYPRELLMAN_PPA_FPR="A54D23B62FF3FCC76EFF71E8FDBAAA1CF0CCF48E"
 
 STAGE=${1:-all}
 
@@ -2416,30 +2418,43 @@ build_niri() {
 # the two renderers. The systemd units, the SysV init script and the
 # initramfs-tools hooks the package also ships are left behind on purpose.
 build_hyprland() {
-  # The skeleton is NOT vendored in the repo: the configuration lives in
-  # 12hrformat/copper-hyprland-skel and is fetched at build time, pinned to a
-  # commit, and checked against a SHA-256. The compositor and its session tools
-  # are staged from the noble PPA; the configuration skeleton is fetched from
-  # upstream and unpacked to /usr/share/copper/hyprland-skel.
-  # The component manifest /etc/copper/hyprland-apps drives the session
-  # launcher's offer-to-install step (starthyprland.sh).
+  # Copper's Hyprland session config is vendored in this tree under
+  # iso/rootfs-overlay/usr/share/copper/hyprland-skel and reaches the staged
+  # rootfs through build_rootfs -- unlike niri's config, which is fetched from
+  # its own repository. The compositor and its session tools are staged here
+  # from the community Hyprland PPA for noble. The component manifest
+  # /etc/copper/hyprland-apps drives the launcher's offer-to-install step
+  # (starthyprland.sh).
+  #
+  # seatd and the _seatd group arrive with build_niri on the full chain, but
+  # the guard asks about them anyway: the standalone stage must fail honestly
+  # when they are absent rather than stage a compositor that cannot take the
+  # DRM master.
   if [ -e "$TGT/usr/bin/hyprland" ] \
-     && [ -e "$TGT/usr/bin/waybar" ] \
+     && [ -x "$TGT/usr/bin/waybar" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" ] \
-     && [ -e "$TGT/usr/share/copper/wallpapers/copper-hyprland.png" ] \
-     && [ -n "$(find "$TGT/usr" -name hyprland -type f -print -quit 2>/dev/null)" ] \
-     && [ -n "$(find "$TGT/usr" -name libseat -type f -print -quit 2>/dev/null)" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" ] \
+     && [ -n "$(find "$TGT/usr" -name 'libseat.so*' -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/hyprland.stamp" "$SELF" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/wallpapers/copper-hyprland.png"; then
-     echo "hyprland: already staged, skipping"; return
-   fi
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/style.css" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/window.sh"; then
+    echo "hyprland: already staged, skipping"; return
+  fi
   echo "==> Hyprland session"
   local DH="$DL/hyprland" STAGE="$WORK/hyprland-root" deb n
   local HA="$WORK/hyprland-apt" status="$WORK/hyprland-status"
-  local KEYRING="$HA/etc/apt/keyrings/hyprwm-ubuntu-hyprland.gpg"
+  local KEYRING="$HA/etc/apt/keyrings/cppiber-ubuntu-hyprland.gpg"
   mkdir -p "$DH/partial"
   : > "$status"
 
@@ -2454,7 +2469,7 @@ build_hyprland() {
     || { echo "hyprland: gpg is needed to verify the PPA archive key" >&2; exit 1; }
   rm -rf "$HA"
   mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
-  local asc="$WORK/hyprwm-ubuntu-hyprland.asc" fpr
+  local asc="$WORK/cppiber-ubuntu-hyprland.asc" fpr
   local try=0
   until wget -q -t 3 -T 15 -O "$asc" \
          "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPRELLMAN_PPA_FPR"; do
@@ -2488,7 +2503,20 @@ build_hyprland() {
       > "$HA/etc/apt/sources.list.d/noble.list"
   fi
   echo "deb [signed-by=$KEYRING] $HYPRELLMAN_PPA_URL noble main" \
-    > "$HA/etc/apt/sources.list.d/hyprwm-ubuntu-hyprland.list"
+    > "$HA/etc/apt/sources.list.d/cppiber-ubuntu-hyprland.list"
+
+  local -a AOPT=(
+    -o Dir::Etc::sourceparts="$HA/etc/apt/sources.list.d"
+    -o Dir::State::status="$status"
+    -o Dir::Cache::archives="$DH"
+    -o APT::Sandbox::User=root
+    # no translation indexes: this apt tree is a throwaway downloader and
+    # nothing reads them, while the PPA's Release file can list a
+    # Translation-en the archive then 404s -- a file nobody uses killing
+    # the stage (seen 2026-11-11).
+    -o Acquire::Languages=none
+  )
+  apt-get "${AOPT[@]}" update -qq
 
   # ---- the closure -------------------------------------------------------------
   # Dir::State::status empty: every dependency counts as missing, the same
@@ -2499,41 +2527,59 @@ build_hyprland() {
   # The list is what has to be in the image for the Hyprland session to come
   # up with no network at all: the compositor and the pieces its own config
   # names, plus the ordinary noble pieces the session leans on. Everything
-  # heavier is an ingot package and is named in the manifest, not here. The
-  # version is pinned in the PPA line below: a silent package bump is how a
-  # config stops parsing on a machine nobody can type on.
+  # heavier is an ingot package and is named in the manifest, not here.
   #
-  #   hyprland=<version>   the compositor, pinned to the PPA version this stage
-  #                        was written against; a PPA bump changes the pin and
-  #                        the build must be updated deliberately
-  #   hyprlock             the screen locker
-  #   hyprshot             the screenshot utility
-  #   libseat              the seat, since there is no logind
-  #   xdg-desktop-portal and its hyprland + wlr backends
-  #                        the portal frontend; file / notifications / the
-  #                        secret service all need a running backend
-  #   polkitd pkexec        the polkit daemon and the tool the agent prompts
-  #                         through
-  #   brightnessctl       brightness keys
-  #   playerctl           media keys
-  #   libnotify-bin       notify-send for scripts and swaync's client tests
-  #   wl-clipboard cliphist clipboard and its history
-  #   jq                    the bar's hyprland IPC helpers parse JSON with it
-  #   waybar                the bar
-  #   fuzzel                the launcher
-  #   kitty                 the terminal
+  # Every name and version below was read out of the archive's own index for
+  # noble; a pin that does not resolve is a build failure, never a silent
+  # substitution. Two packages exist only here and not in noble's own repos,
+  # which is why the PPA is not optional: hyprland itself (noble carries none)
+  # and the matching waybar.
+  #
+  #   hyprland=0.57.2-1ppa1  the compositor, pinned to the version this stage
+  #                          was written against; a silent PPA bump is how a
+  #                          config stops parsing on a machine nobody can type on
+  #   aquamarine0            the backend abstraction Hyprland is built on
+  #   hyprlock               the screen locker
+  #   hyprpaper              the wallpaper
+  #   hypridle               idle management
+  #   hyprpicker             colour picker
+  #   hyprpolkitagent        the polkit agent (Provides polkit-1-auth-agent)
+  #   waybar=0.9.24-1build3    the bar, pinned to noble's build for the same
+  #                          reason the niri stage pins it: the PPA's newer
+  #                          bar needs a newer gtk-layer-shell than noble's,
+  #                          and both desktops must share one bar binary
+  #   fuzzel=1.9.2-1build2    the launcher, noble's build (same reason)
+  #   xdg-desktop-portal-hyprland=1.5.0-1ppa1
+  #                          the portal backend for this compositor; file
+  #                          choosers, notifications and screen capture need it
+  #   seatd libseat1         the seat, since there is no logind; libseat1 is
+  #                          what aquamarine links against
+  #   polkitd pkexec         the polkit daemon and the tool the agent uses
+  #   dunst                  notifications (sway-notification-center is not in
+  #                          noble; dunst is what the compositor recommends)
+  #   kitty                  the terminal
+  #   wl-clipboard cliphist  clipboard and its history
+  #   jq                     the bar's IPC helpers parse JSON with it
+  #   brightnessctl          brightness keys
+  #   playerctl              media keys
+  #   libnotify-bin          notify-send for scripts and dunst's client tests
+  #   dbus-x11               dbus-launch, which is not part of the dbus package
   #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
-  #                        the GL/GBM stack the renderer needs; the gui closure
-  #                        may not have brought the DRI drivers
-  #   libxkbcommon0 libinput10
-  #                        the input stack; no udev daemon in this image, so
-  #                        libinput reads kernel capabilities directly
-  set -- hyprland=0.12.2 hyprlock hyprshot swaybg waybar=0.9.24-1build3 \
-         fuzzel kitty seatd brightnessctl playerctl wl-clipboard cliphist jq \
-         xdg-desktop-portal xdg-desktop-portal-hyrland xdg-desktop-portal-wlr \
-         polkitd pkexec libnotify-bin \
+  #                          the GL/GBM stack the renderer needs; the gui
+  #                          closure may not have brought the DRI drivers
+  #   libxkbcommon0 libinput10 libgtk-layer-shell0
+  #                          the input stack and the library waybar links
+  #                          against; no udev daemon in this image, so libinput
+  #                          reads kernel capabilities directly
+  set -- hyprland=0.57.2-1ppa1 aquamarine0 hyprlock hyprpaper hypridle \
+         hyprpicker hyprpolkitagent \
+         waybar=0.9.24-1build3 fuzzel=1.9.2-1build2 \
+         xdg-desktop-portal-hyprland=1.5.0-1ppa1 \
+         seatd libseat1 polkitd pkexec dunst kitty \
+         wl-clipboard cliphist jq brightnessctl playerctl libnotify-bin \
+         dbus-x11 \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
-         libxkbcommon0 libinput10
+         libxkbcommon0 libinput10 libgtk-layer-shell0
   local p
   for p in "$@"; do
     # Confirm the candidate exists before adding it to the install list.
@@ -2542,9 +2588,7 @@ build_hyprland() {
       exit 1
     fi
   done
-  apt-get -o Dir::Etc::sourceparts="$HA/etc/apt/sources.list.d" \
-    -o Dir::State::status="$status" -o Dir::Cache::archives="$DH" \
-    -o APT::Sandbox::User=root --download-only --no-install-recommends -y install "$@" \
+  apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
     >"$WORK/hyprland-apt.log" 2>&1 \
     || { echo "hyprland: apt could not resolve the session closure:" >&2
          tail -n 30 "$WORK/hyprland-apt.log" >&2 2>/dev/null || :; exit 1; }
@@ -2560,9 +2604,10 @@ build_hyprland() {
   # copy does not overwrite what is already there, so a bar or compositor that a
   # later run re-resolved would keep the previous run's bytes. Drop this stage's
   # own files before copying, so the pinned ones land.
-  rm -f "$TGT/usr/bin/hyprland" "$TGT/usr/bin/hyprlock" "$TGT/usr/bin/hyprshot" \
-        "$TGT/usr/bin/waybar" "$TGT/usr/bin/fuzzel" "$TGT/usr/bin/kitty" \
-        "$TGT/usr/bin/swaybg" "$TGT/usr/bin/swaync"
+  rm -f "$TGT/usr/bin/hyprland" "$TGT/usr/bin/hyprlock" "$TGT/usr/bin/hyprpaper" \
+        "$TGT/usr/bin/hypridle" "$TGT/usr/bin/hyprpicker" \
+        "$TGT/usr/bin/hyprpolkitagent" "$TGT/usr/bin/waybar" \
+        "$TGT/usr/bin/fuzzel" "$TGT/usr/bin/kitty" "$TGT/usr/bin/dunst"
   copy_stage_in "$STAGE" "$TGT"
 
   # polkitd's package postinst makes its authentication helper setuid root and
@@ -2596,7 +2641,8 @@ build_hyprland() {
   # newer library is the one its consumer was built against.
   rm -rf "$WORK/hyprland-layer"; mkdir -p "$WORK/hyprland-layer"
   ( cd "$WORK/hyprland-layer" && apt-get -o APT::Sandbox::User=root download \
-      libxkbcommon0 libinput10 libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 ) \
+      libxkbcommon0 libinput10 libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
+      libseat1 libgtk-layer-shell0 ) \
     >"$WORK/hyprland-layer.log" 2>&1 \
     || { echo "hyprland: could not fetch shared libraries" >&2; exit 1; }
   for deb in "$WORK/hyprland-layer"/*.deb; do
@@ -2647,6 +2693,9 @@ build_hyprland() {
       "$TGT/usr/bin/gtk-update-icon-cache" -f "$tdir" >/dev/null 2>&1 || :
     done
   fi
+}
+
+build_plymouth() {
   if [ -e "$TGT/usr/sbin/plymouthd" ] \
      && stamped_skip "$WORK/plymouth.stamp" "$SELF" \
         "$ROOT/plymouth/copper/copper.plymouth" \

@@ -157,7 +157,8 @@ static int ok_pw(const char *s)   { return s[0] != '\0'; }
    marker's value is the one place where the spelling written to
    /etc/copper-desktop is fixed, so the table check and the value written can
    never disagree about which spelling means which desktop. The marker is read
-   back by copper-init (chose_niri in iso/src-init/copper-init.c), which
+   back by copper-init (chose_desktop in iso/src-init/copper-init.c, with
+   chose_niri kept as its two-state view for the test bench), which
    matches the exact word on the first line -- so whatever is typed here has
    to be reduced to that exact word, or to "xfce", before it is written. */
 static int word_is(const char *s, const char *w) {

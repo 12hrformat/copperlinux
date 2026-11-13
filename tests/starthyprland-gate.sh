@@ -1,282 +1,287 @@
-#!/usr/bin/env bash
-# gate: starthyprland -- automated tests for iso/starthyprland.sh.
+#!/bin/sh
+# Prove starthyprland does the right thing, and fails the right way.
 #
-# Follows the branch-gate conventions. Runs unprivileged: the launcher is
-# exercised against a private home and stubbed binaries, and nothing touches
-# the build host. Real hardware (a GPU, a seatd socket) is not required: the
-# test checks what the script *says* is missing, and that its exit codes are
-# the ones the contract names.
+# Hyprland is a Wayland compositor: there is no second process to hand a display
+# to, so the launcher's whole job is the preparation around the compositor --
+# seed the config, make the runtime directory, start the session bus, notice
+# whether the seat is there, choose a renderer -- and then the exit-code
+# contract when one of those cannot be done or the compositor dies on the way
+# up. Every one of those gets a case here, with the exact exit code asserted:
+# the codes are a contract, and a script branching on them breaks silently when
+# one moves.
 #
-# Run:  sudo ./tests/starthyprland-gate.sh   (root: the root-gated cases)
-#        ./tests/starthyprland-gate.sh       (unprivileged: the stubbed cases)
+# The compositor is stubbed. The real Hyprland is a glibc binary linked against
+# the PPA's Wayland/DRM stack, which this image is not, so it cannot run here no
+# matter what. What is under test is the launcher: the ordering, the
+# preparation, the codes, the report --check prints, and the environment the
+# compositor is handed.
 #
-# Exit: 0 when every case is honest (no skipped, no failed), 1 otherwise.
+# The stub answers two ways, because Hyprland itself is both binaries:
+# `--session` is the compositor, and `msg` is the liveness probe the launcher
+# runs against the instance socket. The socket is a plain file whose name
+# carries the stub's pid -- which is the pid the launcher backgrounds and goes
+# looking for.
+#
+# Run: sh tests/starthyprland-gate.sh
 
 set -u
+
+# The stubs must not see this machine's desktop or bus.
+unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_SESSION_DESKTOP \
+      XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS SEATD_SOCK
+
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-cd "$REPO" || exit 1
+SUT="$REPO/iso/starthyprland.sh"
+LOCK=/tmp/starthyprland-gate.lock
+fails=0
 
-ROOT=0
-[ "$(id -u)" -eq 0 ] && ROOT=1
+if ! mkdir "$LOCK" 2>/dev/null; then
+    echo "another starthyprland-gate.sh is running (lock: $LOCK)"
+    echo "if that is wrong, remove it and re-run"
+    exit 1
+fi
+TMP=$(mktemp -d /tmp/starthyprland-gate.XXXXXX) || exit 1
+cleanup() {
+    pkill -P $$ 2>/dev/null
+    rm -rf "$TMP" "$LOCK" 2>/dev/null
+}
+trap cleanup EXIT INT TERM HUP
 
-pass=0
-fail=0
-skip=0
+ok()  { printf '  ok    %s\n' "$1"; }
+bad() { printf '  FAIL  %s\n        %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 
-record() {
-    case "$2" in
-        ok)    printf '  PASS       %-26s %s\n' "$1" "${3:-}" ; pass=$((pass+1));;
-        bad)   printf '  FAIL       %-26s %s\n' "$1" "${3:-}" ; fail=$((fail+1));;
-        skipped)
-                printf '  SKIPPED    %-26s %s\n' "$1" "${3:-}"
-                printf '             (not run, and not counted as passing)\n'
-                skip=$((skip+1));;
-        *)     printf '  FAIL       %-26s unknown status: %s\n' "$1" "$2" ; fail=$((fail+1));;
+eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "wanted '$2', got '$3'"; fi; }
+
+has() {
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *)      bad "$1" "expected '$2' in the output; it said: $(printf '%s' "$3" | tr '\n' '|')" ;;
     esac
 }
 
 # ---------------------------------------------------------------------------
-# test harness
-# The launcher reads the environment variables that starthyprland.sh defaults
-# to. We run it with those variables overridden to point at a private tree
-# that we control, so nothing in the image is touched.
+# fixture: a private, writable world for the launcher to act in.
+#
+# The launcher reads its configuration from the environment. Defaults are
+# exported once, here; a case overrides one by assigning it before calling
+# run_launcher, and that assignment reaches the launcher unchanged.
 # ---------------------------------------------------------------------------
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
 
-# A stub hyprland: exit 0 on --session (success) unless HYP_FAIL=1.
-cat > "$WORK/hyprland" <<'EOF'
+# A stub compositor, in the two roles the real binary plays.
+cat > "$TMP/hyprland" <<'EOF'
 #!/bin/sh
-# Stub hyprland. Nothing here looks at REAL hardware: the launcher's
-# --check and its exit codes are the thing under test.
-if [ "${HYP_FAIL:-0}" = "1" ]; then
-    echo "hyprland stub: failing" >&2
-    exit 1
+# Stub compositor. `--session` is the compositor: it writes the instance socket
+# the launcher looks for and stays alive until the launcher reaps it. `msg` is
+# the liveness probe against that socket. HYP_FAIL=1 makes startup fail, which
+# is how the "exited while starting" path is exercised.
+case "${1:-}" in
+    --session)
+        if [ "${HYP_FAIL:-0}" = "1" ]; then
+            echo "hyprland stub: cannot take the DRM master" >&2
+            exit 1
+        fi
+        sock="$XDG_RUNTIME_DIR/hypr-stub.$$.sock"
+        : > "$sock" 2>/dev/null || exit 1
+        trap 'rm -f "$sock"' EXIT
+        sleep "${HYP_STUB_SLEEP:-1}"
+        exit 0
+        ;;
+    msg)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+chmod +x "$TMP/hyprland"
+
+# The other utilities --check reports on.
+for u in waybar fuzzel kitty hyprlock dunst; do
+    cat > "$TMP/$u" <<EOF
+#!/bin/sh
+exit 0
+EOF
+    chmod +x "$TMP/$u"
+done
+
+# A seatd socket, so the "seatd present" branch is exercised. It has to be a
+# real unix socket, not a regular file: the launcher tests [ -S ], and a plain
+# file would make the "seatd present" case a lie. python3 binds it; without
+# python3 that one case is skipped rather than faked.
+mkdir -p "$TMP/run"
+rm -f "$TMP/run/seatd.sock"
+SEATD_SOCK_PID=
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$TMP/run/seatd.sock" <<'PY' &
+import os, socket, sys, time
+path = sys.argv[1]
+try:
+    os.unlink(path)
+except OSError:
+    pass
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(path)
+s.listen(1)
+time.sleep(600)
+PY
+    SEATD_SOCK_PID=$!
+    sleep 0.3
 fi
-if [ "${HYP_CHECK:-0}" = "1" ]; then
-    echo "hyprland stub: check passed"
+
+# A libudev record tree: PID 1 writes these at boot, and libinput drops any
+# device whose record has no ID_INPUT_* tag.
+mkdir -p "$TMP/sys/class/input/input0" "$TMP/run/udev/data"
+printf 'stub keyboard\n' > "$TMP/sys/class/input/input0/name"
+mkdir -p "$TMP/sys/class/input/input0/event0"
+printf '9:1234\n' > "$TMP/sys/class/input/input0/event0/dev"
+printf 'E:ID_INPUT_KEYBOARD\nE:ID_INPUT=1\n' > "$TMP/run/udev/data/c9:1234"
+
+# A config skeleton in the layout the shipped tree uses.
+mkdir -p "$TMP/skel/.config/hypr" "$TMP/skel/.config/waybar/scripts" "$TMP/home"
+printf '# stub hyprland config\n' > "$TMP/skel/.config/hypr/hyprland.conf"
+printf '{}\n' > "$TMP/skel/.config/waybar/config.jsonc"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/skel/.config/waybar/scripts/workspaces.sh"
+chmod +x "$TMP/skel/.config/waybar/scripts/workspaces.sh"
+
+# The component manifest the launcher reads. By default every component is
+# present, so a plain launch never stops to ask about installing anything.
+{
+    printf 'waybar          %s/waybar          image\n' "$TMP"
+    printf 'fuzzel          %s/fuzzel          ingot\n' "$TMP"
+} > "$TMP/hyprland-apps"
+
+# A second manifest with two components that are genuinely missing, one of
+# which the installer refuses -- to prove an install failure does not abort a
+# session that has already been told to install the rest.
+{
+    printf 'fuzzel          /usr/bin/fuzzel          ingot\n'
+    printf 'nmap            /usr/bin/nmap            ingot\n'
+} > "$TMP/hyprland-apps-missing"
+
+# A stub installer. Everything installs except nmap.
+cat > "$TMP/ingot" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "install" ]; then
+    [ "${2:-}" = "nmap" ] && exit 1
     exit 0
 fi
-# --session: pretend to run. The launcher waits for an IPC socket, which this
-# stub will never write, so the launcher's wait loop will time out and fall
-# through to "alive and drawing" -- by design. HYP_WAIT=0 skips the wait.
-if [ "${HYP_WAIT:-1}" = "0" ]; then
-    exit 0
-fi
-sleep 999 &
-wait $!
-EOF
-chmod +x "$WORK/hyprland"
-
-# A stub waybar and a stub fuzzel (the launcher's keybindings exec these).
-cat > "$WORK/waybar" <<'EOF'
-#!/bin/sh
 exit 0
 EOF
-chmod +x "$WORK/waybar"
-cat > "$WORK/fuzzel" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-chmod +x "$WORK/fuzzel"
+chmod +x "$TMP/ingot"
 
-# A stub seatd (so the launcher's "seatd socket exists" branch is exercised).
-mkdir -p "$WORK/run"
-touch "$WORK/run/seatd.sock"
+# Defaults, exported once. A case that needs something else assigns it before
+# calling run_launcher; the assignment lands in run_launcher's environment and
+# is not replaced here, which is why the launcher sees the case's value.
+HOME="$TMP/home";                         export HOME
+PATH="$TMP:$PATH";                        export PATH
+: "${COPPER_HYPRLAND:=$TMP/hyprland}";     export COPPER_HYPRLAND
+: "${COPPER_WAYBAR:=$TMP/waybar}";         export COPPER_WAYBAR
+: "${COPPER_HYPRLAND_SKEL:=$TMP/skel}";    export COPPER_HYPRLAND_SKEL
+: "${COPPER_HYPRLAND_APPS:=$TMP/hyprland-apps}"; export COPPER_HYPRLAND_APPS
+: "${COPPER_INGOT:=$TMP/ingot}";           export COPPER_INGOT
+: "${COPPER_SEATD_SOCK:=$TMP/run/seatd.sock}"; export COPPER_SEATD_SOCK
+: "${COPPER_USER_HYPR_CONF:=$TMP/home/.config/hypr}"; export COPPER_USER_HYPR_CONF
+: "${COPPER_DRM_DIR:=$TMP/dev/dri}";       export COPPER_DRM_DIR
+: "${COPPER_INPUT_SYS:=$TMP/sys/class/input}"; export COPPER_INPUT_SYS
+: "${COPPER_UDEV_DATA:=$TMP/run/udev/data}"; export COPPER_UDEV_DATA
+# No sudo: the gate must exercise the install path without a password prompt.
+: "${COPPER_SUDO=}";                       export COPPER_SUDO
+# Keep the wait loop short: the "no answering socket" case would otherwise
+# spend its full budget before falling through.
+: "${WAIT_TRIES=20}";                      export WAIT_TRIES
 
-# A config skeleton that the launcher seeds. The launcher defaults
-# COPPER_HYPRLAND_SKEL to /usr/share/copper/hyprland-skel; we point it at a
-# private tree that mirrors that layout.
-mkdir -p "$WORK/skel/.config/hypr" "$WORK/skel/.config/waybar/scripts"
-cat > "$WORK/skel/.config/hypr/hyprland.conf" <<'EOF'
-# stub hyprland config
-EOF
-cat > "$WORK/skel/.config/waybar/config.jsonc" <<'EOF'
-{ "general": {} }
-EOF
-cat > "$WORK/skel/.config/waybar/scripts/workspaces.sh" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-chmod +x "$WORK/skel/.config/waybar/scripts/workspaces.sh"
-
-# A component manifest: a missing component that is "image", plus a stub
-# ingot that controls what `ingot install` does.
-cat > "$WORK/hyprland-apps" <<'EOF'
-fuzzel          /usr/bin/fuzzel          ingot
-firefox         /usr/bin/firefox         ingot
-waybar          /usr/bin/waybar          image
-EOF
-cat > "$WORK/ingot" <<'EOF'
-#!/bin/sh
-# Stub ingot. Usage: ingot install NAME. Install ok=1, fail=0.
-if [ "$1" = "install" ]; then
-    if [ "$2" = "nmap" ]; then exit 1; fi
-    exit 0
-fi
-exit 0
-EOF
-chmod +x "$WORK/ingot"
-
-# The launcher itself.
-LAUNCHER="$REPO/iso/starthyprland.sh"
-
-run_starthyprland() {
-    # Run starthyprland.sh with the stubbed environment. Each COPPER_* variable
-    # the launcher reads is set here with a test default, but only when the
-    # caller has not overridden it -- the test cases drive these variables, and
-    # a default that silently replaced the caller's value would make every case
-    # report "component missing" instead of the branch it is meant to exercise.
-    if [ -z "${COPPER_HYPRLAND:-}" ]; then COPPER_HYPRLAND="$WORK/hyprland"; export COPPER_HYPRLAND; fi
-    if [ -z "${COPPER_WAYBAR:-}" ]; then COPPER_WAYBAR="$WORK/waybar"; export COPPER_WAYBAR; fi
-    if [ -z "${COPPER_HYPRLAND_SKEL:-}" ]; then COPPER_HYPRLAND_SKEL="$WORK/skel"; export COPPER_HYPRLAND_SKEL; fi
-    if [ -z "${COPPER_HYPRLAND_APPS:-}" ]; then COPPER_HYPRLAND_APPS="$WORK/hyprland-apps"; export COPPER_HYPRLAND_APPS; fi
-    if [ -z "${COPPER_INGOT:-}" ]; then COPPER_INGOT="$WORK/ingot"; export COPPER_INGOT; fi
-    if [ -z "${COPPER_SEATD_SOCK:-}" ]; then COPPER_SEATD_SOCK="$WORK/run/seatd.sock"; export COPPER_SEATD_SOCK; fi
-    if [ -z "${COPPER_USER_HYPR_CONF:-}" ]; then COPPER_USER_HYPR_CONF="$WORK/home/.config/hypr"; export COPPER_USER_HYPR_CONF; fi
-    if [ -z "${COPPER_DRM_DIR:-}" ]; then COPPER_DRM_DIR="$WORK/dev/dri"; export COPPER_DRM_DIR; fi
-    if [ -z "${COPPER_INPUT_SYS:-}" ]; then COPPER_INPUT_SYS="$WORK/sys/class/input"; export COPPER_INPUT_SYS; fi
-    if [ -z "${COPPER_UDEV_DATA:-}" ]; then COPPER_UDEV_DATA="$WORK/run/udev/data"; export COPPER_UDEV_DATA; fi
-    if [ -n "${COPPER_RUNTIME_DIR:-}" ]; then export COPPER_RUNTIME_DIR; fi
-    PATH="$WORK:$PATH" \
-        "$LAUNCHER" "$@"
-}
-
-# --check must not start a compositor and must report each category.
-report_check() {
-    if [ -z "${COPPER_HYPRLAND:-}" ]; then COPPER_HYPRLAND="$WORK/hyprland"; export COPPER_HYPRLAND; fi
-    if [ -z "${COPPER_WAYBAR:-}" ]; then COPPER_WAYBAR="$WORK/waybar"; export COPPER_WAYBAR; fi
-    if [ -z "${COPPER_HYPRLAND_SKEL:-}" ]; then COPPER_HYPRLAND_SKEL="$WORK/skel"; export COPPER_HYPRLAND_SKEL; fi
-    if [ -z "${COPPER_HYPRLAND_APPS:-}" ]; then COPPER_HYPRLAND_APPS="$WORK/hyprland-apps"; export COPPER_HYPRLAND_APPS; fi
-    if [ -z "${COPPER_INGOT:-}" ]; then COPPER_INGOT="$WORK/ingot"; export COPPER_INGOT; fi
-    if [ -z "${COPPER_SEATD_SOCK:-}" ]; then COPPER_SEATD_SOCK="$WORK/run/seatd.sock"; export COPPER_SEATD_SOCK; fi
-    if [ -z "${COPPER_USER_HYPR_CONF:-}" ]; then COPPER_USER_HYPR_CONF="$WORK/home/.config/hypr"; export COPPER_USER_HYPR_CONF; fi
-    if [ -z "${COPPER_DRM_DIR:-}" ]; then COPPER_DRM_DIR="$WORK/dev/dri"; export COPPER_DRM_DIR; fi
-    if [ -z "${COPPER_INPUT_SYS:-}" ]; then COPPER_INPUT_SYS="$WORK/sys/class/input"; export COPPER_INPUT_SYS; fi
-    if [ -z "${COPPER_UDEV_DATA:-}" ]; then COPPER_UDEV_DATA="$WORK/run/udev/data"; export COPPER_UDEV_DATA; fi
-    if [ -n "${COPPER_RUNTIME_DIR:-}" ]; then export COPPER_RUNTIME_DIR; fi
-    PATH="$WORK:$PATH" \
-        "$LAUNCHER" --check
-}
+run_launcher() { "$SUT" "$@"; }
 
 # ---------------------------------------------------------------------------
 # cases
 # ---------------------------------------------------------------------------
 
-# 1. Missing compositor -> the launcher names the piece, exit 20, compositor
-#    and session never start. Run directly so COPPER_HYPRLAND is not overridden
-#    by the run_starthyprland prefix assignment.
-env -i HOME="$WORK/home" PATH="$WORK:$PATH" \
-    COPPER_HYPRLAND=/nonexistent/hyprland \
-    COPPER_WAYBAR="$WORK/waybar" \
-    COPPER_HYPRLAND_SKEL="$WORK/skel" \
-    COPPER_HYPRLAND_APPS="$WORK/hyprland-apps" \
-    COPPER_INGOT="$WORK/ingot" \
-    COPPER_SEATD_SOCK="$WORK/run/seatd.sock" \
-    COPPER_USER_HYPR_CONF="$WORK/home/.config/hypr" \
-    COPPER_DRM_DIR="$WORK/dev/dri" \
-    COPPER_INPUT_SYS="$WORK/sys/class/input" \
-    COPPER_UDEV_DATA="$WORK/run/udev/data" \
-    "$LAUNCHER" --check > "$WORK/c1.out" 2>&1
-rc=$?
-if [ "$rc" = "20" ]; then
-    record "compositor missing -> exit 20" ok "exit 20; no compositor or session started"
+# Usage and argument handling.
+out=$(run_launcher --help 2>&1); rc=$?
+eq "--help exits 0" 0 "$rc"
+has "--help prints usage" "starthyprland -- start" "$out"
+
+out=$(run_launcher --bogus 2>&1); rc=$?
+eq "unknown option exits 24" 24 "$rc"
+
+out=$(run_launcher unexpected 2>&1); rc=$?
+eq "unexpected argument exits 24" 24 "$rc"
+
+# The compositor is missing: the launch names the piece and stops.
+out=$(COPPER_HYPRLAND=/nonexistent/hyprland run_launcher 2>&1); rc=$?
+eq "compositor missing exits 20" 20 "$rc"
+has "compositor missing names the path" "/nonexistent/hyprland" "$out"
+
+# --check on the same machine reports it and still exits 0: a report is not a
+# launch, and a unit that runs it must not read a nonzero as "the session died".
+out=$(COPPER_HYPRLAND=/nonexistent/hyprland run_launcher --check 2>&1); rc=$?
+eq "--check exits 0 even when the compositor is missing" 0 "$rc"
+has "--check says NOT INSTALLED" "NOT INSTALLED" "$out"
+has "--check points at the stage that stages it" "hyprland stage" "$out"
+
+# No configuration anywhere: launch stops with 21.
+out=$(COPPER_HYPRLAND_SKEL="$TMP/noskel" \
+      COPPER_USER_HYPR_CONF="$TMP/nohome/.config/hypr" \
+      run_launcher 2>&1); rc=$?
+eq "no config exits 21" 21 "$rc"
+has "no config names the place it looked" "nohome" "$out"
+
+# Runtime directory forced to a path that is not a directory: 22.
+out=$(COPPER_RUNTIME_DIR="$TMP/not-a-dir" run_launcher 2>&1); rc=$?
+eq "runtime directory missing exits 22" 22 "$rc"
+has "runtime failure names the directory" "not-a-dir" "$out"
+
+# Seat management is reported both ways.
+if [ -S "$TMP/run/seatd.sock" ]; then
+    out=$(run_launcher --check 2>&1)
+    has "--check reports a present seatd socket" "seatd socket present" "$out"
 else
-    record "compositor missing -> exit 20" bad "exit $rc, expected 20"
+    printf '  skip  --check reports a present seatd socket (no python3 to bind one)\n'
 fi
 
-# --check reports a missing config (no skeleton, no home config) -> exit 21.
-COPPER_HYPRLAND_SKEL="$WORK/nostalkel" \
-COPPER_USER_HYPR_CONF="$WORK/homedoesnotexist" \
-run_starthyprland --check > "$WORK/check2.out" 2>&1
-rc=$?
-if [ "$rc" = "21" ]; then
-    record "missing config -> exit 21" ok "exit 21; no compositor started"
+out=$(COPPER_SEATD_SOCK="$TMP/run/absent.sock" run_launcher --check 2>&1)
+has "--check reports a missing seatd socket" "NO seatd socket" "$out"
+
+# --check covers the categories a session can die on.
+out=$(run_launcher --check 2>&1)
+has "--check reports the compositor" "hyprland: present" "$out"
+has "--check reports runtime libraries" "runtime libraries:" "$out"
+has "--check reports the configuration" "config:" "$out"
+has "--check reports the Wayland utilities" "utility waybar:" "$out"
+has "--check reports the runtime environment" "runtime:" "$out"
+has "--check reports the session bus" "session bus:" "$out"
+
+# --check must not prepare anything: with a private runtime directory it
+# creates no compositor socket there.
+mkdir -p "$TMP/rt-check"
+out=$(COPPER_RUNTIME_DIR="$TMP/rt-check" run_launcher --check 2>&1); rc=$?
+eq "--check on a complete tree exits 0" 0 "$rc"
+if [ -z "$(ls "$TMP/rt-check"/hypr-*.sock 2>/dev/null)" ]; then
+    ok "--check starts no compositor (no instance socket left behind)"
 else
-    record "missing config -> exit 21" bad "exit $rc, expected 21"
+    bad "--check starts no compositor" "an instance socket appeared under the runtime directory"
 fi
 
-# Invalid arguments -> exit 24.
-if run_starthyprland --bogus > "$WORK/badargs.out" 2>&1; then
-    record "unknown option -> exit 24" bad "exited 0; message above"
-elif [ "$?" = "24" ]; then
-    record "unknown option -> exit 24" ok "exit 24; message above"
-else
-    record "unknown option -> exit 24" bad "exit $?"
-fi
+# A session that comes up cleanly exits 0.
+out=$(run_launcher 2>&1); rc=$?
+eq "session start exits 0" 0 "$rc"
+has "session start says the compositor came up" "hyprland is up" "$out"
 
-# --check with a correct tree: compositor present, config present, seatd
-# present, runtime dir missing -> exit 22 (runtime not prepared). --check
-# must NOT start the compositor.
-COPPER_USER_HYPR_CONF="$WORK/home" \
-COPPER_DRM_DIR="$WORK/dev/dri" \
-COPPER_INPUT_SYS="$WORK/sys/class/input" \
-COPPER_UDEV_DATA="$WORK/run/udev/data" \
-run_starthyprland --check > "$WORK/check3.out" 2>&1
-rc=$?
-if [ "$rc" = "22" ]; then
-    record "runtime dir missing -> --check exits 22" ok "exit 22; no compositor started"
-else
-    record "runtime dir missing -> --check exits 22" bad "exit $rc, expected 22"
-fi
+# A compositor that dies on the way up exits 23 and shows the log.
+out=$(HYP_FAIL=1 run_launcher 2>&1); rc=$?
+eq "compositor failing at startup exits 23" 23 "$rc"
+has "startup failure prints the reason" "exited while starting up" "$out"
 
-# The launch path with a stub that exits 0 must start the session, and the
-# wait loop must handle the "no answering socket" case without hanging.
-COPPER_USER_HYPR_CONF="$WORK/home" \
-HYP_FAIL=0 HYP_WAIT=0 \
-run_starthyprland > "$WORK/launch.out" 2>&1
-rc=$?
-if [ "$rc" = "0" ]; then
-    record "session start -> exit 0" ok "exit 0; compositor and session started"
-else
-    record "session start -> exit 0" bad "exit $rc; compositor and session started"
-fi
-
-# A compositor that fails while starting must yield exit 23.
-COPPER_USER_HYPR_CONF="$WORK/home" \
-HYP_FAIL=1 HYP_WAIT=0 \
-run_starthyprland > "$WORK/fail.out" 2>&1
-rc=$?
-if [ "$rc" = "23" ]; then
-    record "compositor fail -> exit 23" ok "exit 23; message above"
-else
-    record "compositor fail -> exit 23" bad "exit $rc, expected 23"
-fi
-
-# A missing seatd socket -> exit 22 (runtime not prepared).
-COPPER_SEATD_SOCK="$WORK/run/nosocket.sock" \
-COPPER_USER_HYPR_CONF="$WORK/home" \
-COPPER_DRM_DIR="$WORK/dev/dri" \
-COPPER_INPUT_SYS="$WORK/sys/class/input" \
-COPPER_UDEV_DATA="$WORK/run/udev/data" \
-run_starthyprland --check > "$WORK/check4.out" 2>&1
-rc=$?
-if [ "$rc" = "22" ]; then
-    record "seatd socket missing -> --check exits 22" ok
-else
-    record "seatd socket missing -> --check exits 22" bad "exit $rc"
-fi
-
-# A component that ingot cannot install must not abort the session start.
-COPPER_USER_HYPR_CONF="$WORK/home" \
-COPPER_INGOT="$WORK/ingot" \
-HYP_FAIL=0 HYP_WAIT=0 \
-BUT=${BUT:=} run_starthyprland > "$WORK/incomp.out" 2>&1
-rc=$?
-if [ "$rc" = "0" ]; then
-    record "missing ingot component -> start anyway" ok
-else
-    record "missing ingot component -> start anyway" bad "exit $rc"
-fi
+# A component that cannot be installed does not abort a session that has
+# already been told to install the rest.
+out=$(COPPER_HYPRLAND_APPS="$TMP/hyprland-apps-missing" run_launcher --yes 2>&1); rc=$?
+eq "install failure still starts the session" 0 "$rc"
+has "install failure is reported, not swallowed" "could not install nmap" "$out"
 
 echo
-echo "=== starthyprland gate: $pass passed, $fail failed, $skip skipped ==="
-if [ "$fail" -gt 0 ]; then
-    echo "FAIL"
+if [ "$fails" -gt 0 ]; then
+    printf '  FAIL  %s checks failed\n' "$fails"
     exit 1
-fi
-if [ "$skip" -gt 0 ]; then
-    echo "SKIPPED"
-    exit 2
 fi
 exit 0

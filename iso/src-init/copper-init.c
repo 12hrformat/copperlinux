@@ -970,6 +970,17 @@ static int chose_desktop(const char *path) {
     return XFCE;
 }
 
+/* The two-state view of the same marker: does this machine run niri or not?
+   The boot hint and tests/init-session.c both ask that question, while the
+   hint itself now uses chose_desktop() so it can name Hyprland too. Kept as
+   its own function so the contract tests/init-session.c pins -- only the exact
+   word "niri" selects niri; a missing marker, a stray word or a half-written
+   line all mean XFCE, the desktop that is always present -- stays tested
+   exactly where it has always been tested. */
+static int chose_niri(const char *path) {
+    return chose_desktop(path) == NIRI;
+}
+
 /* The seat.
 
    niri is a Wayland compositor: through libseat it opens /dev/dri and

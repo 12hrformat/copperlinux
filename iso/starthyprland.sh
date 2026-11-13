@@ -3,7 +3,7 @@
 # 
 # The compositor and its session tools are in the image, staged by the
 # hyprland build stage of the image build. The apps on top -- waybar, kitty,
-# fuzzel, swaync, wl-clipboard, ... -- are ingot packages, and before anything
+# fuzzel, dunst, wl-clipboard, ... -- are ingot packages, and before anything
 # starts this offers to install the missing ones (manifest at
 # /etc/copper/hyprland-apps). What is genuinely absent still gets its own exit
 # code and its own sentence naming the piece, instead of a bare "not found"
@@ -64,27 +64,6 @@
 
 set -u
 
-# Argument parsing. The launcher is a session entry point, and every flag it
-# takes changes what it does as a side effect; silently ignoring a flag that
-# changes startup would hide failures. --check and --help exit immediately;
-# --yes and --no decide whether missing components are installed; every other
-# argument is a usage error and is reported as such.
-use_install=
-check=
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --check) check=1; shift ;;
-        --help|-h) usage; exit 0 ;;
-        --yes) use_install=1; shift ;;
-        --no)  use_install=0; shift ;;
-        *)
-            say "unknown option: $1" >&2
-            usage >&2
-            exit 24
-            ;;
-    esac
-done
-
 HYPRLAND=${COPPER_HYPRLAND:-/usr/bin/hyprland}
 WAYBAR=${COPPER_WAYBAR:-/usr/bin/waybar}
 SKEL=${COPPER_HYPRLAND_SKEL:-/usr/share/copper/hyprland-skel}
@@ -104,7 +83,6 @@ UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
 # Where Hyprland keeps its configuration for this user. Real default is
 # $HOME/.config/hypr; overridable for the gate.
 USER_HYPR_CONF=${COPPER_USER_HYPR_CONF:-$HOME/.config/hypr}
-USER_HYPR_CONFD_HYPRLAND=${COPPER_USER_HYPR_CONFD_HYPRLAND:-$HOME/.config/hypr/hyprland.conf}
 
 # The component manifest and the installer it drives. starthyprland only offers
 # components; it does not hardcode which ones.
@@ -116,6 +94,39 @@ SUDO=${COPPER_SUDO-sudo}
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
 say() { printf 'starthyprland: %s\n' "$1"; }
+
+usage() {
+    cat <<'EOF'
+starthyprland -- start the Hyprland compositor on the tty
+
+  starthyprland            set up the session and start hyprland
+  starthyprland --check    report what is installed and exit, starting nothing
+  starthyprland --yes      install any missing components without asking
+  starthyprland --no       do not install components, just start the session
+  starthyprland --help     this text
+
+Environment, all optional:
+  COPPER_HYPRLAND          path to the compositor       (default /usr/bin/hyprland)
+  COPPER_WAYBAR            path to the waybar binary    (default /usr/bin/waybar)
+  COPPER_HYPRLAND_SKEL     the shipped config tree that seeds a user's home
+                           (default /usr/share/copper/hyprland-skel)
+  COPPER_SESSIONLOG        where the compositor logs    (default /tmp/hyprland.log)
+  COPPER_HYPRLAND_APPS     component manifest           (default /etc/copper/hyprland-apps)
+  COPPER_INGOT             installer for the components (default ingot)
+  COPPER_SUDO              how to gain root for the install (default sudo; empty means already root or never use it)
+  COPPER_DRM_DIR           where DRM nodes live         (default /dev/dri)
+  COPPER_SEATD_SOCK        seatd's socket               (default /run/seatd.sock)
+  COPPER_INPUT_SYS         where the input devices live (default /sys/class/input)
+  COPPER_UDEV_DATA         the libudev records PID 1 writes (default /run/udev/data)
+  COPPER_RUNTIME_DIR       force the runtime directory; must be an existing
+                           directory. Only for the gate -- a real session lets
+                           the launcher make its own.
+  XDG_RUNTIME_DIR          the session's private runtime directory (default /run/user/<uid>, made here when missing)
+
+Exit codes: 0 ok, 20 no hyprland, 21 no session config, 22 no runtime,
+23 hyprland exited while starting, 24 usage, 25 no way to ask about components.
+EOF
+}
 
 # A user that will not even get a seat is a user with a dead pointer -- say so
 # before Hyprland starts.
@@ -173,36 +184,6 @@ elif [ -d "$INPUT_SYS" ]; then
     fi
 fi
 
-usage() {
-    cat <<'EOF'
-starthyprland -- start the Hyprland compositor on the tty
-
-  starthyprland            set up the session and start hyprland
-  starthyprland --check    report what is installed and exit, starting nothing
-  starthyprland --yes      install any missing components without asking
-  starthyprland --no       do not install components, just start the session
-  starthyprland --help     this text
-
-Environment, all optional:
-  COPPER_HYPRLAND          path to the compositor       (default /usr/bin/hyprland)
-  COPPER_WAYBAR            path to the waybar binary    (default /usr/bin/waybar)
-  COPPER_HYPRLAND_SKEL     the shipped config tree that seeds a user's home
-                           (default /usr/share/copper/hyprland-skel)
-  COPPER_SESSIONLOG        where the compositor logs    (default /tmp/hyprland.log)
-  COPPER_HYPRLAND_APPS     component manifest           (default /etc/copper/hyprland-apps)
-  COPPER_INGOT             installer for the components (default ingot)
-  COPPER_SUDO              how to gain root for the install (default sudo; empty means already root or never use it)
-  COPPER_DRM_DIR           where DRM nodes live         (default /dev/dri)
-  COPPER_SEATD_SOCK        seatd's socket               (default /run/seatd.sock)
-  COPPER_INPUT_SYS         where the input devices live (default /sys/class/input)
-  COPPER_UDEV_DATA         the libudev records PID 1 writes (default /run/udev/data)
-  XDG_RUNTIME_DIR          the session's private runtime directory (default /run/user/<uid>, made here when missing)
-
-Exit codes: 0 ok, 20 no hyprland, 21 no session config, 22 no runtime,
-23 hyprland exited while starting, 24 usage, 25 no way to ask about components.
-EOF
-}
-
 # What is installed. Echoed as words so --check and the launch path agree, and so
 # there is exactly one place that knows what the image contains.
 have_hyprland=0
@@ -231,6 +212,109 @@ report() {
         say "NO session config in $user_conf, and none to seed from at $SKEL"
     fi
 }
+
+# --check: the whole report, then exit 0 without preparing or starting anything.
+# This is the dependency probe systemd units, scripts and a logged-in user all
+# run; it has to name every category that can stop a session, because a bare
+# "not found" is indistinguishable from a broken PATH or a library that arrived
+# from the wrong suite.
+report_check() {
+    # The compositor.
+    if [ "$have_hyprland" = 1 ]; then
+        say "hyprland: present at $HYPRLAND"
+    else
+        say "hyprland: NOT INSTALLED at $HYPRLAND"
+        say "  staged by the hyprland stage of iso/build.sh; nothing can start until it is"
+    fi
+
+    # Runtime libraries. ldd is the honest check: a compositor that starts and
+    # dies on a missing .so says so here instead of after the user has logged in.
+    if [ "$have_hyprland" != 1 ]; then
+        say "runtime libraries: cannot check (no compositor)"
+    elif ! command -v ldd >/dev/null 2>&1; then
+        say "runtime libraries: cannot check (no ldd on this host)"
+    else
+        missing_libs=$(ldd "$HYPRLAND" 2>/dev/null | awk '/not found/{print $1}')
+        if [ -z "$missing_libs" ]; then
+            say "runtime libraries: all resolve"
+        else
+            say "runtime libraries: MISSING:"
+            for lib in $missing_libs; do say "  $lib"; done
+        fi
+    fi
+
+    # Seat management. Without logind the seat is seatd's to give; a compositor
+    # that cannot take the DRM master exits before it draws anything.
+    if [ -S "$SEATD_SOCK" ]; then
+        say "seat: seatd socket present at $SEATD_SOCK"
+    elif [ -d /run/systemd/seats ]; then
+        say "seat: logind present (no seatd socket at $SEATD_SOCK)"
+    else
+        say "seat: NO seatd socket at $SEATD_SOCK and no logind"
+        say "  PID 1 starts seatd on the Copper-init image; if it did not, the compositor will exit"
+    fi
+
+    # Configuration.
+    if [ "$user_config" = 1 ]; then
+        say "config: present at $user_conf/hyprland.conf"
+    elif [ "$skel_config" = 1 ]; then
+        say "config: none in $user_conf, but $SKEL can seed it"
+    else
+        say "config: NONE (no $user_conf/hyprland.conf and no $SKEL/.config/hypr/hyprland.conf)"
+    fi
+
+    # Wayland utilities the session starts or binds keys to.
+    for u in waybar fuzzel kitty hyprlock dunst; do
+        p=$(command -v "$u" 2>/dev/null) || p=
+        if [ -n "$p" ]; then
+            say "utility $u: $p"
+        else
+            say "utility $u: not installed"
+        fi
+    done
+
+    # Runtime environment.
+    uid=$(id -u 2>/dev/null) || uid=
+    if [ -z "$uid" ]; then
+        say "runtime: no uid for this login"
+    elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+        if [ -d "$XDG_RUNTIME_DIR" ]; then
+            say "runtime: XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR (present)"
+        else
+            say "runtime: XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR is not a directory"
+        fi
+    else
+        say "runtime: XDG_RUNTIME_DIR unset (launcher makes /run/user/$uid or /tmp/copper-runtime-$uid)"
+    fi
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        say "session bus: $DBUS_SESSION_BUS_ADDRESS"
+    else
+        say "session bus: not set (the launcher starts one)"
+    fi
+}
+
+# Argument parsing. The launcher is a session entry point, and every flag it
+# takes changes what it does as a side effect; silently ignoring a flag that
+# changes startup would hide failures. --check reports and exits below;
+# --yes and --no decide whether missing components are installed; every other
+# argument is a usage error and is reported as such.
+use_install=
+check=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --check)     check=1; shift ;;
+        --help|-h)   usage; exit 0 ;;
+        --yes|-y)    use_install=1; shift ;;
+        --no|-n)     use_install=0; shift ;;
+        -*)          say "unknown option: $1" >&2; usage >&2; exit 24 ;;
+        *)           say "unexpected argument: $1" >&2; usage >&2; exit 24 ;;
+    esac
+done
+
+if [ "$check" = 1 ]; then
+    report_check
+    exit 0
+fi
 
 # The boot splash, defensively and for the same reason startniri quits it: a
 # splash still holding the console is what makes a compositor's VT takeover
@@ -350,7 +434,6 @@ fi
 # "image" are expected in the ISO already -- a missing one is a broken image, so
 # it is reported and never turned into an install attempt.
 missing=
-choice=auto
 if [ -r "$APPS" ]; then
     while read -r cname cprobe corigin; do
         case "$cname" in ''|\\#*) continue ;; esac
@@ -364,29 +447,28 @@ if [ -r "$APPS" ]; then
 fi
 
 if [ -n "$missing" ]; then
-    do_install=
-    case "$choice" in
-        yes) do_install=1 ;;
-        no)  say "not installing components (--no)" ;;
-        *)
-            if [ -t 0 ]; then
-                printf 'starthyprland: before running hyprland do you want to install its suggested apps? (Y/n) '
-                answer=
-                read -r answer || answer=
-                case "$answer" in
-                    [Nn]*) say "not installing components" ;;
-                    *)     do_install=1 ;;
-                esac
-            else
-                say "a component is missing and there is no way to ask: stdin is not a terminal."
-                say "  starthyprland --yes   install the missing components first"
-                say "  starthyprland --no    start the session without them"
-                exit 25
-            fi
-            ;;
-    esac
+    # --yes and --no decide; with neither, ask when there is a terminal and stop
+    # with 25 otherwise. A missing component must be decided on purpose.
+    if [ "$use_install" = "1" ]; then
+        do_install=1
+    elif [ "$use_install" = "0" ]; then
+        say "not installing components (--no)"
+    elif [ -t 0 ]; then
+        printf 'starthyprland: before running hyprland do you want to install its suggested apps? (Y/n) '
+        answer=
+        read -r answer || answer=
+        case "$answer" in
+            [Nn]*) say "not installing components" ;;
+            *)     do_install=1 ;;
+        esac
+    else
+        say "a component is missing and there is no way to ask: stdin is not a terminal."
+        say "  starthyprland --yes   install the missing components first"
+        say "  starthyprland --no    start the session without them"
+        exit 25
+    fi
 
-    if [ -n "$do_install" ]; then
+    if [ "${do_install:-}" = "1" ]; then
         say "installing the missing components:$missing"
         failed=
         for c in $missing; do
@@ -502,7 +584,7 @@ if command -v fc-cache >/dev/null 2>&1; then
     fi
 fi
 
-# The session bus. The portals, swaync, gnome-keyring and the polkit agent all
+# The session bus. The portals, dunst, gnome-keyring and the polkit agent all
 # want one, and there is no session manager to have started it. Prefer
 # dbus-launch, which sets both the address and the pid; fall back to
 # dbus-daemon directly, which only prints the address. Either way it is exported

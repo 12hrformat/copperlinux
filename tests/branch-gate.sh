@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
 #
-# Twenty-one gates: smoke.sh always; startxfce-gate.sh,
+# Twenty-two gates: smoke.sh always; startxfce-gate.sh,
 # account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
 # root, because they exercise sockets, staged rootfs trees,
 # a mount namespace and a private /sbin; init-session.sh needs root because it
 # calls setuid, and
 # systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
 # into a staged tree to check the units. ingot-gate.sh,
-# startniri-gate.sh, plymouth-gate.sh, polkit-gate.sh, network-gate.sh
-# and console-gate.sh do not --
+# startniri-gate.sh, starthyprland-gate.sh, plymouth-gate.sh, polkit-gate.sh,
+# network-gate.sh and console-gate.sh do not --
 # ingot's install lands in a scratch INGOT_ROOT and its repo is served on
 # localhost, startniri's compositor is a stub under a private home,
+# starthyprland's compositor is a stub too and it points the launcher at a
+# private runtime directory and seatd socket,
 # plymouth-gate.sh only reads grub.cfg, copper-init.c and the Plymouth
 # units/helpers, polkit-gate.sh only reads the init source, the
 # overlay and build.sh, network-gate.sh runs the real lease script against
@@ -152,6 +154,28 @@ elif out=$(sh tests/startniri-gate.sh 2>&1); then
     record startniri-gate.sh ok "$n checks"
 else
     record startniri-gate.sh bad "a niri launcher check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/starthyprland-gate.sh: the Hyprland launcher ---"
+# Unprivileged and self-contained, like startniri-gate.sh: the compositor is a
+# stub in two roles (--session and msg), the launcher is pointed at a private
+# home, runtime directory, DRM path and seatd socket, and a real unix socket
+# stands in for seatd when python3 is available -- so nothing here touches this
+# machine's session. The exit-code contract is the thing under test: a script
+# branching on 20/21/22/23 breaks silently when one of them moves.
+if out=$(sh tests/starthyprland-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    ns=$(printf '%s' "$out" | grep -c '^  skip' || true)
+    if [ "$ns" -gt 0 ]; then
+        record starthyprland-gate.sh ok "$n checks ($ns skipped: no python3 to bind a seatd socket)"
+    else
+        record starthyprland-gate.sh ok "$n checks"
+    fi
+else
+    record starthyprland-gate.sh bad "a hyprland launcher check failed"
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
 fi
 

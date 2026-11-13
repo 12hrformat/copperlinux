@@ -11,6 +11,30 @@
 # have, but ingot has no such package and starthyprland will not try to install
 # one -- a missing "image" component is a broken image, said out loud.
 #
-# The hyprland payload itself is a relative-path package in the hyprland build
-# stage's PPA (the compositor is pinned to a version at the top of the stage).
-# Firefox/terminal/file-manager are ingot payloads in copper-ingot-repo.
+# The ingot payloads here are the ones copper-ingot-repo carries for every
+# desktop (firefox, mousepad, ristretto, xarchiver, htop). They are not needed
+# for the session to start, but they work under Wayland and are the ones that
+# exist in the repo. Each deb payload carries its full closure, so declining the
+# prompt costs nothing and accepting it downloads a few hundred MB; the session
+# starts either way.
+
+firefox             /usr/bin/firefox             ingot
+mousepad            /usr/bin/mousepad            ingot
+ristretto           /usr/bin/ristretto           ingot
+xarchiver           /usr/bin/xarchiver           ingot
+htop                /usr/bin/htop                ingot
+
+hyprland            /usr/bin/hyprland            image
+waybar              /usr/bin/waybar              image
+fuzzel              /usr/bin/fuzzel              image
+kitty               /usr/bin/kitty               image
+hyprlock            /usr/bin/hyprlock            image
+hyprpaper           /usr/bin/hyprpaper           image
+hypridle            /usr/bin/hypridle            image
+hyprpicker          /usr/bin/hyprpicker          image
+dunst               /usr/bin/dunst               image
+wl-clipboard        /usr/bin/wl-copy             image
+cliphist            /usr/bin/cliphist            image
+jq                  /usr/bin/jq                  image
+brightnessctl       /usr/bin/brightnessctl       image
+playerctl           /usr/bin/playerctl           image

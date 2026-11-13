@@ -72,10 +72,18 @@ The session config is Copper-branded and is shipped in the ISO at
 `/usr/share/copper/hyprland-skel`. On first launch — and on every launch for a
 home that is missing files the skeleton provides — the launcher seeds it into
 the user's home from the ISO, so a home wiped by hand or made another way is
-still repairable in place. The main compositor configuration lives in
-`~/.config/hypr/hyprland.conf`, the bar in `~/.config/waybar/{config.jsonc,style.css}`,
-and Copper's branded wallpaper in `~/.config/waybar/wallpapers` (a copper
-gradient shipped with the image).
+still repairable in place:
+
+| Path | What it is |
+|---|---|
+| `~/.config/hypr/hyprland.conf` | the compositor configuration |
+| `~/.config/hypr/hyprpaper.conf` | wallpaper selection |
+| `~/.config/hypr/hypridle.conf` | idle management (lock, then blank) |
+| `~/.config/hypr/wallpapers/` | Copper's branded wallpaper |
+| `~/.config/waybar/{config.jsonc,style.css}` | the bar |
+
+To change any of it, edit the file in the home; the launcher only fills in what
+is absent and never overwrites an existing one.
 
 ### Keybindings
 
@@ -100,11 +108,13 @@ The shipped configuration binds, as sensible defaults:
 sudo bash iso/build.sh hyprland
 ```
 
-The stage pulls the Hyprland session closure from the noble Hyprland PPA with
-the archive key verified by fingerprint at the top of `iso/build.sh`, then
-extracted and staged alongside Copper's session config. It is a first-class
-stage: it can be built on its own, and it is in the full, no-systemd, and
-systemd chains.
+The stage pulls the Hyprland session closure from the community Hyprland PPA
+(`ppa:cppiber/hyprland`) with the archive key fetched and verified by
+fingerprint at the top of `iso/build.sh`, then extracts and stages it alongside
+Copper's session config. Ubuntu 24.04 carries no Hyprland package of its own —
+it only appears in Ubuntu 25.10 — and the Hypr* team maintains no packages, so
+this archive is where the session comes from. It is a first-class stage: it can
+be built on its own, and it is in the full, no-systemd, and systemd chains.
 
 ### Troubleshooting
 
@@ -126,10 +136,10 @@ systemd chains.
 - Hyprland session integration with a graphical login/display manager is not
   implemented: Copper starts the compositor from a TTY, and the launcher is the
   only entry point.
-- The screen locker (hyprlock), the screenshot utility (hyprshot) and the
-  notification daemon (swaync) are staged for the session; their clients and
-  the secrets agent are after the session has started and need a running
-  session bus, which the launcher starts for them.
+- The screen locker (hyprlock), the wallpaper (hyprpaper), idle management
+  (hypridle) and the notification daemon (dunst) are staged for the session.
+  Their clients and the polkit agent run after the session has started and need
+  a running session bus, which the launcher starts for them.
 
 `startxfce` exits **20** if there's no X server in the image, **21** if XFCE is
 missing, **22** if the server started but never opened a display, **23** if the
