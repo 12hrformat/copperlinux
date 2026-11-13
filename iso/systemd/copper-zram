@@ -61,6 +61,25 @@ if [ "$cur" = 0 ]; then
 fi
 
 if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+    # A fresh zram device is a blank block device: swapon refuses it with
+    # "Unable to find swap-space signature" until somebody writes one. mkswap
+    # has to happen after disksize (there is no device to format before that)
+    # and before swapon. It is cheap -- one page of metadata -- and it is the
+    # step whose absence made this unit fail on the first real ISO.
+    if command -v mkswap >/dev/null 2>&1; then
+        mkswap /dev/zram0 >/dev/null || {
+            echo "copper-zram: mkswap /dev/zram0 failed" >&2
+            exit 1
+        }
+    elif /bin/busybox --list 2>/dev/null | grep -qx mkswap; then
+        /bin/busybox mkswap /dev/zram0 >/dev/null || {
+            echo "copper-zram: busybox mkswap /dev/zram0 failed" >&2
+            exit 1
+        }
+    else
+        echo "copper-zram: no mkswap (neither util-linux nor busybox)" >&2
+        exit 1
+    fi
     if command -v swapon >/dev/null 2>&1; then
         swapon /dev/zram0 || {
             echo "copper-zram: swapon /dev/zram0 failed" >&2

@@ -1,0 +1,7 @@
+# See common-auth: Copper's PAM setup in one required module per type.
+#
+# No pam_systemd here on purpose. Nothing on this image authenticates through
+# a display manager -- the session is started from the console -- so there is
+# no logind session to register, and on the busybox flavour there is no logind
+# at all. Adding it would buy nothing and put a dbus round trip in `su`.
+session	required	pam_unix.so

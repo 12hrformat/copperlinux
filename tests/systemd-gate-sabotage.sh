@@ -161,15 +161,14 @@ run_case "--console no longer recognised" "$C" \
     '0' \
     "copper-init recognises --console"
 
-# 7. Power commands left pointing at busybox (bug 29's shape, inverted).
-#    The systemctl links live in power_links, which the systemd stage calls
-#    after it swaps PID 1 -- one definition, so the stage and the stages that
-#    re-run over the tree later cannot disagree about what a systemd machine
-#    wants.
+# 7. Power commands left pointing at busybox (bug 29's shape, inverted). The
+#    wrapper links live in power_links, which the systemd stage calls after it
+#    swaps PID 1 -- one definition, so the stage and the stages that re-run over
+#    the tree later cannot disagree about what a systemd machine wants.
 run_case "power commands left as busybox" "$B" \
-    'ln -sf /usr/bin/systemctl "$root/sbin/$cmd"' \
+    'ln -sf /sbin/shutdown "$root/sbin/$cmd"' \
     'ln -sf /bin/busybox "$root/sbin/$cmd"' \
-    "sbin/reboot -> systemctl"
+    "sbin/reboot -> the wrapper"
 
 # 8. Units installed at the wrong mode. A world-writable unit is one systemd
 #    reads with a warning, and the source tree is 777 on a Windows checkout.

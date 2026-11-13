@@ -1,0 +1,2 @@
+# See common-auth: Copper's PAM setup in one required module per type.
+account	required	pam_unix.so

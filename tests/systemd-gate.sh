@@ -394,9 +394,14 @@ eq_link() {   # eq_link <label> <path> <want>
 }
 
 eq_link "sbin/init -> /lib/systemd/systemd" "$TGT/sbin/init" /lib/systemd/systemd
+# reboot/poweroff/halt are the wrapper on the systemd tree, not systemctl. A
+# direct systemctl link blocks until the transaction finishes, and the
+# transaction stops the very unit the caller's shell belongs to: systemd
+# SIGTERMs the client, it cancels its own job, and the machine hands back a
+# half-stopped prompt. The wrapper runs `systemctl --no-block`.
 for cmd in reboot poweroff halt; do
-    eq_link "sbin/$cmd -> systemctl"      "$TGT/sbin/$cmd"      /usr/bin/systemctl
-    eq_link "usr/sbin/$cmd -> systemctl"  "$TGT/usr/sbin/$cmd"  /usr/bin/systemctl
+    eq_link "sbin/$cmd -> the wrapper"     "$TGT/sbin/$cmd"     /sbin/shutdown
+    eq_link "usr/sbin/$cmd -> the wrapper" "$TGT/usr/sbin/$cmd" /sbin/shutdown
 done
 # shutdown is Copper's wrapper on the systemd tree too. systemd-sysv's
 # compatibility `shutdown` waits a minute on a bare invocation -- the defect a
@@ -423,8 +428,8 @@ eq_link "sbin/agetty -> the tree's agetty" "$TGT/sbin/agetty" /usr/sbin/agetty
 # the desktop stages over the tree -- build_rootfs clobbers /etc/group, and the
 # _seatd group is part of what those stages' skip guards ask about, so they
 # re-run -- and each of them calls power_links. A power_links that always wrote
-# busybox quietly undid the systemd flavour's systemctl links on the way to the
-# disc, and the systemd ISO failed its own read-back gate:
+# busybox quietly undid the systemd flavour's links on the way to the disc, and
+# the systemd ISO failed its own read-back gate:
 #
 #     iso: the ISO boots systemd but its power commands are wrong:
 #          sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
@@ -441,10 +446,10 @@ ptree() {   # ptree <dir> <what sbin/init points at>
 PS="$TMP/power-systemd"; ptree "$PS" /lib/systemd/systemd
 power_links "$PS"
 for cmd in reboot poweroff halt; do
-    eq_link "power_links on a systemd tree: sbin/$cmd -> systemctl" \
-            "$PS/sbin/$cmd" /usr/bin/systemctl
-    eq_link "power_links on a systemd tree: usr/sbin/$cmd -> systemctl" \
-            "$PS/usr/sbin/$cmd" /usr/bin/systemctl
+    eq_link "power_links on a systemd tree: sbin/$cmd -> the wrapper" \
+            "$PS/sbin/$cmd" /sbin/shutdown
+    eq_link "power_links on a systemd tree: usr/sbin/$cmd -> the wrapper" \
+            "$PS/usr/sbin/$cmd" /sbin/shutdown
 done
 if [ -f "$PS/sbin/shutdown" ] && [ ! -L "$PS/sbin/shutdown" ]; then
     ok "power_links on a systemd tree: sbin/shutdown is the wrapper"

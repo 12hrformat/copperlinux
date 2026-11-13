@@ -556,7 +556,7 @@ require_bb_config() {
       BLKID FEATURE_BLKID_TYPE GREP \
       ADDUSER ADDGROUP FEATURE_ADDUSER_TO_GROUP GETTY LOGIN \
       CHPASSWD FEATURE_SHADOWPASSWDS SETFONT CLEAR TTY \
-      SED CUT HEAD SLEEP SWAPON SWAPOFF ; do
+      SED CUT HEAD SLEEP MKSWAP SWAPON SWAPOFF READLINK ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -685,9 +685,13 @@ build_tools() {
 #
 #   - busybox (the shipped default): reboot/poweroff/halt are the applets,
 #     which signal PID 1 the way copper-init reads it.
-#   - systemd (the migration): reboot/poweroff/halt are systemctl links in both
-#     directories. A busybox applet there signals a PID 1 convention systemd
-#     does not read at all.
+#   - systemd (the migration): reboot/poweroff/halt are symlinks to Copper's
+#     wrapper in both directories, and the wrapper is what knows to run
+#     `systemctl --no-block`. Pointing them straight at systemctl made every
+#     shutdown wait in a client that the shutdown itself stops: systemd sends
+#     SIGTERM to it, it cancels its own job, and `sudo reboot` from the console
+#     stopped halfway and handed the prompt back. A busybox applet there
+#     signals a PID 1 convention systemd does not read at all.
 #
 # shutdown is Copper's own wrapper on BOTH flavours, and it is installed as a
 # real file at /sbin/shutdown with /usr/sbin/shutdown pointing at it. There are
@@ -697,7 +701,8 @@ build_tools() {
 # util-linux default, but on a live ISO it looks like the command did nothing,
 # which is exactly the report (`sudo shutdown` was silent; `sudo reboot`
 # worked). The wrapper maps bare/`now` to an immediate poweroff and, like
-# reboot/poweroff/halt, it ends up exec'ing systemctl on the systemd tree.
+# reboot/poweroff/halt, it ends up calling systemctl --no-block on the systemd
+# tree.
 #
 # This has to be right on EVERY call, not only the first. The `iso` chain
 # re-runs the desktop stages over the tree -- build_rootfs clobbers /etc/group
@@ -716,10 +721,16 @@ build_tools() {
 power_links() {          # power_links <staged-root>
   local root=$1 cmd
   mkdir -p "$root/sbin" "$root/usr/sbin"
+  # On the systemd tree all three names point at the wrapper, not at systemctl.
+  # The wrapper runs `systemctl --no-block`: a blocking systemctl waits for the
+  # shutdown transaction, and that transaction stops the very unit the shell
+  # running it belongs to. systemd SIGTERMs the client, the client cancels its
+  # own job, and the machine returns to a half-stopped prompt instead of
+  # rebooting. See the header of iso/shutdown.sh.
   if [ "$(init_flavour "$root")" = systemd ]; then
     for cmd in reboot poweroff halt; do
-      ln -sf /usr/bin/systemctl "$root/sbin/$cmd"
-      ln -sf /usr/bin/systemctl "$root/usr/sbin/$cmd"
+      ln -sf /sbin/shutdown "$root/sbin/$cmd"
+      ln -sf /sbin/shutdown "$root/usr/sbin/$cmd"
     done
   else
     for cmd in reboot poweroff halt; do
@@ -3666,6 +3677,30 @@ build_iso() {
   # not among them -- but re-assert it anyway: build_sudo set this bit earlier
   # and a silent drop here is exactly the failure this function exists to stop.
   chmod 4755 "$TGT/usr/bin/sudo"
+  # su is shadow's binary and has to be setuid root to change uid, exactly like
+  # sudo -- it shipped 0755, so it could not work even with a valid PAM stack.
+  # The stack itself is four files in the overlay: the base rootfs has
+  # /etc/pam.d/su but not the common-* files it includes, so pam_start() failed
+  # with "su: Critical error - immediate abort" before a password was read.
+  # Re-assert the mode here for the same cache reason as sudo, and prove the
+  # stack loads: as root, pam_rootok satisfies auth and su runs the command.
+  if [ -e "$TGT/usr/bin/su" ]; then
+    chown 0:0 "$TGT/usr/bin/su"
+    chmod 4755 "$TGT/usr/bin/su"
+  else
+    echo "iso: no /usr/bin/su in the tree; 'su' would fall through to a busybox applet" >&2
+    exit 1
+  fi
+  for pf in common-auth common-account common-session common-password; do
+    if [ ! -s "$TGT/etc/pam.d/$pf" ]; then
+      echo "iso: /etc/pam.d/$pf is missing or empty; su would abort at pam_start" >&2
+      exit 1
+    fi
+  done
+  if ! chroot "$TGT" /usr/bin/su -c /bin/true </dev/null >/dev/null 2>&1; then
+    echo "iso: /usr/bin/su cannot run in the staged tree; its PAM stack does not load" >&2
+    exit 1
+  fi
   # polkit's authentication helper, for exactly the same reason. build_niri
   # sets its bit too, but a cache restore can strip it and the niri stage can
   # then skip on its stamp. Re-assert here, before the tree hash, then read it
@@ -3887,6 +3922,32 @@ WRAP
   # that cannot be wrong about what ships is the thing that ships.
   echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
 
+  # su, read back off the disc for the same reason: it needs 4755 root:root to
+  # change uid, and the common-* includes its PAM config names have to be there
+  # too or pam_start() aborts before the password prompt (the reported
+  # "su: Critical error - immediate abort"). Missing either half is a broken su.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /usr/bin/su "$ex/su" >/dev/null 2>&1 || true
+  if [ "$(stat -c '%a' "$ex/su" 2>/dev/null)" != "4755" ]; then
+    echo "iso: /usr/bin/su in the ISO is mode $(stat -c '%a' "$ex/su" 2>/dev/null || echo 'missing'), not 4755" >&2
+    echo "iso: su could not change uid, so 'su' would fail for a normal user" >&2
+    exit 1
+  fi
+  if [ "$(stat -c '%u:%g' "$ex/su" 2>/dev/null)" != "0:0" ]; then
+    echo "iso: /usr/bin/su in the ISO is owned by $(stat -c '%u:%g' "$ex/su" 2>/dev/null || echo 'missing'), not 0:0" >&2
+    exit 1
+  fi
+  for pf in common-auth common-account common-session common-password; do
+    rm -f "$ex/pam-$pf"
+    xorriso -osirrox on -indev "$OUT/copper.iso" \
+        -extract "/etc/pam.d/$pf" "$ex/pam-$pf" >/dev/null 2>&1 || true
+    if [ ! -s "$ex/pam-$pf" ]; then
+      echo "iso: /etc/pam.d/$pf is missing from the disc; su would abort at pam_start" >&2
+      exit 1
+    fi
+  done
+  echo "  iso: /usr/bin/su is 4755 root:root and its PAM includes are on the disc"
+
   # polkit's helper, same readback discipline. Missing is allowed only when the
   # image has no polkitd at all; present-but-not-setuid is the failure that
   # turns every authentication prompt into "wrong password".
@@ -3948,9 +4009,12 @@ WRAP
   # Which links are CORRECT depends on which init the disc carries, so read
   # sbin/init off the disc first (an absolute symlink, so readlink, not -e --
   # see init_flavour) and check the power commands against that answer. On the
-  # busybox image they must be busybox applets; on a systemd image they must be
-  # systemctl, because a busybox halt signals PID 1 the way copper-init reads
-  # it and systemd does not read it that way at all.
+  # busybox image they must be busybox applets, because that is what signals
+  # copper-init. On the systemd image they must be the Copper wrapper (which
+  # runs `systemctl --no-block`): a direct systemctl link waits in the unit the
+  # shutdown is about to stop, gets SIGTERMed, cancels its own job, and hands
+  # the prompt back -- the "sudo reboot stops halfway" report -- while a
+  # busybox applet signals a PID 1 convention systemd does not read at all.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /sbin "$ex/sbin" >/dev/null 2>&1 || true
   xorriso -osirrox on -indev "$OUT/copper.iso" \
@@ -3970,7 +4034,7 @@ WRAP
     for cmd in reboot poweroff halt; do
       for d in "$ex/sbin" "$ex/usr-sbin"; do
         pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
-        [ "$pt" = "/usr/bin/systemctl" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
+        [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
       done
     done
     # shutdown is Copper's wrapper on the systemd image too, and NOT systemd's
@@ -3981,6 +4045,12 @@ WRAP
     [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad usr-sbin/shutdown -> $pt"
     if [ ! -f "$ex/sbin/shutdown" ] || [ -L "$ex/sbin/shutdown" ]; then
       pbad="$pbad sbin/shutdown (not the wrapper file)"
+    elif ! grep -q 'systemctl --no-block' "$ex/sbin/shutdown"; then
+      # The wrapper must hand the request to PID 1 and return. A blocking
+      # systemctl is SIGTERMed by the shutdown it started and cancels its own
+      # job, which is the failure this release is fixing, so check the text
+      # that makes it non-blocking on the disc itself.
+      pbad="$pbad sbin/shutdown (does not use systemctl --no-block)"
     fi
     # agetty: getty@.service and serial-getty@.service exec /sbin/agetty, and
     # Copper is not merged-usr -- /sbin is a real directory, so the Debian
@@ -3996,8 +4066,9 @@ WRAP
     esac
     if [ -n "$pbad" ]; then
       echo "iso: the ISO boots systemd but its power/login commands are wrong:$pbad" >&2
-      echo "iso: expected systemctl for reboot/poweroff/halt, the Copper shutdown" >&2
-      echo "iso: wrapper, and an agetty the getty units can exec by name" >&2
+      echo "iso: expected the Copper shutdown wrapper for reboot/poweroff/halt" >&2
+      echo "iso: (it runs systemctl --no-block), and an agetty the getty units" >&2
+      echo "iso: can exec by name" >&2
       exit 1
     fi
     echo "  iso: systemd is PID 1, power commands are right, and agetty is on the disc"

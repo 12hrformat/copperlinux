@@ -1,0 +1,14 @@
+# Copper Linux: the authentication stack for PAM services (su, chfn, chsh).
+#
+# Debian splits its PAM setup into common-* files that each service includes.
+# The base rootfs ships the pam_unix module and /etc/pam.d/su, but NOT these
+# includes -- so every `su` died with
+#
+#     su: Critical error - immediate abort
+#
+# before it could even read a password: pam_start() could not resolve
+# "@include common-auth". The image authenticates against /etc/shadow, which is
+# exactly what pam_unix does, so the stack is one required module per type.
+# Deliberately no pam_deny/pam_permit chain: there is nothing else to chain to,
+# and each `required` already denies on failure.
+auth	required	pam_unix.so
