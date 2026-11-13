@@ -592,6 +592,41 @@ else
     bad "  pushes the identity into the bus activation environment" "no call found"
 fi
 
+# Copper layers its own tweaks over the pinned configuration tree through
+# niri's positional `include`. This checks both halves of that wiring still
+# exist, because either one disappearing leaves the session on upstream defaults
+# with nothing to show why.
+echo
+echo "=== case 25: the copper tweaks overlay is present and wired ==="
+TWEAKS="$REPO/iso/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"
+if [ -s "$TWEAKS" ]; then
+    ok "  copper-tweaks.kdl ships with content"
+else
+    bad "  copper-tweaks.kdl ships with content" "missing or empty: $TWEAKS"
+fi
+if grep -q '^animations {' "$TWEAKS" && grep -q 'workspace-switch {' "$TWEAKS"; then
+    ok "  the overlay tunes the animation springs"
+else
+    bad "  the overlay tunes the animation springs" "no animations/workspace-switch node"
+fi
+if grep -q 'match is-active=false' "$TWEAKS" && grep -q 'opacity 0\.' "$TWEAKS"; then
+    ok "  the overlay dims unfocused windows"
+else
+    bad "  the overlay dims unfocused windows" "no is-active=false opacity rule"
+fi
+if grep -q $'\r' "$TWEAKS"; then
+    bad "  the overlay has no CR bytes" "CRLF found; the target has no editor to fix it"
+else
+    ok "  the overlay has no CR bytes"
+fi
+if grep -qF 'include "copper-tweaks.kdl"' "$REPO/iso/build.sh" &&
+   grep -q 'niri-overlay/.config/niri/copper-tweaks.kdl' "$REPO/iso/build.sh"; then
+    ok "  build_niri includes the overlay and stamps it as an input"
+else
+    bad "  build_niri includes the overlay and stamps it as an input" \
+        "the include or a stamp input is gone from iso/build.sh"
+fi
+
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
 echo

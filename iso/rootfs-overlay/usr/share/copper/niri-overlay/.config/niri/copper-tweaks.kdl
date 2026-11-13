@@ -1,0 +1,65 @@
+// Copper Linux -- session feel, layered over the pinned niri configuration.
+//
+// build_niri appends `include "copper-tweaks.kdl"` to config.kdl once the
+// pinned tree has been unpacked, and niri merges includes positionally: what
+// comes later wins. That is what lets Copper tune the desktop without editing
+// or re-pinning the upstream configuration in 12hrformat/copper-niriconfig --
+// removing the include restores the upstream behaviour exactly.
+
+// ---------------------------------------------------------------------------
+// Animations
+// ---------------------------------------------------------------------------
+// Gentler springs and longer easings than niri's defaults, so motion settles
+// rather than snaps. Every spring stays at critical damping: niri warns that a
+// damping ratio above 1.0 currently causes graphical glitches.
+animations {
+    workspace-switch {
+        spring damping-ratio=1.0 stiffness=700 epsilon=0.0001
+    }
+
+    window-open {
+        duration-ms 200
+        curve "cubic-bezier" 0.05 0.7 0.1 1
+    }
+
+    window-close {
+        duration-ms 160
+        curve "ease-out-quad"
+    }
+
+    horizontal-view-movement {
+        spring damping-ratio=1.0 stiffness=700 epsilon=0.0001
+    }
+
+    window-movement {
+        spring damping-ratio=1.0 stiffness=700 epsilon=0.0001
+    }
+
+    window-resize {
+        spring damping-ratio=1.0 stiffness=700 epsilon=0.0001
+    }
+
+    overview-open-close {
+        spring damping-ratio=1.0 stiffness=700 epsilon=0.0001
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Glass feel
+// ---------------------------------------------------------------------------
+// niri 25.11 has no window blur -- there is no such setting in its config
+// schema -- so this is translucency rather than frosted glass: unfocused
+// windows sink back while focused ones stay fully readable, and every window is
+// rounded and clipped to its own geometry. The pinned configuration already
+// sets prefer-no-csd, which keeps borders and focus rings from showing through
+// translucent windows.
+
+window-rule {
+    geometry-corner-radius 8
+    clip-to-geometry true
+}
+
+window-rule {
+    match is-active=false
+    opacity 0.94
+}

@@ -1946,7 +1946,8 @@ build_niri() {
      && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/niri.stamp" "$SELF" \
-        "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"; then
+        "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png" \
+        "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"; then
     echo "niri: already staged, skipping"; return
   fi
   echo "==> niri session"
@@ -2284,6 +2285,25 @@ build_niri() {
     exit 1
   fi
 
+  # ---- Copper's own tweaks, layered on top -----------------------------
+  # niri reads one config.kdl, so Copper's adjustments ship as a separate file
+  # pulled in with niri's top-level `include`, appended last. Includes are
+  # positional -- later settings win -- which is what lets Copper tune the
+  # session without editing or re-pinning the upstream configuration tree.
+  # The pinned tarball and its hash check are untouched; deleting the include
+  # line restores upstream behaviour exactly.
+  local overlay="$ROOT/rootfs-overlay/usr/share/copper/niri-overlay"
+  if [ -r "$overlay/.config/niri/copper-tweaks.kdl" ]; then
+    mkdir -p "$TGT/usr/share/copper/niri-skel/.config/niri"
+    cp -a "$overlay/.config/niri/copper-tweaks.kdl" \
+          "$TGT/usr/share/copper/niri-skel/.config/niri/copper-tweaks.kdl"
+    printf '\n// Copper Linux session tweaks: animations and translucency.\ninclude "copper-tweaks.kdl"\n' \
+      >> "$TGT/usr/share/copper/niri-skel/.config/niri/config.kdl"
+    echo "  copper tweaks included into the niri config"
+  else
+    echo "  (no copper-tweaks.kdl found; shipping the pinned config unchanged)"
+  fi
+
   # ---- the seat group ---------------------------------------------------
   # seatd's package postinst would create _seatd, and no postinst runs here.
   # copper-init starts seatd -g _seatd and the first-boot wizard puts the user
@@ -2401,7 +2421,8 @@ build_niri() {
 
   echo "  niri session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
   stamp_set "$WORK/niri.stamp" "$SELF" \
-    "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"
+    "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png" \
+    "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"
 }
 
 

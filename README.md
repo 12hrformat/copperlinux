@@ -51,6 +51,19 @@ First boot also asks which desktop you want, `xfce`, `niri` or `hyprland`;
 XFCE is the default and both `niri` and `hyprland` are opt-in. Either launcher
 works from the prompt whatever you picked.
 
+## Niri desktop
+
+Niri is Copper's second desktop, optional like Hyprland and never the default.
+Its configuration lives in `12hrformat/copper-niriconfig`, fetched at build time
+and pinned by commit and hash; the build stage unpacks it to
+`/usr/share/copper/niri-skel` and `startniri` seeds it into the user's home.
+
+Copper layers its own adjustments on top rather than editing that tree: a small
+`copper-tweaks.kdl`, shipped in this repository and appended with niri's
+positional top-level `include`, gentles the animation springs so motion settles
+instead of snapping, rounds every window, and dims unfocused windows slightly.
+Removing the include line restores the upstream configuration exactly.
+
 ## Hyprland desktop
 
 Hyprland is Copper's third desktop. It is optional and never the default, and
