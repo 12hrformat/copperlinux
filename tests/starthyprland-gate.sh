@@ -17,10 +17,10 @@
 # compositor is handed.
 #
 # The stub answers two ways, because Hyprland itself is both binaries:
-# `--session` is the compositor, and `msg` is the liveness probe the launcher
-# runs against the instance socket. The socket is a plain file whose name
-# carries the stub's pid -- which is the pid the launcher backgrounds and goes
-# looking for.
+# the compositor takes no arguments, and hyprctl is the liveness probe the
+# launcher runs against the instance directory. The socket is a plain file
+# inside a directory whose name is the stub's pid -- which is the pid the
+# launcher backgrounds and goes looking for.
 #
 # Run: sh tests/starthyprland-gate.sh
 
@@ -70,31 +70,25 @@ has() {
 # A stub compositor, in the two roles the real binary plays.
 cat > "$TMP/hyprland" <<'EOF'
 #!/bin/sh
-# Stub compositor. `--session` is the compositor: it creates the instance
-# socket where real Hyprland puts it -- $XDG_RUNTIME_DIR/hypr/<signature>/
-# <signature>.<n>.sock -- because that is the path the launcher searches,
-# then stays alive until the launcher reaps it. HYP_FAIL=1 makes startup fail,
-# which is how the "exited while starting" path is exercised.
-case "${1:-}" in
-    --session)
-        if [ "${HYP_FAIL:-0}" = "1" ]; then
-            echo "hyprland stub: cannot take the DRM master" >&2
-            exit 1
-        fi
-        sig="stub$$"
-        dir="$XDG_RUNTIME_DIR/hypr/$sig"
-        mkdir -p "$dir" 2>/dev/null || exit 1
-        [ -n "${HYP_SIGFILE:-}" ] && printf '%s\n' "$sig" > "$HYP_SIGFILE" 2>/dev/null
-        sock="$dir/$sig.0.sock"
-        : > "$sock" 2>/dev/null || exit 1
-        trap 'rm -rf "$dir"' EXIT
-        sleep "${HYP_STUB_SLEEP:-1}"
-        exit 0
-        ;;
-    *)
-        exit 0
-        ;;
-esac
+# Stub compositor. Real Hyprland takes no arguments: its option parser rejects
+# `--session` outright ("Unknown option '--session'"), so this stub takes none
+# either. It creates the instance directory where real Hyprland puts it --
+# $XDG_RUNTIME_DIR/hypr/<signature>/, holding .socket.sock -- because that is
+# what the launcher searches, then stays alive until the launcher reaps it.
+# HYP_FAIL=1 makes startup fail, which is how the "exited while starting" path
+# is exercised.
+if [ "${HYP_FAIL:-0}" = "1" ]; then
+    echo "hyprland stub: cannot take the DRM master" >&2
+    exit 1
+fi
+sig="stub$$"
+dir="$XDG_RUNTIME_DIR/hypr/$sig"
+mkdir -p "$dir" 2>/dev/null || exit 1
+[ -n "${HYP_SIGFILE:-}" ] && printf '%s\n' "$sig" > "$HYP_SIGFILE" 2>/dev/null
+: > "$dir/.socket.sock" 2>/dev/null || exit 1
+trap 'rm -rf "$dir"' EXIT
+sleep "${HYP_STUB_SLEEP:-1}"
+exit 0
 EOF
 chmod +x "$TMP/hyprland"
 
@@ -154,7 +148,7 @@ printf 'E:ID_INPUT_KEYBOARD\nE:ID_INPUT=1\n' > "$TMP/run/udev/data/c9:1234"
 
 # A config skeleton in the layout the shipped tree uses.
 mkdir -p "$TMP/skel/.config/hypr" "$TMP/skel/.config/waybar/scripts" "$TMP/home"
-printf '# stub hyprland config\n' > "$TMP/skel/.config/hypr/hyprland.conf"
+printf '# stub hyprland config\n' > "$TMP/skel/.config/hypr/hyprland.lua"
 printf '{}\n' > "$TMP/skel/.config/waybar/config.jsonc"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/skel/.config/waybar/scripts/workspaces.sh"
 chmod +x "$TMP/skel/.config/waybar/scripts/workspaces.sh"

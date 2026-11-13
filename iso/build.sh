@@ -1946,6 +1946,7 @@ build_niri() {
      && [ -n "$(find "$TGT/usr" -name seatd -type f -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/niri.stamp" "$SELF" \
+        "$ROOT/rootfs-overlay/etc/copper/niri-apps" \
         "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png" \
         "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"; then
     echo "niri: already staged, skipping"; return
@@ -2421,6 +2422,7 @@ build_niri() {
 
   echo "  niri session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
   stamp_set "$WORK/niri.stamp" "$SELF" \
+    "$ROOT/rootfs-overlay/etc/copper/niri-apps" \
     "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png" \
     "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"
 }
@@ -2478,7 +2480,7 @@ build_hyprland() {
   # DRM master.
   if [ -e "$TGT/usr/bin/hyprland" ] \
      && [ -x "$TGT/usr/bin/waybar" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" ] \
@@ -2487,7 +2489,8 @@ build_hyprland() {
      && [ -n "$(find "$TGT/usr" -name 'libseat.so*' -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/hyprland.stamp" "$SELF" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" \
+        "$ROOT/rootfs-overlay/etc/copper/hyprland-apps" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" \
         "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" \
         "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" \
         "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" \
@@ -2762,6 +2765,20 @@ build_hyprland() {
     printf '%s\n' "$crfiles" >&2
     exit 1
   fi
+
+  # The component manifest has to agree with the tree. Every "image" probe is a
+  # file starthyprland expects to be present; if the package that supplies it
+  # renames a binary, the launcher reports a broken image on every start instead
+  # of a boot failure here. "ingot" probes are absent on purpose, so skip those.
+  while read -r cname cprobe corigin; do
+    case "$cname" in ''|\#*) continue ;; esac
+    [ -n "$cprobe" ] || continue
+    [ "$corigin" = image ] || continue
+    if [ ! -e "$TGT/$cprobe" ]; then
+      echo "hyprland: manifest lists '$cname' as image but $cprobe is missing" >&2
+      exit 1
+    fi
+  done < "$TGT/etc/copper/hyprland-apps"
 }
 
 build_plymouth() {

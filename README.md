@@ -89,7 +89,7 @@ still repairable in place:
 
 | Path | What it is |
 |---|---|
-| `~/.config/hypr/hyprland.conf` | the compositor configuration |
+| `~/.config/hypr/hyprland.lua` | the compositor configuration (Hyprland 0.57 loads Lua, not the old `.conf`) |
 | `~/.config/hypr/hyprpaper.conf` | wallpaper selection |
 | `~/.config/hypr/hypridle.conf` | idle management (lock, then blank) |
 | `~/.config/hypr/wallpapers/` | Copper's branded wallpaper |

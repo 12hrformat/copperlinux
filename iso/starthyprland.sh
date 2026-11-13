@@ -53,10 +53,11 @@
 #     whether it holds a keyboard. Input shown here is what the input path will
 #     accept (evdev, no udev daemon in this image); the udev records under
 #     /run/udev/data are the half that can be checked.
-#   - Only the instance socket under $XDG_RUNTIME_DIR is ever examined to decide
-#     "it came up". If hyprland starts but writes no socket there, the wait
-#     expires and the launch proceeds anyway -- a compositor that is alive and
-#     drawing is not something to declare dead because a probe could not see it.
+#   - Only the instance directory under $XDG_RUNTIME_DIR is ever examined to
+#     decide "it came up". If hyprland starts but writes no directory there, the
+#     wait expires and the launch proceeds anyway -- a compositor that is alive
+#     and drawing is not something to declare dead because a probe could not see
+#     it.
 #
 #   - On a machine whose /dev/dri has a card0 but not a render node, the
 #     software path is forced (see above). A machine with no DRM node at all
@@ -193,9 +194,9 @@ have_hyprland=0
 # to seed it from.
 user_conf="$USER_HYPR_CONF"
 user_config=0
-[ -e "$user_conf/hyprland.conf" ] && user_config=1
+[ -e "$user_conf/hyprland.lua" ] && user_config=1
 skel_config=0
-[ -e "$SKEL/.config/hypr/hyprland.conf" ] && skel_config=1
+[ -e "$SKEL/.config/hypr/hyprland.lua" ] && skel_config=1
 
 report() {
     if [ "$have_hyprland" = 1 ]; then
@@ -256,11 +257,11 @@ report_check() {
 
     # Configuration.
     if [ "$user_config" = 1 ]; then
-        say "config: present at $user_conf/hyprland.conf"
+        say "config: present at $user_conf/hyprland.lua"
     elif [ "$skel_config" = 1 ]; then
         say "config: none in $user_conf, but $SKEL can seed it"
     else
-        say "config: NONE (no $user_conf/hyprland.conf and no $SKEL/.config/hypr/hyprland.conf)"
+        say "config: NONE (no $user_conf/hyprland.lua and no $SKEL/.config/hypr/hyprland.lua)"
     fi
 
     # Wayland utilities the session starts or binds keys to.
@@ -398,7 +399,7 @@ if [ "$user_config" != 1 ]; then
         if ! seed_config; then
             say "the shipped config tree at $SKEL is not readable"
         fi
-        if [ -e "$user_conf/hyprland.conf" ]; then
+        if [ -e "$user_conf/hyprland.lua" ]; then
             say "session config seeded"
         else
             say "could not seed the session config from $SKEL"
@@ -680,10 +681,12 @@ fi
 # alive, because "still starting" and "already died" look identical if all you
 # do is count to a limit.
 #
-# --session is what makes this the main instance: hyprland sets
-# XDG_CURRENT_DESKTOP/XDG_SESSION_TYPE, imports them into the bus, and starts
-# the D-Bus services the session needs. It is passed directly rather than
-# through hyprland-session, which wants a systemd --user or dinit to talk to.
+# The compositor takes no session argument. `--session` is not one of its
+# options -- it answers "[ERROR] Unknown option '--session'!" and exits, which
+# means a session that never reached a screen -- and the wrapper that would have
+# supplied one, start-hyprland, wants a systemd --user to talk to, which this
+# image does not run. Everything that wrapper used to arrange is set here
+# instead, above, so handing over to the binary directly is the whole job.
 say "starting hyprland, log in $SESSIONLOG"
 
 # The compositor's config directory. hyprland reads $XDG_CONFIG_HOME/hypr, so
@@ -693,27 +696,27 @@ say "starting hyprland, log in $SESSIONLOG"
 XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
 export XDG_CONFIG_HOME
 
-"$HYPRLAND" --session > "$SESSIONLOG" 2>&1 &
+"$HYPRLAND" > "$SESSIONLOG" 2>&1 &
 hyprlandpid=$!
 
-# hyprland keeps its sockets in $XDG_RUNTIME_DIR/hypr/<instance signature>/,
-# named <signature>.<n>.sock. It identifies itself to clients through
-# HYPRLAND_INSTANCE_SIGNATURE -- XDG_HYPRLAND_IPC_SOCKET is not a real
-# variable -- and the main Hyprland binary has no "msg" subcommand: only
-# hyprctl speaks the IPC protocol. The signature is random per launch, so it
-# is read back off the newest socket present rather than guessed, and a socket
-# that exists but does not answer is treated as absent: a file left by an
-# earlier instance would otherwise read as a live compositor.
+# hyprland keeps one directory per instance under $XDG_RUNTIME_DIR/hypr/, whose
+# name IS HYPRLAND_INSTANCE_SIGNATURE: a random hex string, followed by the
+# start time and the pid. hyprctl connects to
+# $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock -- it is the
+# only client that speaks the IPC protocol, the compositor has no "msg"
+# subcommand of its own, and XDG_HYPRLAND_IPC_SOCKET is not a real variable.
+# The name is unguessable, so it is read back off the newest instance directory
+# that exists. A directory that exists but does not answer is treated as absent:
+# one left behind by a crashed instance would otherwise read as a live one.
 up=0
 i=0
-ipc_sock=
+ipc_dir=
 ipc_sig=
 while [ "$i" -lt "$WAIT_TRIES" ]; do
-    ipc_sock=$(find "$XDG_RUNTIME_DIR/hypr" -maxdepth 2 -name '*.sock' \
-                   -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-    if [ -n "$ipc_sock" ]; then
-        ipc_sig=${ipc_sock##*/}
-        ipc_sig=${ipc_sig%%.*}
+    ipc_dir=$(find "$XDG_RUNTIME_DIR/hypr" -mindepth 1 -maxdepth 1 -type d \
+                  -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    if [ -n "$ipc_dir" ]; then
+        ipc_sig=${ipc_dir##*/}
         if command -v hyprctl >/dev/null 2>&1 &&
            HYPRLAND_INSTANCE_SIGNATURE=$ipc_sig XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
                hyprctl -j version >/dev/null 2>&1; then

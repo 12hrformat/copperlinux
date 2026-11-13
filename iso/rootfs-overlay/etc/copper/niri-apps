@@ -5,29 +5,72 @@
 #   <name>   <probe>                       <how>
 #
 # <probe> is a path that exists when the component is present. startniri
-# installs the missing ones whose <how> is "ingot", by asking ingot for them.
-# <how> of "image" means this stage already ships it in the ISO: it is kept
-# in this list so the report is honest about what a desktop is supposed to
-# have, but ingot has no such package and startniri will not try to install
-# one -- a missing "image" component is a broken image, said out loud.
+# installs the missing ones whose <how> is "ingot", by asking ingot
+# for them.
+# <how> of "image" means this stage already ships it in the ISO: it is
+# kept in this list so the report is honest about what a desktop is
+# supposed to have, but ingot has no such package and the launcher will
+# not try to install one -- a missing "image" component is a broken
+# image, said out loud.
 #
-# The ingot payloads here are the ones copper-ingot-repo carries for every
-# desktop (firefox, mousepad, ristretto, xarchiver, htop). They are not needed
-# for the session to start, but they work under Wayland and are the ones that
-# exist in the repo. Each deb payload carries its full closure, so declining the
-# prompt costs nothing and accepting it downloads a few hundred MB; the session
-# starts either way.
+# The ingot payloads below are drawn from copper-ingot-repo's index, which is
+# checked to carry every name listed here. None of them are needed for the
+# session to start -- declining the prompt costs nothing and the session runs
+# either way -- but they are what turns a bare compositor into a working
+# machine. Each payload carries its own dependency closure, so accepting
+# downloads several hundred MB; only the ones actually missing are offered, and
+# ingot reports each failure without stopping the rest.
+#
+7zip                 /usr/bin/7z                  ingot
+bat                  /usr/bin/batcat              ingot
+bind9-dnsutils       /usr/bin/dig                 ingot
+btop                 /usr/bin/btop                ingot
+curl                 /usr/bin/curl                ingot
+duf                  /usr/bin/duf                 ingot
+eza                  /usr/bin/eza                 ingot
+fd-find              /usr/bin/fdfind              ingot
+file                 /usr/bin/file                ingot
+firefox              /usr/bin/firefox             ingot
+fzf                  /usr/bin/fzf                 ingot
+gh                   /usr/bin/gh                  ingot
+git                  /usr/bin/git                 ingot
+htop                 /usr/bin/htop                ingot
+iperf3               /usr/bin/iperf3              ingot
+iproute2             /usr/bin/ip                  ingot
+lm-sensors           /usr/bin/sensors             ingot
+lsof                 /usr/bin/lsof                ingot
+micro                /usr/bin/micro               ingot
+mousepad             /usr/bin/mousepad            ingot
+mtr-tiny             /usr/bin/mtr                 ingot
+ncdu                 /usr/bin/ncdu                ingot
+neovim               /usr/bin/nvim                ingot
+netcat-openbsd       /usr/bin/nc                  ingot
+openssh-client       /usr/bin/ssh                 ingot
+parted               /usr/bin/parted              ingot
+pciutils             /usr/bin/lspci               ingot
+pv                   /usr/bin/pv                  ingot
+ripgrep              /usr/bin/rg                  ingot
+ristretto            /usr/bin/ristretto           ingot
+rsync                /usr/bin/rsync               ingot
+shellcheck           /usr/bin/shellcheck          ingot
+socat                /usr/bin/socat               ingot
+strace               /usr/bin/strace              ingot
+tcpdump              /usr/bin/tcpdump             ingot
+tmux                 /usr/bin/tmux                ingot
+traceroute           /usr/bin/traceroute          ingot
+tree                 /usr/bin/tree                ingot
+unzip                /usr/bin/unzip               ingot
+usbutils             /usr/bin/lsusb               ingot
+wget                 /usr/bin/wget                ingot
+whois                /usr/bin/whois               ingot
+xarchiver            /usr/bin/xarchiver           ingot
+zip                  /usr/bin/zip                 ingot
+zoxide               /usr/bin/zoxide              ingot
 
-firefox             /usr/bin/firefox             ingot
-mousepad            /usr/bin/mousepad            ingot
-ristretto           /usr/bin/ristretto           ingot
-xarchiver           /usr/bin/xarchiver           ingot
-htop                /usr/bin/htop                ingot
-
-niri                /usr/bin/niri                image
-kitty               /usr/bin/kitty               image
-waybar              /usr/bin/waybar              image
-swaybg              /usr/bin/swaybg              image
-swaync              /usr/bin/swaync              image
-fuzzel              /usr/bin/fuzzel              image
-polkit-agent        /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1  image
+niri                 /usr/bin/niri                image
+kitty                /usr/bin/kitty               image
+waybar               /usr/bin/waybar              image
+swaybg               /usr/bin/swaybg              image
+swaync               /usr/bin/swaync              image
+fuzzel               /usr/bin/fuzzel              image
+polkit-agent         /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1 image
