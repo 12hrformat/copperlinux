@@ -95,10 +95,10 @@ lint_scripts() {
   local s
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
            "$ROOT/rootfs-overlay/usr/bin/ingot" \
-           "$ROOT/startxfce.sh" "$ROOT/startniri.sh"; do
+           "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/starthyprland.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script, ingot, startxfce and startniri parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot, startxfce, startniri and starthyprland parse clean"
 }
 lint_scripts
 
@@ -901,7 +901,7 @@ local SRC="$ROOT/../src"
      && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$ROOT/startxfce.sh" "$ROOT/startniri.sh" \
+        "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/starthyprland.sh" \
         "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
         "$ROOT/copper.sh"
   then
@@ -936,6 +936,11 @@ local SRC="$ROOT/../src"
   # discipline as startxfce.
   install -m 0755 "$ROOT/startniri.sh" "$TGT/usr/bin/startniri"
 
+  # The Hyprland launcher: same contract again -- seed the session config,
+  # start the session bus, decide the renderer, then hand over to the
+  # compositor with a distinct exit code per way it can fail to start.
+  install -m 0755 "$ROOT/starthyprland.sh" "$TGT/usr/bin/starthyprland"
+
   # shutdown: busybox has no such applet, so `sudo shutdown now` had nothing
   # to run. The wrapper maps its flags onto the busybox halt/poweroff/reboot
   # applets, which signal PID 1; see on_power_signal() in copper-init.c.
@@ -954,7 +959,8 @@ local SRC="$ROOT/../src"
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/startxfce usr/bin/startniri usr/bin/xprobe sbin/shutdown \
+           usr/bin/startxfce usr/bin/startniri usr/bin/starthyprland \
+           usr/bin/xprobe sbin/shutdown \
            usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
       echo "copper: $f is missing from the staged rootfs" >&2
@@ -2441,14 +2447,14 @@ build_hyprland() {
      && [ -n "$(find "$TGT/usr" -name 'libseat.so*' -print -quit 2>/dev/null)" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/hyprland.stamp" "$SELF" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/style.css" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" \
-        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/window.sh"; then
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/style.css" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" \
+        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/window.sh"; then
     echo "hyprland: already staged, skipping"; return
   fi
   echo "==> Hyprland session"
@@ -2582,8 +2588,11 @@ build_hyprland() {
          libxkbcommon0 libinput10 libgtk-layer-shell0
   local p
   for p in "$@"; do
-    # Confirm the candidate exists before adding it to the install list.
-    if ! apt-cache policy "$p" 2>/dev/null | grep -q '^ *Candidate: [^ ()]'; then
+    # Same options as the downloader below: without them apt-cache reads the
+    # host's /etc/apt/sources.list.d, which does not contain the PPA, and every
+    # Hyprland package reports "no candidate" however correct the stage is.
+    if ! apt-cache "${AOPT[@]}" policy "$p" 2>/dev/null \
+         | grep -q '^ *Candidate: [^ ()]'; then
       echo "hyprland: '$p' is not a resolvable candidate (see build log)" >&2
       exit 1
     fi
