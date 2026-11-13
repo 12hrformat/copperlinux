@@ -65,7 +65,7 @@
 
 set -u
 
-HYPRLAND=${COPPER_HYPRLAND:-/usr/bin/hyprland}
+HYPRLAND=${COPPER_HYPRLAND:-/usr/bin/Hyprland}
 WAYBAR=${COPPER_WAYBAR:-/usr/bin/waybar}
 SKEL=${COPPER_HYPRLAND_SKEL:-/usr/share/copper/hyprland-skel}
 SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/hyprland.log}
@@ -107,7 +107,7 @@ starthyprland -- start the Hyprland compositor on the tty
   starthyprland --help     this text
 
 Environment, all optional:
-  COPPER_HYPRLAND          path to the compositor       (default /usr/bin/hyprland)
+  COPPER_HYPRLAND          path to the compositor       (default /usr/bin/Hyprland)
   COPPER_WAYBAR            path to the waybar binary    (default /usr/bin/waybar)
   COPPER_HYPRLAND_SKEL     the shipped config tree that seeds a user's home
                            (default /usr/share/copper/hyprland-skel)

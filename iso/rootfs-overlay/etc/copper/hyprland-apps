@@ -67,7 +67,7 @@ xarchiver            /usr/bin/xarchiver           ingot
 zip                  /usr/bin/zip                 ingot
 zoxide               /usr/bin/zoxide              ingot
 
-hyprland             /usr/bin/hyprland            image
+hyprland             /usr/bin/Hyprland            image
 waybar               /usr/bin/waybar              image
 fuzzel               /usr/bin/fuzzel              image
 kitty                /usr/bin/kitty               image
@@ -75,7 +75,7 @@ hyprlock             /usr/bin/hyprlock            image
 hyprpaper            /usr/bin/hyprpaper           image
 hypridle             /usr/bin/hypridle            image
 hyprpicker           /usr/bin/hyprpicker          image
-hyprpolkitagent      /usr/bin/hyprpolkitagent     image
+hyprpolkitagent      /usr/libexec/hyprpolkitagent image
 dunst                /usr/bin/dunst               image
 wl-clipboard         /usr/bin/wl-copy             image
 cliphist             /usr/bin/cliphist            image

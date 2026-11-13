@@ -2478,7 +2478,7 @@ build_hyprland() {
   # the guard asks about them anyway: the standalone stage must fail honestly
   # when they are absent rather than stage a compositor that cannot take the
   # DRM master.
-  if [ -e "$TGT/usr/bin/hyprland" ] \
+  if [ -e "$TGT/usr/bin/Hyprland" ] \
      && [ -x "$TGT/usr/bin/waybar" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
      && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" ] \
@@ -2654,7 +2654,7 @@ build_hyprland() {
   # copy does not overwrite what is already there, so a bar or compositor that a
   # later run re-resolved would keep the previous run's bytes. Drop this stage's
   # own files before copying, so the pinned ones land.
-  rm -f "$TGT/usr/bin/hyprland" "$TGT/usr/bin/hyprlock" "$TGT/usr/bin/hyprpaper" \
+  rm -f "$TGT/usr/bin/Hyprland" "$TGT/usr/bin/hyprlock" "$TGT/usr/bin/hyprpaper" \
         "$TGT/usr/bin/hypridle" "$TGT/usr/bin/hyprpicker" \
         "$TGT/usr/bin/hyprpolkitagent" "$TGT/usr/bin/waybar" \
         "$TGT/usr/bin/fuzzel" "$TGT/usr/bin/kitty" "$TGT/usr/bin/dunst"

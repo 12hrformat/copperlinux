@@ -310,6 +310,23 @@ out=$(COPPER_HYPRLAND_APPS="$TMP/hyprland-apps-missing" run_launcher --yes 2>&1)
 eq "install failure still starts the session" 0 "$rc"
 has "install failure is reported, not swallowed" "could not install nmap" "$out"
 
+# The shipped session config must be the file the launcher and Hyprland both
+# look for. Hyprland 0.57 loads Lua from hyprland.lua and ignores a .conf beside
+# it entirely, so a tree shipping the wrong name boots on defaults while looking
+# configured -- a failure no amount of launcher testing can see.
+skel_conf="$REPO/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr"
+if [ -e "$skel_conf/hyprland.lua" ]; then
+    ok "the shipped session config is hyprland.lua"
+else
+    bad "the shipped session config is hyprland.lua" "absent from the skeleton"
+fi
+if [ -e "$skel_conf/hyprland.conf" ]; then
+    bad "no stale hyprland.conf ships beside it" \
+        "Hyprland 0.57 ignores it; a user would edit a dead file"
+else
+    ok "no stale hyprland.conf ships beside it"
+fi
+
 echo
 if [ "$fails" -gt 0 ]; then
     printf '  FAIL  %s checks failed\n' "$fails"
