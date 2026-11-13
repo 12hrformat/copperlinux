@@ -2719,6 +2719,28 @@ build_hyprland() {
       "$TGT/usr/bin/gtk-update-icon-cache" -f "$tdir" >/dev/null 2>&1 || :
     done
   fi
+
+  # git does not carry the exec bit across platforms, so the tree can arrive
+  # with every script mode 0644. The bar runs its helpers by path and a bare
+  # path is execve: without +x they fail with "permission denied" and the bar
+  # comes up with no workspace chips and no window title. Anything that starts
+  # with a shebang is meant to run, so restore exactly that set -- the same
+  # thing build_niri does for the niri skeleton.
+  n=0
+  while IFS= read -r -d '' f; do
+    if [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ]; then
+      chmod 0755 "$f"; n=$((n + 1))
+    fi
+  done < <(find "$TGT/usr/share/copper/hyprland-skel" -type f -print0)
+  echo "  $n scripts in the config tree marked executable"
+
+  # A CR in any of those files fails on the target, and the target has no
+  # editor to fix it with.
+  if crfiles=$(grep -rIl $'\r' "$TGT/usr/share/copper/hyprland-skel" 2>/dev/null); then
+    echo "hyprland: the session config tree has CRLF line endings:" >&2
+    printf '%s\n' "$crfiles" >&2
+    exit 1
+  fi
 }
 
 build_plymouth() {

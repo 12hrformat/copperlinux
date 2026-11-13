@@ -1,40 +1,83 @@
 {
-    "general": {
-        "font-size": 14,
-        "align": "center",
-        "background-color": "#0F172A",
-        "border-bottom": false,
-        "indicator-color": "#B87333",
-        "separator": false
-    },
-    "bar": {
-        "height": 24,
-        "width": 1200,
-        "tray-pos": "right",
-        "no-corner": true,
-        "background": "#0F172A",
-        "corner-radius": 0,
-        "border": false,
-        "padding-x": 10,
-        "padding-y": 0
-    },
-    "modules-left": [
-        "workspaces",
-        "mode",
-        "clock",
-        "battery",
-        "backlight",
-        "pulseaudio"
-    ],
+    // Copper Linux -- the Hyprland bar.
+    //
+    // Written for the bar that ships in noble (waybar 0.9.24). Its only
+    // compositor-specific workspace modules are sway/*, wlr/* and river/* --
+    // none of them speak to Hyprland -- so the two compositor chips are
+    // `custom` modules fed by the scripts beside this file, which read the
+    // Hyprland IPC socket through hyprctl.
+
+    "layer": "top",
+    "position": "top",
+    "height": 30,
+    "spacing": 6,
+
+    "modules-left": ["custom/workspaces", "custom/window"],
+    "modules-center": [],
     "modules-right": [
-        "memory",
-        "cpu",
-        "temperature",
+        "idle_inhibitor",
+        "pulseaudio",
         "network",
+        "cpu",
+        "memory",
         "temperature",
-        "tray",
-        "power"
+        "backlight",
+        "battery",
+        "clock",
+        "tray"
     ],
-    "newline/restart": false,
-    "newline/kill": false
+
+    // The script prints one JSON object; waybar renders its `text` and styles
+    // it with its `class`. Empty output hides the module, which is what we want
+    // before the compositor exists and after it exits.
+    "custom/workspaces": {
+        "exec": "$HOME/.config/waybar/scripts/workspaces.sh",
+        "return-type": "json",
+        "interval": 1,
+        // The script marks the focused workspace itself, with a colour the
+        // stylesheet cannot see. Escaping would turn those spans into text.
+        "escape": false
+    },
+    "custom/window": {
+        "exec": "$HOME/.config/waybar/scripts/window.sh",
+        "return-type": "json",
+        "format": "{}",
+        "max-length": 60,
+        "interval": 1,
+        "escape": true
+    },
+
+    // Plain labels rather than icon glyphs: the image carries no icon font, so
+    // a glyph would render as a box on every module that asks for one.
+    "idle_inhibitor": {
+        "format": "{icon}",
+        "format-icons": { "activated": "held", "deactivated": "idle" }
+    },
+    "pulseaudio": {
+        "format": "{volume}%",
+        "format-muted": "muted",
+        "format-source": "{volume}%"
+    },
+    "network": {
+        "format-wifi": "{essid}",
+        "format-ethernet": "{ipaddr}",
+        "format-linked": "{ifname}",
+        "format-disconnected": "offline",
+        "tooltip-format": "{ifname} via {gwaddr}"
+    },
+    "cpu":         { "format": "{usage}%", "tooltip": false },
+    "memory":      { "format": "{}%" },
+    "temperature": { "critical-threshold": 80, "format": "{temperatureC}C" },
+    "backlight":   { "format": "{percent}%" },
+    "battery": {
+        "states": { "warning": 30, "critical": 15 },
+        "format": "{capacity}%",
+        "format-charging": "{capacity}% charging",
+        "format-plugged": "{capacity}% plugged"
+    },
+    "clock": {
+        "format": "{:%H:%M}",
+        "format-alt": "{:%Y-%m-%d %H:%M:%S}"
+    },
+    "tray": { "spacing": 8 }
 }

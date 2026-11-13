@@ -696,21 +696,30 @@ export XDG_CONFIG_HOME
 "$HYPRLAND" --session > "$SESSIONLOG" 2>&1 &
 hyprlandpid=$!
 
-# hyprland's IPC socket is $XDG_RUNTIME_DIR/hypr-<wayland socket name>.<pid>.sock
-# and XDG_HYPRLAND_IPC_SOCKET is set for its children, not for us. The pid makes
-# the path ours to find; the wayland half is whichever number was free. Wait for
-# that socket, then prove it answers: a socket file left by an earlier instance
-# would otherwise read as a live compositor.
+# hyprland keeps its sockets in $XDG_RUNTIME_DIR/hypr/<instance signature>/,
+# named <signature>.<n>.sock. It identifies itself to clients through
+# HYPRLAND_INSTANCE_SIGNATURE -- XDG_HYPRLAND_IPC_SOCKET is not a real
+# variable -- and the main Hyprland binary has no "msg" subcommand: only
+# hyprctl speaks the IPC protocol. The signature is random per launch, so it
+# is read back off the newest socket present rather than guessed, and a socket
+# that exists but does not answer is treated as absent: a file left by an
+# earlier instance would otherwise read as a live compositor.
 up=0
 i=0
-nirisock=
+ipc_sock=
+ipc_sig=
 while [ "$i" -lt "$WAIT_TRIES" ]; do
-    nirisock=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 \
-        -name "hypr-*.${hyprlandpid}.sock" -print -quit 2>/dev/null)
-    if [ -n "$nirisock" ] &&
-       XDG_HYPRLAND_IPC_SOCKET=$nirisock "$HYPRLAND" msg --json version >/dev/null 2>&1; then
-        up=1
-        break
+    ipc_sock=$(find "$XDG_RUNTIME_DIR/hypr" -maxdepth 2 -name '*.sock' \
+                   -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    if [ -n "$ipc_sock" ]; then
+        ipc_sig=${ipc_sock##*/}
+        ipc_sig=${ipc_sig%%.*}
+        if command -v hyprctl >/dev/null 2>&1 &&
+           HYPRLAND_INSTANCE_SIGNATURE=$ipc_sig XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+               hyprctl -j version >/dev/null 2>&1; then
+            up=1
+            break
+        fi
     fi
     if ! kill -0 "$hyprlandpid" 2>/dev/null; then
         wait "$hyprlandpid" 2>/dev/null || :

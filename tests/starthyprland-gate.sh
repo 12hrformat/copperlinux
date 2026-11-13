@@ -70,23 +70,25 @@ has() {
 # A stub compositor, in the two roles the real binary plays.
 cat > "$TMP/hyprland" <<'EOF'
 #!/bin/sh
-# Stub compositor. `--session` is the compositor: it writes the instance socket
-# the launcher looks for and stays alive until the launcher reaps it. `msg` is
-# the liveness probe against that socket. HYP_FAIL=1 makes startup fail, which
-# is how the "exited while starting" path is exercised.
+# Stub compositor. `--session` is the compositor: it creates the instance
+# socket where real Hyprland puts it -- $XDG_RUNTIME_DIR/hypr/<signature>/
+# <signature>.<n>.sock -- because that is the path the launcher searches,
+# then stays alive until the launcher reaps it. HYP_FAIL=1 makes startup fail,
+# which is how the "exited while starting" path is exercised.
 case "${1:-}" in
     --session)
         if [ "${HYP_FAIL:-0}" = "1" ]; then
             echo "hyprland stub: cannot take the DRM master" >&2
             exit 1
         fi
-        sock="$XDG_RUNTIME_DIR/hypr-stub.$$.sock"
+        sig="stub$$"
+        dir="$XDG_RUNTIME_DIR/hypr/$sig"
+        mkdir -p "$dir" 2>/dev/null || exit 1
+        [ -n "${HYP_SIGFILE:-}" ] && printf '%s\n' "$sig" > "$HYP_SIGFILE" 2>/dev/null
+        sock="$dir/$sig.0.sock"
         : > "$sock" 2>/dev/null || exit 1
-        trap 'rm -f "$sock"' EXIT
+        trap 'rm -rf "$dir"' EXIT
         sleep "${HYP_STUB_SLEEP:-1}"
-        exit 0
-        ;;
-    msg)
         exit 0
         ;;
     *)
@@ -95,6 +97,19 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$TMP/hyprland"
+
+cat > "$TMP/hyprctl" <<'EOF'
+#!/bin/sh
+# Stub hyprctl. Real hyprctl speaks the IPC protocol to the instance named by
+# HYPRLAND_INSTANCE_SIGNATURE and fails for any other -- including a socket
+# left behind by a dead instance. Answering unconditionally would hide exactly
+# the bug this guard exists for.
+live=
+[ -n "${HYP_SIGFILE:-}" ] && live=$(head -n1 "$HYP_SIGFILE" 2>/dev/null)
+[ -n "$live" ] && [ "$HYPRLAND_INSTANCE_SIGNATURE" = "$live" ] && exit 0
+exit 1
+EOF
+chmod +x "$TMP/hyprctl"
 
 # The other utilities --check reports on.
 for u in waybar fuzzel kitty hyprlock dunst; do
@@ -190,6 +205,9 @@ PATH="$TMP:$PATH";                        export PATH
 # Keep the wait loop short: the "no answering socket" case would otherwise
 # spend its full budget before falling through.
 : "${WAIT_TRIES=20}";                      export WAIT_TRIES
+# Both stubs talk through this file so hyprctl can tell the live instance's
+# signature from a stale socket left by a dead one.
+HYP_SIGFILE="$TMP/hypr-signature";           export HYP_SIGFILE
 
 run_launcher() { "$SUT" "$@"; }
 
@@ -267,7 +285,7 @@ has "--check reports the session bus" "session bus:" "$out"
 mkdir -p "$TMP/rt-check"
 out=$(COPPER_RUNTIME_DIR="$TMP/rt-check" run_launcher --check 2>&1); rc=$?
 eq "--check on a complete tree exits 0" 0 "$rc"
-if [ -z "$(ls "$TMP/rt-check"/hypr-*.sock 2>/dev/null)" ]; then
+if [ -z "$(find "$TMP/rt-check" -name "*.sock" 2>/dev/null)" ]; then
     ok "--check starts no compositor (no instance socket left behind)"
 else
     bad "--check starts no compositor" "an instance socket appeared under the runtime directory"
@@ -277,6 +295,15 @@ fi
 out=$(run_launcher 2>&1); rc=$?
 eq "session start exits 0" 0 "$rc"
 has "session start says the compositor came up" "hyprland is up" "$out"
+
+# A socket left behind by an earlier, dead instance must not satisfy the
+# probe: the launcher has to find the live instance's signature and hyprctl
+# has to answer for it, not merely see a socket file.
+mkdir -p "$TMP/rt-stale/hypr/deadbeef"
+: > "$TMP/rt-stale/hypr/deadbeef/deadbeef.0.sock"
+out=$(COPPER_RUNTIME_DIR="$TMP/rt-stale" run_launcher 2>&1); rc=$?
+eq "a stale socket does not stop the live session" 0 "$rc"
+has "the live instance was recognised" "hyprland is up" "$out"
 
 # A compositor that dies on the way up exits 23 and shows the log.
 out=$(HYP_FAIL=1 run_launcher 2>&1); rc=$?

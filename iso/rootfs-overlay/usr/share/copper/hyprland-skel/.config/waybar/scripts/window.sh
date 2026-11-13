@@ -1,11 +1,29 @@
 #!/bin/sh
-# waybar window/task-list script: prints the list of open windows for
-# waybar's window module.
+# Print the active window's title for waybar as one JSON object.
 #
-# Copper's Copper-init runs a bare shell on tty1 and never starts a display
-# manager, so there is no session manager to enumerate windows. This script
-# falls back to an empty list rather than failing or printing a stale menu.
-# waybar prints the last successful output when this exits non-zero, so a
-# missing menu is visible, not silent.
+# Same reason as workspaces.sh: this bar has no hyprland window module, so the
+# title comes from hyprctl.
+#
+# Empty output when no window is focused or the compositor is gone -- waybar
+# hides an empty custom module instead of leaving a stale title on screen.
+
+if ! command -v hyprctl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    exit 0
+fi
+
+win=$(hyprctl activewindow -j 2>/dev/null) || exit 0
+[ -n "$win" ] || exit 0
+
+printf '%s\n' "$win" | jq -r '
+    if (.title // "") == "" then
+        empty
+    else
+        {
+            text: .title,
+            class: "window",
+            tooltip: ((.class // "?") + " -- " + .title)
+        }
+    end
+'
 
 exit 0

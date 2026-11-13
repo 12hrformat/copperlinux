@@ -1,3 +1,6 @@
+/* Copper Linux -- the Hyprland bar.
+   Colours are the Copper palette: copper #B87333 on slate #0F172A. */
+
 * {
     background-color: #0F172A;
     color: #E2E8F0;
@@ -11,78 +14,35 @@ window#waybar {
     background-color: #0F172A;
 }
 
-#workspaces button {
+/* custom/workspaces -- the module id waybar derives is #custom-workspaces */
+#custom-workspaces {
     color: #94A3B8;
     padding: 0 6px;
-    margin: 0 2px;
-    border-radius: 4px;
 }
 
-#workspaces button.active {
-    color: #B87333;
-    background-color: #1E2A44;
-    box-shadow: 0 0 0 1px #B87333;
-}
-
-#workspaces button:hover {
+#custom-workspaces:hover {
     color: #E2E8F0;
 }
 
-#mode {
-    color: #B87333;
-    background-color: #1E2A44;
-    margin: 0 2px;
-    border-radius: 4px;
-}
-
-#clock {
+/* custom/window */
+#custom-window {
     color: #E2E8F0;
+    padding: 0 6px;
 }
 
-#battery {
-    color: #4ADE80;
-}
+#clock        { color: #E2E8F0; }
+#battery      { color: #4ADE80; }
+#battery.warning  { color: #FBBF24; }
+#battery.critical { color: #F87171; }
+#backlight    { color: #60A5FA; }
+#pulseaudio   { color: #FBBF24; }
+#pulseaudio.muted { color: #64748B; }
+#memory       { color: #60A5FA; }
+#cpu          { color: #F87171; }
+#temperature  { color: #FBBF24; }
+#network      { color: #60A5FA; }
+#network.disconnected { color: #F87171; }
+#idle-inhibitor { color: #475569; }
 
-#battery.charging {
-    color: #FBBF24;
-}
-
-#backlight {
-    color: #60A5FA;
-}
-
-#pulseaudio {
-    color: #FBBF24;
-}
-
-#memory {
-    color: #60A5FA;
-}
-
-#cpu {
-    color: #F87171;
-}
-
-#temperature {
-    color: #FBBF24;
-}
-
-#network {
-    color: #60A5FA;
-}
-
-#tray {
-    margin: 0 4px;
-}
-
-#tray menu {
-    background-color: #1E2A44;
-}
-
-#power {
-    color: #F87171;
-}
-
-#idle {
-    color: #475569;
-}
+#tray { margin: 0 4px; }
+#tray menu { background-color: #1E2A44; }
