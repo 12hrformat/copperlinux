@@ -14,8 +14,8 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | niri | plymouth |
-#         sudo | systemd | initramfs | iso
+# Stages: kernel | base | tools | copper | rootfs | gui | niri | hyprland |
+#         plymouth | sudo | systemd | initramfs | iso
 #
 # systemd is opt-in and deliberately NOT part of `all`: see build_systemd. A
 # normal build is the busysbox-init image the gates and the ISO expect; the
@@ -70,6 +70,13 @@ NIRI_CFG_SHA256=2fcbc7b07a15975251f92d80cbe08b13dc605ab55186b528124440b032615cd8
 # The praksharma/ubuntu-niri PPA for noble, with a verified fingerprint.
 NIRI_PPA_URL="https://ppa.launchpadcontent.net/praksharma/ubuntu-niri/ubuntu"
 NIRI_PPA_FPR="B2AA0C43F73505B5A65A53D26EE0350540BB4F59"
+
+# The Hyprland PPA for noble. The fingerprint is pinned against the Hyprland
+# release channel and MUST be re-verified before every build (see the final
+# report of this integration) -- a wrong fingerprint stops the build instead of
+# shipping an unsigned compositor.
+HYPRELLMAN_PPA_URL="https://ppa.launchpadcontent.net/hyprwm/hyprland/ubuntu"
+HYPRELLMAN_PPA_FPR="REPLACE_WITH_HYPRELLMAN_PPA_FPR"
 
 STAGE=${1:-all}
 
@@ -2408,7 +2415,238 @@ build_niri() {
 # control client, the four libply libraries, the script and text plugins and
 # the two renderers. The systemd units, the SysV init script and the
 # initramfs-tools hooks the package also ships are left behind on purpose.
-build_plymouth() {
+build_hyprland() {
+  # The skeleton is NOT vendored in the repo: the configuration lives in
+  # 12hrformat/copper-hyprland-skel and is fetched at build time, pinned to a
+  # commit, and checked against a SHA-256. The compositor and its session tools
+  # are staged from the noble PPA; the configuration skeleton is fetched from
+  # upstream and unpacked to /usr/share/copper/hyprland-skel.
+  # The component manifest /etc/copper/hyprland-apps drives the session
+  # launcher's offer-to-install step (starthyprland.sh).
+  if [ -e "$TGT/usr/bin/hyprland" ] \
+     && [ -e "$TGT/usr/bin/waybar" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.conf" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" ] \
+     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" ] \
+     && [ -e "$TGT/usr/share/copper/wallpapers/copper-hyprland.png" ] \
+     && [ -n "$(find "$TGT/usr" -name hyprland -type f -print -quit 2>/dev/null)" ] \
+     && [ -n "$(find "$TGT/usr" -name libseat -type f -print -quit 2>/dev/null)" ] \
+     && grep -q '^_seatd:' "$TGT/etc/group" \
+     && stamped_skip "$WORK/hyprland.stamp" "$SELF" \
+        "$ROOT/iso/rootfs-overlay/usr/share/copper/hyprland-skel/wallpapers/copper-hyprland.png"; then
+     echo "hyprland: already staged, skipping"; return
+   fi
+  echo "==> Hyprland session"
+  local DH="$DL/hyprland" STAGE="$WORK/hyprland-root" deb n
+  local HA="$WORK/hyprland-apt" status="$WORK/hyprland-status"
+  local KEYRING="$HA/etc/apt/keyrings/hyprwm-ubuntu-hyprland.gpg"
+  mkdir -p "$DH/partial"
+  : > "$status"
+
+  # ---- the archive key, by fingerprint -----------------------------------------
+  # Fetched, not trusted blind: the key the keyserver returns must carry the
+  # fingerprint launchpad publishes for the Hyprland archive, or the build
+  # stops. gpg is expected on the build host and if it is not there, say so
+  # rather than fall back to something unsigned. The fingerprint below is the
+  # value pinned for the Hyprland PPA and MUST be re-verified against the
+  # Hyprland release channel before the build is run (see the final report).
+  command -v gpg >/dev/null 2>&1 \
+    || { echo "hyprland: gpg is needed to verify the PPA archive key" >&2; exit 1; }
+  rm -rf "$HA"
+  mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
+  local asc="$WORK/hyprwm-ubuntu-hyprland.asc" fpr
+  local try=0
+  until wget -q -t 3 -T 15 -O "$asc" \
+         "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPRELLMAN_PPA_FPR"; do
+    try=$((try + 1))
+    [ "$try" -ge 6 ] \
+      && { echo "hyprland: could not fetch the PPA archive key from the keyserver" >&2; exit 1; }
+    echo "hyprland: keyserver attempt $try failed; retrying in 20s" >&2
+    sleep 20
+  done
+  fpr=$(gpg --show-keys --with-colons "$asc" 2>/dev/null \
+        | awk -F: '/^fpr:/{print $10; exit}')
+  if [ "$fpr" != "$HYPRELLMAN_PPA_FPR" ]; then
+    echo "hyprland: the PPA key's fingerprint is '$fpr', expected '$HYPRELLMAN_PPA_FPR'" >&2
+    exit 1
+  fi
+  gpg --dearmor < "$asc" > "$KEYRING"
+  [ -s "$KEYRING" ] || { echo "hyprland: the PPA keyring came out empty" >&2; exit 1; }
+  echo "  archive key verified ($HYPRELLMAN_PPA_FPR)"
+
+  # ---- sources, isolated -------------------------------------------------------
+  # A private sourceparts directory: a copy of whatever the host already uses,
+  # plus the PPA. apt then reads the host's sources.list (untouched) and this
+  # directory instead of /etc/apt/sources.list.d, so the PPA is visible to this
+  # stage and to nothing else. The copy is what keeps noble's own mirrors in
+  # the mix: waybar, fuzzel, kitty and the rest are ordinary noble packages.
+  if [ -d /etc/apt/sources.list.d ]; then
+    cp -a /etc/apt/sources.list.d/. "$HA/etc/apt/sources.list.d/" 2>/dev/null || :
+  fi
+  if [ -z "$(ls -A "$HA/etc/apt/sources.list.d" 2>/dev/null)" ]; then
+    echo "deb http://archive.ubuntu.com/ubuntu noble main universe" \
+      > "$HA/etc/apt/sources.list.d/noble.list"
+  fi
+  echo "deb [signed-by=$KEYRING] $HYPRELLMAN_PPA_URL noble main" \
+    > "$HA/etc/apt/sources.list.d/hyprwm-ubuntu-hyprland.list"
+
+  # ---- the closure -------------------------------------------------------------
+  # Dir::State::status empty: every dependency counts as missing, the same
+  # guarantee build_gui relies on. The default lists directory is kept, so a
+  # warm runner re-reads its cached indexes instead of refetching them; the
+  # PPA is simply one more source for apt-get update to fetch once.
+  #
+  # The list is what has to be in the image for the Hyprland session to come
+  # up with no network at all: the compositor and the pieces its own config
+  # names, plus the ordinary noble pieces the session leans on. Everything
+  # heavier is an ingot package and is named in the manifest, not here. The
+  # version is pinned in the PPA line below: a silent package bump is how a
+  # config stops parsing on a machine nobody can type on.
+  #
+  #   hyprland=<version>   the compositor, pinned to the PPA version this stage
+  #                        was written against; a PPA bump changes the pin and
+  #                        the build must be updated deliberately
+  #   hyprlock             the screen locker
+  #   hyprshot             the screenshot utility
+  #   libseat              the seat, since there is no logind
+  #   xdg-desktop-portal and its hyprland + wlr backends
+  #                        the portal frontend; file / notifications / the
+  #                        secret service all need a running backend
+  #   polkitd pkexec        the polkit daemon and the tool the agent prompts
+  #                         through
+  #   brightnessctl       brightness keys
+  #   playerctl           media keys
+  #   libnotify-bin       notify-send for scripts and swaync's client tests
+  #   wl-clipboard cliphist clipboard and its history
+  #   jq                    the bar's hyprland IPC helpers parse JSON with it
+  #   waybar                the bar
+  #   fuzzel                the launcher
+  #   kitty                 the terminal
+  #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
+  #                        the GL/GBM stack the renderer needs; the gui closure
+  #                        may not have brought the DRI drivers
+  #   libxkbcommon0 libinput10
+  #                        the input stack; no udev daemon in this image, so
+  #                        libinput reads kernel capabilities directly
+  set -- hyprland=0.12.2 hyprlock hyprshot swaybg waybar=0.9.24-1build3 \
+         fuzzel kitty seatd brightnessctl playerctl wl-clipboard cliphist jq \
+         xdg-desktop-portal xdg-desktop-portal-hyrland xdg-desktop-portal-wlr \
+         polkitd pkexec libnotify-bin \
+         libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
+         libxkbcommon0 libinput10
+  local p
+  for p in "$@"; do
+    # Confirm the candidate exists before adding it to the install list.
+    if ! apt-cache policy "$p" 2>/dev/null | grep -q '^ *Candidate: [^ ()]'; then
+      echo "hyprland: '$p' is not a resolvable candidate (see build log)" >&2
+      exit 1
+    fi
+  done
+  apt-get -o Dir::Etc::sourceparts="$HA/etc/apt/sources.list.d" \
+    -o Dir::State::status="$status" -o Dir::Cache::archives="$DH" \
+    -o APT::Sandbox::User=root --download-only --no-install-recommends -y install "$@" \
+    >"$WORK/hyprland-apt.log" 2>&1 \
+    || { echo "hyprland: apt could not resolve the session closure:" >&2
+         tail -n 30 "$WORK/hyprland-apt.log" >&2 2>/dev/null || :; exit 1; }
+
+  rm -rf "$STAGE"; mkdir -p "$STAGE"
+  for deb in "$DH"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  n=$(ls "$DH"/*.deb 2>/dev/null | wc -l)
+  echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
+
+  # A cached build tree keeps the files an earlier run staged, and this stage's
+  # copy does not overwrite what is already there, so a bar or compositor that a
+  # later run re-resolved would keep the previous run's bytes. Drop this stage's
+  # own files before copying, so the pinned ones land.
+  rm -f "$TGT/usr/bin/hyprland" "$TGT/usr/bin/hyprlock" "$TGT/usr/bin/hyprshot" \
+        "$TGT/usr/bin/waybar" "$TGT/usr/bin/fuzzel" "$TGT/usr/bin/kitty" \
+        "$TGT/usr/bin/swaybg" "$TGT/usr/bin/swaync"
+  copy_stage_in "$STAGE" "$TGT"
+
+  # polkitd's package postinst makes its authentication helper setuid root and
+  # hands two state directories to the polkitd group. No postinst runs in this
+  # build, so what arrived from the .deb is a plain 0755 root:root helper. The
+  # session agent collects the password and then runs that helper to verify it;
+  # without the setuid bit the verification cannot read the shadow database,
+  # and every prompt answers "wrong password" no matter what was typed. Mirror
+  # the postinst here, and again in the iso stage after the ownership sweep.
+  if [ -e "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" ]; then
+    chown 0:0 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
+    chmod 4755 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
+  fi
+  local polkit_gid d
+  polkit_gid=$(awk -F: '$1 == "polkitd" { print $3 }' "$TGT/etc/group" 2>/dev/null | head -n1)
+  if [ -n "$polkit_gid" ]; then
+    for d in etc/polkit-1/rules.d var/lib/polkit-1; do
+      [ -d "$TGT/$d" ] || continue
+      chown "0:$polkit_gid" "$TGT/$d"
+      chmod 0750 "$TGT/$d"
+    done
+  fi
+
+  # Shared libraries are the one thing copied from a PACKAGE that must be
+  # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
+  # version win, which is right for /etc, for the busybox applet links and for
+  # the static musl tools -- but wrong here: if the PPA ever carries a library
+  # newer than noble's, hyprland links that one, and the version gui already
+  # put in /usr/lib would leave the compositor unable to start. Identical
+  # version -> the copy is the same bytes and this is a no-op; newer -> the
+  # newer library is the one its consumer was built against.
+  rm -rf "$WORK/hyprland-layer"; mkdir -p "$WORK/hyprland-layer"
+  ( cd "$WORK/hyprland-layer" && apt-get -o APT::Sandbox::User=root download \
+      libxkbcommon0 libinput10 libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 ) \
+    >"$WORK/hyprland-layer.log" 2>&1 \
+    || { echo "hyprland: could not fetch shared libraries" >&2; exit 1; }
+  for deb in "$WORK/hyprland-layer"/*.deb; do
+    dpkg-deb -x "$deb" "$STAGE"
+  done
+  while IFS= read -r so; do
+    rel=${so#"$STAGE"/}
+    mkdir -p "$TGT/$(dirname "$rel")"
+    cp -a -f "$so" "$TGT/$rel"
+  done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
+
+  # The loader, defensively: the gui stage creates it, and every glibc ELF
+  # needs it at exactly /lib64/ld-linux-x86-64.so.2 before a single instruction
+  # runs. build_hyprland always runs after build_gui, so this only fires on a
+  # tree someone assembled by hand -- and then it makes the chroot gate below
+  # fail for the right reason instead of a bare ENOENT.
+  if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
+    mkdir -p "$TGT/lib64"
+    cp -L "$TGT/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+         "$TGT/lib64/ld-linux-x86-64.so.2"
+  fi
+
+  # Packages ship some files that are empty by nature, and the rootfs stage
+  # asserts on every later build over this tree that no file is zero bytes.
+  # Prune exactly the empties the packages brought, matched against the
+  # staging tree so an empty file the base image has a name for is left alone.
+  find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/hyprland-empties"
+  while IFS= read -r rel; do
+    rm -f "$TGT/$rel"
+  done < "$WORK/hyprland-empties"
+  echo "  $(wc -l < "$WORK/hyprland-empties") empty package files pruned"
+
+  # The generated caches the package postinsts would have made and this image
+  # never runs. Best-effort: a stale cache costs a scan, not a session, so a
+  # missing tool is reported and stepped over rather than failing the build.
+  if [ -x "$TGT/usr/bin/update-mime-database" ]; then
+    chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
+      >"$WORK/hyprland-mime.log" 2>&1 \
+      || echo "  (update-mime-database failed; new mime types will not resolve)"
+    if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
+      rm -f "$TGT/usr/share/mime/icons"
+      echo "  pruned empty mime icons map (no icon mappings in the database)"
+    fi
+  fi
+  if [ -x "$TGT/usr/bin/gtk-update-icon-cache" ]; then
+    for tdir in "$TGT"/usr/share/icons/*/index.theme; do
+      [ -f "$tdir" ] || continue
+      "$TGT/usr/bin/gtk-update-icon-cache" -f "$tdir" >/dev/null 2>&1 || :
+    done
+  fi
   if [ -e "$TGT/usr/sbin/plymouthd" ] \
      && stamped_skip "$WORK/plymouth.stamp" "$SELF" \
         "$ROOT/plymouth/copper/copper.plymouth" \
@@ -3823,6 +4061,7 @@ full() {
   build_rootfs
   build_gui
   build_niri
+  build_hyprland
   build_plymouth
   build_sudo
   build_initramfs
@@ -3865,6 +4104,7 @@ case "$STAGE" in
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
   niri)       build_rootfs; build_gui; build_niri ;;
+  hyprland)   build_rootfs; build_gui; build_niri; build_hyprland ;;
   plymouth)   build_rootfs; build_gui; build_niri; build_plymouth ;;
   sudo)       build_rootfs; build_gui; build_niri; build_plymouth; build_sudo ;;
   # build_musl and build_busybox lead every stage that compiles or links
@@ -3875,10 +4115,10 @@ case "$STAGE" in
   # default `all`/`full` path never showed it because full() runs build_musl
   # first; the opt-in stage has to say so itself. It is why this stage is
   # spelled like initramfs/iso and not like sudo.
-  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_copper; build_systemd ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_initramfs; build_iso ;;
+  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_copper; build_systemd ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|hyprland|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
 esac
 echo "==> done"

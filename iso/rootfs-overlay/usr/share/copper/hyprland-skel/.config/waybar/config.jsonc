@@ -1,0 +1,40 @@
+{
+    "general": {
+        "font-size": 14,
+        "align": "center",
+        "background-color": "#0F172A",
+        "border-bottom": false,
+        "indicator-color": "#B87333",
+        "separator": false
+    },
+    "bar": {
+        "height": 24,
+        "width": 1200,
+        "tray-pos": "right",
+        "no-corner": true,
+        "background": "#0F172A",
+        "corner-radius": 0,
+        "border": false,
+        "padding-x": 10,
+        "padding-y": 0
+    },
+    "modules-left": [
+        "workspaces",
+        "mode",
+        "clock",
+        "battery",
+        "backlight",
+        "pulseaudio"
+    ],
+    "modules-right": [
+        "memory",
+        "cpu",
+        "temperature",
+        "network",
+        "temperature",
+        "tray",
+        "power"
+    ],
+    "newline/restart": false,
+    "newline/kill": false
+}

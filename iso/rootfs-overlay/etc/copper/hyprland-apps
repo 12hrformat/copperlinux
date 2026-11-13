@@ -1,0 +1,16 @@
+# Copper Linux -- the components starthyprland offers before it starts Hyprland.
+#
+# Three whitespace-separated columns:
+#
+#   <name>   <probe>                       <how>
+#
+# <probe> is a path that exists when the component is present. starthyprland
+# installs the missing ones whose <how> is "ingot", by asking ingot for them.
+# <how> of "image" means the hyprland stage already ships it in the ISO: it is
+# kept in this list so the report is honest about what a desktop is supposed to
+# have, but ingot has no such package and starthyprland will not try to install
+# one -- a missing "image" component is a broken image, said out loud.
+#
+# The hyprland payload itself is a relative-path package in the hyprland build
+# stage's PPA (the compositor is pinned to a version at the top of the stage).
+# Firefox/terminal/file-manager are ingot payloads in copper-ingot-repo.

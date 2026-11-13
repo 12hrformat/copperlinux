@@ -151,22 +151,24 @@ static int ok_host(const char *s) { return !s[0] || valid_host(s); }
 static int ok_tz(const char *s)   { return !s[0] || valid_tz(s); }
 static int ok_pw(const char *s)   { return s[0] != '\0'; }
 
-/* The desktop question: `xfce` or `niri`, either case, or Enter for XFCE.
+/* The desktop question: `xfce` (Enter), `niri`, or `hyprland`.
 
-   `ok_session` gates both editors; `is_niri` is the one place that turns an
-   answer into the marker's value, so the table check and the value written can
+   `ok_session` gates both editors; the function that turns an answer into the
+   marker's value is the one place where the spelling written to
+   /etc/copper-desktop is fixed, so the table check and the value written can
    never disagree about which spelling means which desktop. The marker is read
    back by copper-init (chose_niri in iso/src-init/copper-init.c), which
-   matches the exact word "niri" on the first line -- so whatever is typed
-   here has to be reduced to that word, or to "xfce", before it is written. */
+   matches the exact word on the first line -- so whatever is typed here has
+   to be reduced to that exact word, or to "xfce", before it is written. */
 static int word_is(const char *s, const char *w) {
     for (; *s && *w; s++, w++)
         if (tolower((unsigned char)*s) != tolower((unsigned char)*w)) return 0;
     return *s == *w;
 }
 static int is_niri(const char *s) { return word_is(s, "niri"); }
+static int is_hyprland(const char *s) { return word_is(s, "hyprland"); }
 static int ok_session(const char *s) {
-    return !s[0] || is_niri(s) || word_is(s, "xfce");
+    return !s[0] || is_niri(s) || is_hyprland(s) || word_is(s, "xfce");
 }
 
 /* All members, always. A partial initialiser silently zeroes the rest, and
@@ -193,9 +195,9 @@ static struct field fields[F_COUNT] = {
     FIELD("Timezone",      "Enter alone to use \"UTC\", or Europe/London",
           "Timezone, e.g. Europe/London",
           "That does not look like a timezone", 0, ok_tz),
-    FIELD("Desktop",       "xfce or niri (Enter = xfce)",
-          "Which desktop, xfce or niri?",
-          "Type xfce or niri", 0, ok_session),
+    FIELD("Desktop",       "xfce, niri or hyprland (Enter = xfce)",
+          "Which desktop, xfce, niri or hyprland?",
+          "Type xfce, niri or hyprland", 0, ok_session),
 };
 
 /* |   label(18)   value */
@@ -835,7 +837,7 @@ static void collect(int idx) {
             fflush(stdout);
             if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
             if (ok_session(buf)) break;
-            printf("Type xfce or niri, or Enter for xfce.\n");
+            printf("Type xfce, niri or hyprland, or Enter for xfce.\n");
         }
         break;
     }
@@ -1555,8 +1557,13 @@ int main(void) {
     {
         FILE *d = fopen("/etc/copper-desktop", "w");
         if (d) {
-            fprintf(d, "%s\n",
-                    is_niri(fields[F_SESSION].value) ? "niri" : "xfce");
+            const char *desktop = fields[F_SESSION].value;
+            if (is_niri(desktop))
+                fprintf(d, "niri\n");
+            else if (is_hyprland(desktop))
+                fprintf(d, "hyprland\n");
+            else
+                fprintf(d, "xfce\n");
             fclose(d);
         }
     }

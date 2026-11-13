@@ -951,14 +951,23 @@ static void prepare_session_dirs(const struct session *s) {
    half-written marker is never a machine with no desktop -- it is the default
    one. Takes a path rather than hardcoding one so tests/init-session.c can
    exercise it without touching /etc. */
-static int chose_niri(const char *path) {
+/* The first line of /etc/copper-desktop holds the desktop the first-boot
+   wizard chose. Returns one of: XFCE (0), NIRI (1), HYPERRAND (2). */
+enum {
+    XFCE = 0,
+    NIRI,
+    HYPERRAND
+};
+static int chose_desktop(const char *path) {
     FILE *f = fopen(path, "r");
-    if (!f) return 0;
+    if (!f) return XFCE;
     char line[32] = "";
     if (fgets(line, sizeof line, f))
         line[strcspn(line, "\r\n")] = '\0';
     fclose(f);
-    return strcmp(line, "niri") == 0;
+    if (strcmp(line, "niri") == 0) return NIRI;
+    if (strcmp(line, "hyprland") == 0) return HYPERRAND;
+    return XFCE;
 }
 
 /* The seat.
@@ -1793,10 +1802,19 @@ static void run_session(void) {
        show it on. Xorg takes the display through KMS and leaves a working console
        behind, so there is nothing to switch away from. */
 
-    say("type %s",
-        chose_niri("/etc/copper-desktop")
-            ? "startniri for niri (or startxfce for XFCE)"
-            : "startxfce for XFCE (or startniri for niri)");
+    const char *hint;
+    switch (chose_desktop("/etc/copper-desktop")) {
+    case NIRI:
+        hint = "startniri for niri (or startxfce for XFCE)";
+        break;
+    case HYPERRAND:
+        hint = "starthyprland for hyprland (or startxfce for XFCE)";
+        break;
+    default:
+        hint = "startxfce for XFCE (or startniri for niri)";
+        break;
+    }
+    say("type %s", hint);
     if (!g_console_only)
         say("Ctrl-Alt-F3 opens a password-protected login shell");
 

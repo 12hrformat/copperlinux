@@ -1,0 +1,88 @@
+* {
+    background-color: #0F172A;
+    color: #E2E8F0;
+    font-family: "JetBrains Mono", "Fira Code", "Hack", "Noto Sans Mono", monospace;
+    font-size: 14px;
+    border: none;
+    border-radius: 0;
+}
+
+window#waybar {
+    background-color: #0F172A;
+}
+
+#workspaces button {
+    color: #94A3B8;
+    padding: 0 6px;
+    margin: 0 2px;
+    border-radius: 4px;
+}
+
+#workspaces button.active {
+    color: #B87333;
+    background-color: #1E2A44;
+    box-shadow: 0 0 0 1px #B87333;
+}
+
+#workspaces button:hover {
+    color: #E2E8F0;
+}
+
+#mode {
+    color: #B87333;
+    background-color: #1E2A44;
+    margin: 0 2px;
+    border-radius: 4px;
+}
+
+#clock {
+    color: #E2E8F0;
+}
+
+#battery {
+    color: #4ADE80;
+}
+
+#battery.charging {
+    color: #FBBF24;
+}
+
+#backlight {
+    color: #60A5FA;
+}
+
+#pulseaudio {
+    color: #FBBF24;
+}
+
+#memory {
+    color: #60A5FA;
+}
+
+#cpu {
+    color: #F87171;
+}
+
+#temperature {
+    color: #FBBF24;
+}
+
+#network {
+    color: #60A5FA;
+}
+
+#tray {
+    margin: 0 4px;
+}
+
+#tray menu {
+    background-color: #1E2A44;
+}
+
+#power {
+    color: #F87171;
+}
+
+#idle {
+    color: #475569;
+}

@@ -63,7 +63,8 @@ jobs:
                    tests/persist-sabotage.sh \
                    tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \
                    tests/font-gate.sh tests/boot-gate.sh \
-                   tests/shell-gate.sh tests/firstboot-eof-gate.sh; do
+                   tests/shell-gate.sh tests/firstboot-eof-gate.sh \
+                   tests/starthyprland-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -185,6 +186,15 @@ jobs:
       # skip, so this resolves to just the niri session.
       - name: Stage the niri session
         run: sudo bash iso/build.sh niri
+
+      # The optional third desktop: Hyprland from the noble Hyprland PPA,
+      # plus Copper's branded Hyprland session config (build_hyprland).
+      # Its own step for the same reason as gui and niri -- it downloads at
+      # build time and a failure should name the line that asked for it. The
+      # PPA fingerprint at the top of build.sh must be confirmed before this
+      # runs (see the integration report).
+      - name: Stage the Hyprland session
+        run: sudo bash iso/build.sh hyprland
 
       # The boot splash: the prebuilt Plymouth packages plus the owner's frames,
       # unpacked into the rootfs. Its own step for the same reason as gui --
