@@ -2677,12 +2677,21 @@ build_hyprland() {
   # LIBINPUT_1.28..1.31 and V_1.11.0, so the image silently shipped a new
   # compositor next to old libraries and died at launch with
   # "version `LIBINPUT_1.28' not found". Same fix build_niri already carries.
+  # Probe: name the exact bytes the stage holds and the bytes the tree holds,
+  # either side of the copy. The tree-side guard and the disc-side guard
+  # disagree, so something is not doing what it appears to; this says which.
+  local p_src p_before p_after
+  p_src=$(readlink -f "$STAGE/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
+  p_before=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
+  echo "  hyprland: probe stage  libinput -> ${p_src:-MISSING} hash=$(sha256sum "$p_src" 2>/dev/null | cut -c1-16)"
+  echo "  hyprland: probe tree-before libinput -> ${p_before:-MISSING} hash=$(sha256sum "$p_before" 2>/dev/null | cut -c1-16)"
   while IFS= read -r so; do
     rel=${so#"$STAGE"/}
     mkdir -p "$TGT/$(dirname "$rel")"
-    # -L dereferences symlinks to real files; -f forces the overwrite.
     cp -a -f "$so" "$TGT/$rel"
   done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
+  p_after=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
+  echo "  hyprland: probe tree-after  libinput -> ${p_after:-MISSING} hash=$(sha256sum "$p_after" 2>/dev/null | cut -c1-16)"
   echo "  shared libraries from the hyprland stage take precedence over earlier packages"
 
   # Check the bytes that will actually ship, not the intent. This compositor
