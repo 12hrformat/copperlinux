@@ -89,27 +89,30 @@ mode=${mode:-$name_mode}
 # disk even if the applet is ever swapped for a `-n` (no-sync) path later.
 sync
 
-# ---- systemd image ---------------------------------------------------------
+# ---- systemd or busybox? ----------------------------------------------------
 #
-# On the systemd flavour power_links() points reboot/poweroff/halt here too, so
-# this branch is what `sudo reboot` runs. It must NOT wait.
+# One image can boot either init (the GRUB menu's "systemd init" entry, or the
+# wizard's saved /etc/copper-init), so /sbin/init's target is NOT the question
+# any more: on the unified image both inits are present and /sbin/init points at
+# copper-init by default. Ask the running system instead.
 #
-# A plain `systemctl reboot` waits for the shutdown transaction. The shell that
-# ran it belongs to copper-console.service (or a getty), and the transaction
-# stops that very unit -- so systemd SIGTERMs the waiting systemctl, which
-# cancels its own job. What the user sees is the log stopping after
-# "Stopped systemd-user-sessions.service", a returned shell prompt, and a
-# half-stopped machine. The same applies to Ctrl-C: it kills the waiting client
-# and takes the queued shutdown with it.
-#
-# --no-block hands the request to PID 1 and returns immediately. Nothing is
-# waiting in a unit that the shutdown will stop, and an interrupt after that
-# point has nothing to cancel: the job is already PID 1's.
-#
-# The init is read off /sbin/init, the same question build.sh's init_flavour()
-# asks. It is a symlink on both flavours, so readlink (not -e) is the right
-# test: -e would follow /lib/systemd/systemd on a build host that lacks it.
-if [ "$(readlink /sbin/init 2>/dev/null)" = /lib/systemd/systemd ]; then
+# /run/systemd/system exists as soon as systemd is PID 1 and does not exist on a
+# busybox boot -- copper-init mounts a fresh tmpfs over /run and never creates
+# it. The readlink test stays as a fallback for a tree where systemd was the
+# only init. COPPER_INIT lets the gate force either answer without rebooting
+# (tests/shutdown-gate.sh sets it; nothing on a real boot does).
+init_kind=${COPPER_INIT:-}
+if [ -z "$init_kind" ]; then
+    if [ -d /run/systemd/system ]; then
+        init_kind=systemd
+    elif [ "$(readlink /sbin/init 2>/dev/null)" = /lib/systemd/systemd ]; then
+        init_kind=systemd
+    else
+        init_kind=busybox
+    fi
+fi
+
+if [ "$init_kind" = systemd ]; then
     if ! command -v systemctl >/dev/null 2>&1; then
         echo "shutdown: systemd image, but systemctl is not on PATH" >&2
         exit 1
@@ -123,14 +126,18 @@ fi
 # copper-init's on_power_signal() does the orderly shutdown. Nothing here waits,
 # so there is no transaction to cancel.
 #
-# If /sbin/init ever failed to read as systemd on a systemd machine, /sbin/$mode
-# is this same wrapper (power_links made it so) and this exec would re-enter the
-# script forever. The environment variable turns that into an error: the one
-# legitimate path never sets it, because no flavour links an applet back here.
+# If /sbin/$mode is this same wrapper (the unified image installs the wrapper
+# under all four names), exec busybox directly: going back through /sbin/$mode
+# would re-enter this script. If it is an applet link, hand over to it as
+# before. The COPPER_POWER_WRAPPER guard still turns any other re-entry into an
+# error rather than a loop.
 if [ "${COPPER_POWER_WRAPPER:-}" = 1 ]; then
     echo "shutdown: power wrapper re-entered; refusing to loop" >&2
     exit 1
 fi
 COPPER_POWER_WRAPPER=1
 export COPPER_POWER_WRAPPER
+if [ "$(readlink "/sbin/$mode" 2>/dev/null)" = /sbin/shutdown ]; then
+    exec /bin/busybox "$mode"
+fi
 exec "/sbin/$mode"

@@ -186,7 +186,7 @@ Environment, all optional:
   COPPER_SEATD_SOCK  seatd's socket              (default /run/seatd.sock)
   COPPER_INPUT_SYS   where the input devices live (default /sys/class/input)
   COPPER_UDEV_DATA   the libudev records PID 1 writes (default /run/udev/data)
-  COPPER_AUDIO       start the user PulseAudio server (default 1; 0 skips)
+  COPPER_AUDIO       start the configured audio server (default 1; 0 skips)
   XDG_RUNTIME_DIR    the session's private runtime directory (default
                      /run/user/<uid>, made here when missing)
 
@@ -563,22 +563,75 @@ if [ "$soft" = 1 ]; then
     say "no render node; forcing software rendering"
 fi
 
-# Audio. cava, mpv and firefox all speak PulseAudio, and the client libraries
-# are in the image, but the server is a per-user daemon -- PulseAudio refuses to
-# run as root without --system, and a client on this tty connects to the server
-# belonging to this user. So the session starts it, once, here. A missing binary
-# is not fatal: the session still runs, it is just silent. COPPER_AUDIO=0 skips
-# it, which is what the gate sets so a test run does not start a daemon on the
-# machine running it.
-if [ "${COPPER_AUDIO:-1}" = 1 ] && command -v pulseaudio >/dev/null 2>&1; then
-    if ! pulseaudio --check >/dev/null 2>&1; then
-        pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || :
+# Which audio server /etc/copper.conf asks for. Both are in the image; this
+# file is the switch the first-boot wizard writes and the user can edit. A
+# missing file, an unreadable line or an unknown word is PulseAudio, the server
+# this image has always started.
+copper_audio_backend() {
+    _conf=${COPPER_CONF:-/etc/copper.conf}
+    _word=
+    if [ -r "$_conf" ]; then
+        _word=$(sed -n 's/^[[:space:]]*audio[[:space:]]*=[[:space:]]*\([a-z]*\).*$/\1/p' \
+                    "$_conf" 2>/dev/null | tail -n 1)
     fi
-    if pulseaudio --check >/dev/null 2>&1; then
-        say "audio: pulseaudio is running"
-    else
-        say "audio: pulseaudio is installed but did not start"
-    fi
+    case "$_word" in
+        pipewire) printf '%s\n' pipewire ;;
+        *)        printf '%s\n' pulseaudio ;;
+    esac
+}
+
+# Audio. cava, mpv and firefox all speak the PulseAudio protocol, and both
+# backends serve it, but the server is a per-user daemon -- PulseAudio refuses
+# to run as root without --system, and a client on this tty connects to the
+# server belonging to this user. So the session starts it, once, here. A
+# missing binary is not fatal: the session still runs, it is just silent.
+# COPPER_AUDIO=0 skips it, which is what the gate sets so a test run does not
+# start a daemon on the machine running it.
+if [ "${COPPER_AUDIO:-1}" = 1 ]; then
+    case "$(copper_audio_backend)" in
+    pipewire)
+        # PipeWire is three processes: the graph server, the session manager
+        # that gives it devices, and the PulseAudio-protocol front end every
+        # client here speaks to. pipewire-pulse does not pull wireplumber in,
+        # so all three are named. The graph socket is the "it came up" signal.
+        _rt=${XDG_RUNTIME_DIR:-/tmp}
+        if command -v pipewire >/dev/null 2>&1; then
+            if [ ! -S "$_rt/pipewire-0" ]; then
+                pipewire >/dev/null 2>&1 &
+            fi
+            if command -v wireplumber >/dev/null 2>&1; then
+                wireplumber >/dev/null 2>&1 &
+            fi
+            if command -v pipewire-pulse >/dev/null 2>&1; then
+                pipewire-pulse >/dev/null 2>&1 &
+            fi
+            i=0
+            while [ "$i" -lt 5 ] && [ ! -S "$_rt/pipewire-0" ]; do
+                sleep 1
+                i=$((i + 1))
+            done
+            if [ -S "$_rt/pipewire-0" ]; then
+                say "audio: pipewire is running"
+            else
+                say "audio: pipewire is installed but did not start"
+            fi
+        else
+            say "audio: pipewire is selected but not installed"
+        fi
+        ;;
+    *)
+        if command -v pulseaudio >/dev/null 2>&1; then
+            if ! pulseaudio --check >/dev/null 2>&1; then
+                pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || :
+            fi
+            if pulseaudio --check >/dev/null 2>&1; then
+                say "audio: pulseaudio is running"
+            else
+                say "audio: pulseaudio is installed but did not start"
+            fi
+        fi
+        ;;
+    esac
 fi
 
 # Hand the session over. Background first so the launch can be watched: a

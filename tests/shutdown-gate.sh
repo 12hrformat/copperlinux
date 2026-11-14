@@ -89,13 +89,18 @@ done
 # Run <program> with /sbin replaced by <stubdir>. `&&` is deliberate: no mount,
 # no run. PATH starts with the stub dir so a stubbed systemctl wins over the
 # host's real one; readlink and sync still resolve from the usual places.
+#
+# COPPER_INIT forces the wrapper's branch. The wrapper would otherwise ask the
+# RUNNING system (/run/systemd/system), and the test host is itself a systemd
+# machine -- so every busybox case here would silently take the systemd branch.
+# It defaults to busybox; the systemd cases set it explicitly.
 ns_run() {   # ns_run <stubdir> <program> [args...]
     d=$1; p=$2; shift 2
-    unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' '$p' $*" 2>/dev/null
+    unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' COPPER_INIT='${COPPER_INIT:-busybox}' '$p' $*" 2>/dev/null
 }
 ns_err() {   # ns_err <stubdir> <program> [args...] -- stderr merged
     d=$1; p=$2; shift 2
-    unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' '$p' $*" 2>&1
+    unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' COPPER_INIT='${COPPER_INIT:-busybox}' '$p' $*" 2>&1
 }
 
 if [ "$(ns_run "$TMP/sbin" "$WRAP" now)" != "poweroff" ]; then
@@ -136,11 +141,16 @@ check "$TMP/sbin" "$TMP/links/poweroff" reboot -r now
 # ---- the systemd image: systemctl --no-block --------------------------------
 # The request must be handed to PID 1 and returned, not waited on. --no-block
 # is what stops the shutdown from cancelling itself by stopping the caller.
+# The branch is forced: the wrapper reads /run/systemd/system, and the host
+# running this gate IS a systemd machine, so without COPPER_INIT the busybox
+# cases above would take the systemd branch too.
+COPPER_INIT=systemd
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block poweroff" now
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block reboot"   -r now
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block halt"     -H now
 check "$TMP/sysbin" "$TMP/links/reboot"   "systemctl --no-block reboot"
 check "$TMP/sysbin" "$TMP/links/poweroff" "systemctl --no-block poweroff"
+COPPER_INIT=busybox
 
 # The recursion guard: if /sbin/init ever fails to read as systemd on a systemd
 # machine, the link /sbin/poweroff -> this wrapper would exec itself forever.
@@ -151,7 +161,7 @@ mkdir -p "$TMP/loopbin"
 ln -sf "$WRAP" "$TMP/loopbin/poweroff"
 loop_out=$(unshare -m sh -c \
     "mount --bind '$TMP/loopbin' /sbin && PATH='$TMP/loopbin:$NS_PATH' \
-     COPPER_POWER_WRAPPER=1 '$WRAP' now" 2>&1)
+     COPPER_INIT=busybox COPPER_POWER_WRAPPER=1 '$WRAP' now" 2>&1)
 loop_rc=$?
 if [ "$loop_rc" -ne 0 ] && printf '%s\n' "$loop_out" | grep -q 're-entered'; then
     echo "ok   the power wrapper refuses to re-enter itself"

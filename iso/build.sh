@@ -15,7 +15,7 @@
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
 # Stages: kernel | base | tools | copper | rootfs | gui | niri | hyprland |
-#         plymouth | sudo | systemd | initramfs | iso
+#         plymouth | sudo | systemd | unified | initramfs | iso
 #
 # systemd is opt-in and deliberately NOT part of `all`: see build_systemd. A
 # normal build is the busysbox-init image the gates and the ISO expect; the
@@ -750,23 +750,16 @@ build_tools() {
 power_links() {          # power_links <staged-root>
   local root=$1 cmd
   mkdir -p "$root/sbin" "$root/usr/sbin"
-  # On the systemd tree all three names point at the wrapper, not at systemctl.
-  # The wrapper runs `systemctl --no-block`: a blocking systemctl waits for the
-  # shutdown transaction, and that transaction stops the very unit the shell
-  # running it belongs to. systemd SIGTERMs the client, the client cancels its
-  # own job, and the machine returns to a half-stopped prompt instead of
-  # rebooting. See the header of iso/shutdown.sh.
-  if [ "$(init_flavour "$root")" = systemd ]; then
-    for cmd in reboot poweroff halt; do
-      ln -sf /sbin/shutdown "$root/sbin/$cmd"
-      ln -sf /sbin/shutdown "$root/usr/sbin/$cmd"
-    done
-  else
-    for cmd in reboot poweroff halt; do
-      ln -sf /bin/busybox "$root/sbin/$cmd"
-      ln -sf /bin/busybox "$root/usr/sbin/$cmd"
-    done
-  fi
+  # All four names are the wrapper on both flavours. One image can boot either
+  # init now, so the build-time tree cannot decide this: the wrapper reads the
+  # RUNNING init (/run/systemd/system) and either runs `systemctl --no-block`
+  # or execs the busybox applet. A link straight to systemctl breaks the
+  # busybox boot, and a link straight to busybox signals a PID 1 convention
+  # systemd does not read. iso/shutdown.sh carries the dispatch.
+  for cmd in reboot poweroff halt; do
+    ln -sf /sbin/shutdown "$root/sbin/$cmd"
+    ln -sf /sbin/shutdown "$root/usr/sbin/$cmd"
+  done
   # shutdown: the wrapper, on both flavours, as a real file. rm first so a
   # leftover systemctl/busybox link from an earlier run is replaced rather than
   # left as a link that answers a different question (install copies over it,
@@ -1496,9 +1489,17 @@ build_gui() {
   # without _seatd, seatd could not start, and its unit restart-looped on the
   # wizard's tty. The group is part of what this stage guarantees, so it is
   # part of "already staged".
+  # zsh and PipeWire are part of what this stage guarantees now, because
+  # /etc/copper.conf can switch the session to them on any boot. A cached tree
+  # from before they were added would otherwise skip on the stamp and ship a
+  # one-line setting that points at a shell (or an audio server) the image does
+  # not have.
   if [ -e "$TGT/usr/bin/Xorg" ] && [ -e "$TGT/usr/bin/startxfce4" ] \
      && [ -r "$TGT/usr/share/themes/Blacklight/index.theme" ] \
      && [ -r "$TGT/usr/share/copper/wallpapers/backlight-final.png" ] \
+     && [ -x "$TGT/usr/bin/zsh" ] \
+     && [ -x "$TGT/usr/bin/pipewire" ] \
+     && [ -x "$TGT/usr/bin/wireplumber" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then
     echo "gui: already staged, skipping"
@@ -1572,6 +1573,41 @@ build_gui() {
   for p in open-vm-tools; do
     if gui_carries "$p"; then vmtools=$p; break; fi
   done
+  # zsh and the PipeWire stack: /etc/copper.conf offers both as a one-line
+  # choice, so both have to be in the image. Installing only the chosen one at
+  # build time would make the setting a lie on the disc it ships on. zsh is the
+  # login shell (adduser -s /usr/bin/zsh, and copper-init execs $SHELL);
+  # pipewire is the graph server, wireplumber the session manager and
+  # pipewire-pulse the PulseAudio-protocol half that firefox, mpv and cava
+  # speak to. All three are named: pipewire-pulse does not depend on
+  # wireplumber, and a graph with no session manager has no devices.
+  local zsh="" pipewire="" pipewire_pulse="" wireplumber="" pmiss="" p
+  for p in zsh; do
+    if gui_carries "$p"; then zsh=$p; break; fi
+  done
+  for p in pipewire; do
+    if gui_carries "$p"; then pipewire=$p; break; fi
+  done
+  for p in pipewire-pulse; do
+    if gui_carries "$p"; then pipewire_pulse=$p; break; fi
+  done
+  for p in wireplumber; do
+    if gui_carries "$p"; then wireplumber=$p; break; fi
+  done
+  for p in zsh pipewire pipewire-pulse wireplumber; do
+    case "$p" in
+      zsh)            [ -n "$zsh" ]            || pmiss="$pmiss zsh" ;;
+      pipewire)       [ -n "$pipewire" ]       || pmiss="$pmiss pipewire" ;;
+      pipewire-pulse) [ -n "$pipewire_pulse" ] || pmiss="$pmiss pipewire-pulse" ;;
+      wireplumber)    [ -n "$wireplumber" ]    || pmiss="$pmiss wireplumber" ;;
+    esac
+  done
+  if [ -n "$pmiss" ]; then
+    echo "gui: no installable package for:$pmiss" >&2
+    echo "gui: both shells and both audio servers have to ship, because" >&2
+    echo "gui: /etc/copper.conf offers them as a one-line switch" >&2
+    exit 1
+  fi
   # firefox, under whichever name the host's distro carries -- with
   # "carries" settled by the candidate check, because the first cut of
   # this probe accepted recognition and the runner died for it:
@@ -1645,6 +1681,7 @@ build_gui() {
   # sat too. The daemon is the missing half of the audio stack.
   [ -n "$pulseaudio" ] && set -- "$@" "$pulseaudio"
   [ -n "$vmtools" ] && set -- "$@" "$vmtools"
+  set -- "$@" "$zsh" "$pipewire" "$pipewire_pulse" "$wireplumber"
   apt-get \
     -o Dir::State::status="$status" \
     -o Dir::Cache::archives="$DG" \
@@ -1878,6 +1915,8 @@ build_gui() {
   local f
   for f in usr/bin/Xorg usr/bin/startxfce4 usr/bin/xkbcomp \
            usr/bin/dbus-daemon usr/bin/dbus-launch \
+           usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse \
+           usr/bin/wireplumber \
            usr/share/dbus-1/system.conf \
            lib64/ld-linux-x86-64.so.2 \
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do
@@ -3766,6 +3805,81 @@ build_systemd() {
 }
 
 # ---------------------------------------------------------------
+# 6j. the unified image: systemd's payload, copper-init's default
+# ---------------------------------------------------------------
+# One ISO ships BOTH inits. The default boot is copper-init (what the image has
+# always done); the GRUB menu's "systemd init" entry passes
+# copper.init=systemd, and /init reads that switch from the kernel command line
+# (falling back to /etc/copper-init, the wizard's saved answer) before it
+# switch_roots.
+#
+# build_systemd is what stages everything systemd: the packages, the Copper
+# units, agetty, the merged-usr bridge. This stage keeps all of it and takes
+# the DEFAULT back to copper-init. It deliberately does NOT call
+# default_flavour(): that helper drops the /lib/systemd bridge on the way back,
+# and the bridge is exactly what makes /lib/systemd/systemd reachable inside
+# the merged root after /init hands over. The payload stays readable at
+# /usr/lib/systemd either way; only the name the kernel execs needs the bridge.
+build_unified() {
+  build_systemd
+
+  # The default boot. /sbin/init is the path /init execs when the answer is
+  # busybox; the systemd branch execs /lib/systemd/systemd directly.
+  if [ "$(readlink "$TGT/sbin/init")" != "/usr/bin/copper-init" ]; then
+    ln -sf /usr/bin/copper-init "$TGT/sbin/init"
+    echo "  sbin/init: systemd -> copper-init (the unified image's default)"
+  fi
+  make_merged_usr_bridge "$TGT"
+  # Every power name is the runtime wrapper on both inits, so this is the same
+  # link set on every tree; re-run it anyway, because build_systemd just copied
+  # systemd-sysv in and a link it left behind must not survive to the disc.
+  power_links "$TGT"
+
+  # ---- gates --------------------------------------------------------------
+  # Both halves have to be present and reachable, or the menu entry is a
+  # promise the image cannot keep.
+  if [ "$(readlink "$TGT/sbin/init")" != "/usr/bin/copper-init" ]; then
+    echo "unified: sbin/init does not point at copper-init (the default boot)" >&2
+    exit 1
+  fi
+  if [ ! -x "$TGT/usr/bin/copper-init" ]; then
+    echo "unified: /usr/bin/copper-init is missing; the default boot would fail" >&2
+    exit 1
+  fi
+  if [ ! -x "$TGT/lib/systemd/systemd" ]; then
+    echo "unified: /lib/systemd/systemd is not reachable; the GRUB systemd" >&2
+    echo "         entry would fall back to copper-init (or fail)" >&2
+    exit 1
+  fi
+  if ! merged_usr_bridge "$TGT"; then
+    echo "unified: /lib/systemd is not the merged-usr bridge; the systemd boot" >&2
+    echo "         would not find PID 1 at the path /init execs" >&2
+    exit 1
+  fi
+  # systemd's boot has to end at the same wizard as the busybox one, or the
+  # "both inits work" claim is only half true.
+  if [ ! -f "$TGT/etc/systemd/system/copper-console.service" ]; then
+    echo "unified: copper-console.service did not install; systemd would boot" >&2
+    echo "         to a machine with no console shell or wizard" >&2
+    exit 1
+  fi
+  for f in etc/copper.conf etc/copper-init; do
+    if [ ! -s "$TGT/$f" ]; then
+      echo "unified: /$f is missing; the boot-time choice has no default" >&2
+      exit 1
+    fi
+  done
+  # The menu entry is the interface a user sees. It is copied to the ISO by
+  # build_iso, so a missing switch here is a missing switch on the disc.
+  if ! grep -q 'copper\.init=systemd' "$ROOT/boot/grub.cfg"; then
+    echo "unified: grub.cfg has no entry passing copper.init=systemd" >&2
+    echo "          the image would carry systemd but offer no way to boot it" >&2
+    exit 1
+  fi
+  echo "  unified: copper-init is the default, systemd is the GRUB entry"
+}
+
+# ---------------------------------------------------------------
 # 7. live initramfs (busybox + our /init, drivers built into kernel)
 # ---------------------------------------------------------------
 build_initramfs() {
@@ -3803,6 +3917,14 @@ build_iso() {
   # part of the tree that gets hashed, which is the tree that gets packaged.
   mkdir -p "$TGT/boot/grub"
   cp "$ROOT/boot/grub.cfg" "$TGT/boot/grub/grub.cfg"
+  # The unified tree carries the systemd payload under usr/lib/systemd with
+  # /sbin/init pointing at copper-init. The /lib bridge is what makes
+  # /lib/systemd/systemd reachable inside the merged root, and a stage that
+  # ran again between build_unified and here (build_gui re-runs when
+  # build_rootfs clobbers /etc/group) copies packages in through
+  # copy_stage_in, which takes the bridge off. Put it back before the tree
+  # hash, so what is packaged has it. No-op on a tree with no systemd payload.
+  make_merged_usr_bridge "$TGT"
   # Packaging hygiene, pinned here and before the tree hash so it is part of
   # the stamped tree. -r used to force uid/gid 0 and flatten every mode, which
   # hid two things the tree had wrong; -R carries the real values to the disc,
@@ -4403,7 +4525,7 @@ full() {
 # re-runnable: running it twice leaves the same tree, not a tree that has been
 # swapped twice.
 case "$STAGE" in
-  rootfs|gui|niri|plymouth|sudo|initramfs|copper|systemd|all|"")
+  rootfs|gui|niri|plymouth|sudo|initramfs|copper|systemd|unified|all|"")
     default_flavour ;;
 esac
 
@@ -4427,9 +4549,14 @@ case "$STAGE" in
   # first; the opt-in stage has to say so itself. It is why this stage is
   # spelled like initramfs/iso and not like sudo.
   systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_copper; build_systemd ;;
+  # One image, both inits. build_systemd stages the systemd payload and makes
+  # it PID 1; build_unified then takes the DEFAULT back to copper-init and
+  # keeps the bridge, so the disc boots busybox unless the GRUB entry asks for
+  # systemd. Everything the old systemd chain ran is still needed here.
+  unified)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_copper; build_systemd; build_unified ;;
   initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_initramfs ;;
   iso)        build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|hyprland|plymouth|sudo|systemd|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|hyprland|plymouth|sudo|systemd|unified|initramfs|iso|all)"; exit 2 ;;
 esac
 echo "==> done"

@@ -150,8 +150,8 @@ run_case "sbin/init not repointed to systemd" "$B" \
 
 # 5. A unit present but not wired into the target (a service that never starts).
 run_case "copper-seatd.service left unwired" "$B" \
-    'for u in copper-seatd.service copper-network.service copper-plymouth-quit.service; do' \
-    'for u in copper-network.service; do' \
+    'for u in copper-seatd.service copper-network.service copper-plymouth-quit.service copper-vmtools.service; do' \
+    'for u in copper-network.service copper-plymouth-quit.service copper-vmtools.service; do' \
     "wired copper.target.wants/copper-seatd.service"
 
 # 6. --console removed from the C entry point: copper-console.service would then

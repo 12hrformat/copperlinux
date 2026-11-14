@@ -461,12 +461,21 @@ eq_link "power_links on a systemd tree: usr/sbin/shutdown -> the wrapper" \
         "$PS/usr/sbin/shutdown" /sbin/shutdown
 PB="$TMP/power-busybox"; ptree "$PB" /usr/bin/copper-init
 power_links "$PB"
+# The unified image boots either init, so the links cannot be flavour-specific:
+# every power name is the wrapper on a busybox tree too, and the wrapper picks
+# the busybox applet at runtime.
 for cmd in reboot poweroff halt; do
-    eq_link "power_links on a busybox tree: sbin/$cmd -> busybox" \
-            "$PB/sbin/$cmd" /bin/busybox
-    eq_link "power_links on a busybox tree: usr/sbin/$cmd -> busybox" \
-            "$PB/usr/sbin/$cmd" /bin/busybox
+    eq_link "power_links on a busybox tree: sbin/$cmd -> the wrapper" \
+            "$PB/sbin/$cmd" /sbin/shutdown
+    eq_link "power_links on a busybox tree: usr/sbin/$cmd -> the wrapper" \
+            "$PB/usr/sbin/$cmd" /sbin/shutdown
 done
+if [ -f "$PB/sbin/shutdown" ] && [ ! -L "$PB/sbin/shutdown" ]; then
+    ok "power_links on a busybox tree: sbin/shutdown is the wrapper"
+else
+    bad "power_links on a busybox tree: sbin/shutdown is the wrapper" \
+        "$(ls -ld "$PB/sbin/shutdown" 2>&1)"
+fi
 eq_link "power_links on a busybox tree: usr/sbin/shutdown -> the wrapper" \
         "$PB/usr/sbin/shutdown" /sbin/shutdown
 

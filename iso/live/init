@@ -182,6 +182,30 @@ fi
     echo "upper=${UPPER_DEV:-ram}"
 } > /mnt/merged/var/lib/copper/live-boot
 
+# Which init runs as PID 1.
+
+# The kernel command line wins: the GRUB menu's "systemd init" entry passes
+# copper.init=systemd, and the default entry says nothing. With no word on the
+# command line, /etc/copper-init is the machine's saved answer -- the wizard
+# writes it, and the copy that persistence carried across is readable here
+# because the overlay is already mounted. An image without systemd (the plain
+# busybox build) simply falls back to copper-init and says so.
+init_choice=
+for arg in $(cat /proc/cmdline 2>/dev/null); do
+    case "$arg" in
+        copper.init=systemd) init_choice=systemd ;;
+        copper.init=busybox) init_choice=busybox ;;
+    esac
+done
+if [ -z "$init_choice" ]; then
+    init_choice=busybox
+    if [ -r /mnt/merged/etc/copper-init ]; then
+        saved=
+        read -r saved < /mnt/merged/etc/copper-init 2>/dev/null || :
+        [ "$saved" = systemd ] && init_choice=systemd
+    fi
+fi
+
 # switch_root on a root with no init gives one bare "not found" and nothing
 # to go on, so name the file that isn't there.
 # Test the binary, not /sbin/init. That path is a symlink to the absolute
@@ -192,6 +216,14 @@ fi
 # bootable image into a rescue shell.
 [ -x /mnt/merged/usr/bin/copper-init ] \
     || rescue "no copper-init in the merged root (it did not get built into the ISO)"
+
+if [ "$init_choice" = systemd ]; then
+    if [ -x /mnt/merged/lib/systemd/systemd ]; then
+        say "handing over to systemd (copper.init=systemd)"
+        exec /bin/busybox switch_root /mnt/merged /lib/systemd/systemd
+    fi
+    notice "systemd was asked for but is not in this image; using copper-init"
+fi
 
 say "handing over to copper-init"
 exec /bin/busybox switch_root /mnt/merged /sbin/init

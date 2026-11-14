@@ -283,6 +283,36 @@ static int session_from_marker(const char *path, struct session *s) {
     return 1;
 }
 
+/* The login shell the machine asked for.
+
+   /etc/copper.conf is the first-boot wizard's settings file and its `shell=`
+   line is the user's answer. A key that names a shell that is not in the tree
+   is ignored rather than exec'd and found missing; the account's own passwd
+   field is the fallback, and bash the last resort. Returns a static path (the
+   caller only ever execs or exports it) or NULL when the config says nothing
+   usable. */
+static const char *configured_shell(void) {
+    static char path[64];
+    FILE *f = fopen("/etc/copper.conf", "r");
+    if (!f) return NULL;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (strncmp(line, "shell=", 6) != 0) continue;
+        const char *v = line + 6;
+        const char *want = NULL;
+        if (strcmp(v, "zsh") == 0) want = "/usr/bin/zsh";
+        else if (strcmp(v, "bash") == 0) want = "/usr/bin/bash";
+        if (want && access(want, X_OK) == 0) {
+            snprintf(path, sizeof path, "%s", want);
+            fclose(f);
+            return path;
+        }
+    }
+    fclose(f);
+    return NULL;
+}
+
 /* Drop the forked child to the session user. Runs only in the spawn_tty
    child, never in PID 1. If a step fails the child would rather be a root
    shell -- the state this image shipped in for months -- than a session that
@@ -310,11 +340,16 @@ static void drop_to_session(const struct session *s) {
     /* Installers ask the environment which shell to edit. Nothing ever set
        SHELL, so the OpenCode installer's "set -u" killed the process on the
        next line and took the install with it -- the binary was written, then
-       the script died before telling anyone where it was. The passwd entry is
-       the truth here (the wizard writes /usr/bin/bash into it). */
-    struct passwd *pw = getpwuid(s->uid);
-    setenv("SHELL", (pw && pw->pw_shell && *pw->pw_shell)
-                        ? pw->pw_shell : "/usr/bin/bash", 1);
+       the script died before telling anyone where it was. The wizard's
+       /etc/copper.conf answer wins, so editing one line changes the console
+       shell, every login shell started from it and what kitty execs; the
+       passwd entry is what a getty/login uses, and bash is the last resort. */
+    const char *sh = configured_shell();
+    if (!sh) {
+        struct passwd *pw = getpwuid(s->uid);
+        if (pw && pw->pw_shell && *pw->pw_shell) sh = pw->pw_shell;
+    }
+    setenv("SHELL", sh ? sh : "/usr/bin/bash", 1);
 }
 
 /* Hand the X server's device nodes to the session user.
@@ -1156,6 +1191,8 @@ static pid_t spawn_tty(int tty) {
         if (fd > 2) close(fd);
     }
     drop_to_session(&g_session);
+    const char *sh = getenv("SHELL");
+    if (sh && *sh) execl(sh, sh, (char *)NULL);
     execl("/usr/bin/bash", "-bash", (char *)NULL);
     execl("/usr/bin/copper-sh", "copper-sh", (char *)NULL);
     execl("/bin/sh", "sh", (char *)NULL);

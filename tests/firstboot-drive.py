@@ -44,6 +44,15 @@ STEPS = [
     ("Type it once more to be sure",  "userpw1"),
     ("Timezone, e.g. Europe/London",  "UTC"),
     ("Which desktop, xfce, niri or hyprland?", ""),
+    # The three image-wide choices. zsh and pipewire are the non-defaults on
+    # purpose: the point is that the token, not the default, is what reaches
+    # /etc/copper.conf and the account record.
+    ("Which shell, bash or zsh?",            "zsh"),
+    ("Which audio, pulseaudio or pipewire?", "pipewire"),
+    # The init answer is checked against the host running this test (the
+    # wizard refuses systemd where /lib/systemd/systemd is absent), so keep
+    # the default here and let build_iso's readback check the GRUB entry.
+    ("Which init, busybox or systemd?",      "busybox"),
 ]
 
 # Extra prompts to answer after the form, each "prompt|answer". account.sh

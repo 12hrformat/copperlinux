@@ -105,7 +105,8 @@ static void at(int r, int c) { printf("\033[%d;%dH", r, c); }
 /* ------------------------------------------------------------------ */
 /* ------------------------------------------------------------------ */
 
-enum { F_NAME, F_USER, F_HOST, F_ROOTPW, F_USERPW, F_TZ, F_SESSION, F_COUNT };
+enum { F_NAME, F_USER, F_HOST, F_ROOTPW, F_USERPW, F_TZ, F_SESSION,
+       F_SHELL, F_AUDIO, F_INIT, F_COUNT };
 
 /* Capacity of every answer buffer, on screen and off. Generous on purpose:
    the field editor caps what can be typed to what fits inside the box, so
@@ -172,6 +173,33 @@ static int ok_session(const char *s) {
     return !s[0] || is_niri(s) || is_hyprland(s) || word_is(s, "xfce");
 }
 
+/* The hardware/software choices: shell, audio server and init.
+
+   These are the same shape as the desktop question -- one exact word per
+   answer, an empty answer meaning the default -- and each validator is also
+   the place the value written to disk is fixed. The token written is never the
+   raw answer, so "ZSH" can select zsh but cannot end up in /etc/copper.conf or
+   in a passwd record where nothing reads it.
+
+   The init answer is checked against the image, not just the spelling: a tree
+   without systemd must not be told to boot systemd and then leave a machine
+   with no PID 1. The unified image ships both, so this normally succeeds. */
+static int is_zsh(const char *s)     { return word_is(s, "zsh"); }
+static int is_pipewire(const char *s){ return word_is(s, "pipewire"); }
+static int is_systemd(const char *s){ return word_is(s, "systemd"); }
+
+static int ok_shell(const char *s) {
+    return !s[0] || word_is(s, "bash") || is_zsh(s);
+}
+static int ok_audio(const char *s) {
+    return !s[0] || word_is(s, "pulseaudio") || is_pipewire(s);
+}
+static int ok_init(const char *s) {
+    if (!s[0] || word_is(s, "busybox")) return 1;
+    if (!is_systemd(s)) return 0;
+    return access("/lib/systemd/systemd", X_OK) == 0;
+}
+
 /* All members, always. A partial initialiser silently zeroes the rest, and
    there is no way to see at a glance that a missing `secret` is 0 rather than
    a mistake -- which for a password field is the difference between masked and
@@ -199,6 +227,15 @@ static struct field fields[F_COUNT] = {
     FIELD("Desktop",       "xfce, niri or hyprland (Enter = xfce)",
           "Which desktop, xfce, niri or hyprland?",
           "Type xfce, niri or hyprland", 0, ok_session),
+    FIELD("Shell",         "bash or zsh (Enter = bash)",
+          "Which shell, bash or zsh?",
+          "Type bash or zsh", 0, ok_shell),
+    FIELD("Audio",         "pulseaudio or pipewire (Enter = pulseaudio)",
+          "Which audio, pulseaudio or pipewire?",
+          "Type pulseaudio or pipewire", 0, ok_audio),
+    FIELD("Init",          "busybox or systemd (Enter = busybox)",
+          "Which init, busybox or systemd?",
+          "Type busybox or systemd", 0, ok_init),
 };
 
 /* |   label(18)   value */
@@ -422,7 +459,7 @@ static void ensure_trailing_newline(const char *path) {
    helper, and it is a helper that has repeatedly not worked.
 
    Returns 0 on success. */
-static int create_user_direct(const char *user) {
+static int create_user_direct(const char *user, const char *shell) {
     /* god please kill me: shadow has NINE fields and passwd has SEVEN, and the
        only difference between a working account and one nobody can log into is
        one colon. This function has lost that argument before. */
@@ -505,8 +542,8 @@ static int create_user_direct(const char *user) {
 
     p = fopen("/etc/passwd", "a");
     if (!p) return 1;
-    fprintf(p, "%s:x:%d:%d:%s:%s:/usr/bin/bash\n",
-            user, uid, uid, gecos, home);
+    fprintf(p, "%s:x:%d:%d:%s:%s:%s\n",
+            user, uid, uid, gecos, home, shell);
     fclose(p);
 
     /* shadow: locked, no password. set_password() fills it in moments later;
@@ -839,6 +876,36 @@ static void collect(int idx) {
             if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
             if (ok_session(buf)) break;
             printf("Type xfce, niri or hyprland, or Enter for xfce.\n");
+        }
+        break;
+    case F_SHELL:
+        for (;;) {
+            printf("Shell [bash]: ");
+            fflush(stdout);
+            if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
+            if (ok_shell(buf)) break;
+            printf("Type bash or zsh, or Enter for bash.\n");
+        }
+        break;
+    case F_AUDIO:
+        for (;;) {
+            printf("Audio [pulseaudio]: ");
+            fflush(stdout);
+            if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
+            if (ok_audio(buf)) break;
+            printf("Type pulseaudio or pipewire, or Enter for pulseaudio.\n");
+        }
+        break;
+    case F_INIT:
+        for (;;) {
+            printf("Init [busybox]: ");
+            fflush(stdout);
+            if (!read_line(buf, sizeof buf)) { buf[0] = '\0'; break; }
+            if (ok_init(buf)) break;
+            if (is_systemd(buf))
+                printf("systemd is not in this image; use busybox.\n");
+            else
+                printf("Type busybox or systemd, or Enter for busybox.\n");
         }
         break;
     }
@@ -1220,7 +1287,8 @@ static void carry_firstboot_answers(const char *dev) {
        skipped by cp rather than failing the copy of the others. */
     run_quiet("/bin/busybox cp -a /etc/passwd /etc/shadow /etc/group "
               "/etc/hostname /etc/hosts /etc/localtime /etc/timezone "
-              "/etc/copper-firstboot.done /etc/copper-desktop %s/etc/", mnt);
+              "/etc/copper-firstboot.done /etc/copper-desktop "
+              "/etc/copper.conf /etc/copper-init %s/etc/", mnt);
     run_quiet("/bin/busybox cp -a /home/. %s/home/", mnt);
     run_quiet("/bin/busybox sync");
     if (run_quiet("/bin/busybox umount %s", mnt) == 0)
@@ -1438,6 +1506,17 @@ int main(void) {
     snprintf(rootpw, sizeof rootpw, "%s", fields[F_ROOTPW].value);
     snprintf(userpw, sizeof userpw, "%s", fields[F_USERPW].value);
 
+    /* The three optional choices, reduced to the exact token written to disk.
+       Empty means the default, and the token -- not the raw answer -- is what
+       every consumer reads. */
+    const char *shell_word = is_zsh(fields[F_SHELL].value) ? "zsh" : "bash";
+    const char *shell_path = is_zsh(fields[F_SHELL].value)
+                                 ? "/usr/bin/zsh" : "/usr/bin/bash";
+    const char *audio_word = is_pipewire(fields[F_AUDIO].value)
+                                 ? "pipewire" : "pulseaudio";
+    const char *init_word = is_systemd(fields[F_INIT].value)
+                                 ? "systemd" : "busybox";
+
     if (!ui_fancy) printf("\nSetting things up...\n");
 
     /* --- apply ------------------------------------------------------- */
@@ -1482,17 +1561,19 @@ int main(void) {
     char why[1024] = "";
     if (run_capture(why, sizeof why,
                     "/bin/busybox adduser --disabled-password -G %s "
-                    "-h /home/%s -s /usr/bin/bash %s",
-                    user, user, user) != 0) {
+                    "-h /home/%s -s %s %s",
+                    user, user, shell_path, user) != 0) {
         printf("(adduser failed, writing the account files directly)\n");
         if (why[0]) printf("  busybox said: %s\n", why);
-        if (create_user_direct(user) != 0) {
+        if (create_user_direct(user, shell_path) != 0) {
             printf("Couldn't create user %s.\n", user);
             return 1;
         }
     }
     run_quiet("/bin/busybox cp -a /etc/skel/.bashrc /home/%s/.bashrc", user);
     run_quiet("/bin/busybox chown %s:%s /home/%s/.bashrc", user, user, user);
+    run_quiet("/bin/busybox cp -a /etc/skel/.zshrc /home/%s/.zshrc", user);
+    run_quiet("/bin/busybox chown %s:%s /home/%s/.zshrc", user, user, user);
 
     /* _seatd is for the niri session: seatd runs as root and the session
        user reaches its socket by group membership, not by being root
@@ -1573,6 +1654,30 @@ int main(void) {
             else
                 fprintf(d, "xfce\n");
             fclose(d);
+        }
+    }
+
+    /* The machine's own choices, in one file the session reads at start.
+       Written with the exact tokens, never the raw answers. The init answer is
+       a default for the NEXT boot: this-boot's PID 1 was picked before /etc
+       existed, by /init reading the GRUB command line or the copy of this file
+       that persistence carried over. */
+    {
+        FILE *c = fopen("/etc/copper.conf", "w");
+        if (c) {
+            fprintf(c, "# Copper Linux settings (written by the first-boot wizard).\n");
+            fprintf(c, "# shell=bash|zsh, audio=pulseaudio|pipewire.\n");
+            fprintf(c, "# The init is /etc/copper-init; the GRUB menu can override it.\n");
+            fprintf(c, "shell=%s\n", shell_word);
+            fprintf(c, "audio=%s\n", audio_word);
+            fclose(c);
+        }
+    }
+    {
+        FILE *i = fopen("/etc/copper-init", "w");
+        if (i) {
+            fprintf(i, "%s\n", init_word);
+            fclose(i);
         }
     }
 

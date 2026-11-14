@@ -21,6 +21,10 @@
 #           /dev/console, so the wizard draws where this gate can see it.
 #           Proves the wizard gets a terminal. The GRUB entry cannot show that:
 #           tty0 is the console there, and a headless VM has no tty0.
+#   systemd boot the same way, with copper.init=systemd on the command line.
+#           Proves /init's systemd branch hands PID 1 to /lib/systemd/systemd
+#           and systemd actually starts the Copper units -- the half a
+#           structural check of the tree cannot boot.
 #
 # Uses KVM when /dev/kvm is usable and TCG otherwise. TCG is several times
 # slower, which is why the deadline is minutes rather than seconds and why
@@ -46,10 +50,12 @@ usage() {
     cat <<'EOF'
 boot-gate.sh -- boot a Copper ISO in QEMU and check it comes up
 
-  tests/boot-gate.sh [--grub|--serial] [--timeout=N] [iso]
+  tests/boot-gate.sh [--grub|--serial|--systemd] [--timeout=N] [iso]
 
   --grub        boot through the disc's own GRUB (default)
   --serial      boot kernel+initrd directly with ttyS0 as the console
+  --systemd     boot kernel+initrd directly, asking for the systemd init
+                (copper.init=systemd), and watch it reach the Copper units
   --timeout=N   seconds to wait for a milestone (default 300, BOOT_TIMEOUT)
 
 Environment:
@@ -66,6 +72,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
     --grub)     MODE=grub ;;
     --serial)   MODE=serial ;;
+    --systemd)  MODE=systemd ;;
     --timeout=*) TIMEOUT=${1#*=} ;;
     --timeout)  shift; TIMEOUT=${1:-} ;;
     --help|-h)  usage; exit 0 ;;
@@ -257,6 +264,47 @@ serial)
     wait_for 'Welcome to Copper Linux' "the first-boot wizard"; rc=$?
     report "$rc" "the wizard started on a terminal (kernel, /init, overlay, console)"
     [ "$rc" -eq 0 ] || failed=1
+    ;;
+systemd)
+    # The unified image's other half. GRUB's "systemd init" entry is the switch
+    # a user sees; build_iso reads that entry back off the disc, and this boots
+    # the same kernel command line it passes. The console is serial for the same
+    # reason as --serial: a headless guest has no tty0 to read systemd's status
+    # lines from.
+    command -v xorriso >/dev/null 2>&1 || {
+        echo "boot-gate: --systemd needs xorriso to extract the kernel" >&2
+        exit 2
+    }
+    xorriso -osirrox on -indev "$ISO" \
+        -extract /boot/vmlinuz "$WORK/vmlinuz" \
+        -extract /boot/initrd.img "$WORK/initrd.img" \
+        >/dev/null 2>"$WORK/xorriso.err" || {
+        say "could not extract the kernel and initrd from the ISO"
+        sed 's/^/  | /' "$WORK/xorriso.err" >&2
+        exit 1
+    }
+
+    start_qemu -kernel "$WORK/vmlinuz" -initrd "$WORK/initrd.img" \
+        -append 'console=ttyS0,115200 rdinit=/init nosplash copper.init=systemd' \
+        -cdrom "$ISO" -nic user,model=e1000
+
+    # /init says which init it is handing over to, and this line only exists on
+    # the systemd branch. A fallback to copper-init prints a different sentence,
+    # so the wait cannot be satisfied by the default boot.
+    wait_for 'handing over to systemd \(copper\.init=systemd\)' \
+        "the initramfs handing over to systemd"; rc=$?
+    report "$rc" "/init read copper.init=systemd and exec'd /lib/systemd/systemd"
+    [ "$rc" -eq 0 ] || failed=1
+
+    # systemd starts the Copper units itself; the wizard is one of them and
+    # prompts on tty1, which is why this is a "Starting/Started" milestone and
+    # not the wizard's own greeting. A busybox boot never prints these lines.
+    if [ "$failed" -eq 0 ]; then
+        wait_for 'Starting Copper (first-boot wizard|console)' \
+            "systemd starting the Copper units"; rc=$?
+        report "$rc" "systemd started the Copper units (wizard/console)"
+        [ "$rc" -eq 0 ] || failed=1
+    fi
     ;;
 esac
 

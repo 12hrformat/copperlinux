@@ -64,7 +64,7 @@ jobs:
                    tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \
                    tests/font-gate.sh tests/boot-gate.sh \
                    tests/shell-gate.sh tests/firstboot-eof-gate.sh \
-                   tests/starthyprland-gate.sh; do
+                   tests/starthyprland-gate.sh tests/config-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -213,62 +213,30 @@ jobs:
       - name: Live initramfs
         run: sudo bash iso/build.sh initramfs
 
-      - name: Make the ISO
-        run: sudo bash iso/build.sh iso
-
-      # The one thing the gates in `checks` cannot do: start the image.
-      # Those gates are structural, stubbed, or replayed in a mount namespace,
-      # so they can all be green while the disc does not boot -- GRUB, the
-      # kernel, the initramfs, finding the medium, the overlay and PID 1 only
-      # exist together on the ISO. This boots it and reads the serial console.
-      #
-      # It runs here, on the default flavour and before the systemd swap
-      # below, so what it checks is the default image rather than the one
-      # swapped in afterwards.
-      - name: Install QEMU
-        run: sudo apt-get install -y --no-install-recommends qemu-system-x86
-
-      - name: Boot the default ISO
-        run: ./tests/boot-gate.sh iso/out/copper.iso
-
-      # Same image, with ttyS0 as the console, so the first-boot wizard draws
-      # where the gate can see it. This is the only place the wizard is run on
-      # a real boot; tests/account.sh drives the same binary but in a mount
-      # namespace, with a fake /etc.
-      - name: Boot the default ISO to the wizard
-        run: ./tests/boot-gate.sh --serial iso/out/copper.iso
-
-      # Only the systemd flavour is published as an artifact.
-
-      # ---- the cache is saved HERE, before the systemd flavour ---------------
+      # ---- the cache is saved HERE, before the unified merge ----------------
       # The staged tree outlives this run: the next run restores it and keeps
-      # building on it. What goes in the cache therefore has to be the tree
-      # the NEXT run's default build expects -- and that is the default
-      # flavour's tree, not the systemd flavour's.
+      # building on it. What goes in the cache therefore has to be the tree the
+      # NEXT run's stages expect -- and that is the plain, pre-merge tree, not
+      # the one the unified stage rewrites.
       #
-      # The cache used to be saved at the very end, after the systemd stage
-      # had swapped PID 1 in the same tree, so what it saved was a
-      # systemd-flavoured tree: sbin/init pointing at /lib/systemd/systemd,
-      # the power commands pointing at systemctl, and lib/systemd a symlink to
-      # ../usr/lib/systemd (the merged-usr bridge). The next run restored that
-      # tree and died in the second-desktop stage:
+      # The cache used to be saved at the very end, after the systemd stage had
+      # swapped PID 1 in the same tree, so what it saved was a systemd-flavoured
+      # tree: lib/systemd a symlink to ../usr/lib/systemd (the merged-usr
+      # bridge). The next run restored that tree and died in the second-desktop
+      # stage:
       #
       #     cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
       #         directory '.../desktop-root/./lib/systemd'
       #
       # because cp cannot merge a directory into a symlink, and the desktop
-      # closure ships a real lib/systemd. Two CI runs in a row failed on
-      # exactly that line, on a tree that had been perfectly good a moment
-      # before.
+      # closure ships a real lib/systemd. Two CI runs in a row failed on exactly
+      # that line, on a tree that had been perfectly good a moment before.
       #
-      # The same tree would also have packaged a "default" ISO that boots
-      # systemd, silently, which is the half-done swap the two artefacts are
-      # supposed to keep apart. Saving the cache before the swap keeps the
-      # two flavours apart in the cache as well as on the disc.
-      #
-      # The cost is that the systemd stage is not cached: it re-downloads and
-      # re-unpacks its 40-odd packages on every run. That is a minute of CI,
-      # and it is cheaper than a cache that carries the wrong tree.
+      # Saving before the merge keeps the cached tree in the shape every stage
+      # above expects. The cost is that the unified stage is not cached: it
+      # re-unpacks its systemd packages on every run, roughly a minute of CI.
+      # That is cheaper than a cache that carries a tree the next run cannot
+      # build on.
 
       # The stages run under sudo, so iso/work is root-owned, and the cache
       # action tars it as the unprivileged runner: tar exits 2 on the first
@@ -295,31 +263,50 @@ jobs:
           path: iso/work
           key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
 
-      # ---- the systemd flavour, built AFTER the default ISO ----------------
-      # This is what makes CI answer "is the migration real" rather than just
-      # "does the default image still build". `build_systemd` swaps PID 1 in
-      # the SAME staged rootfs, so the order is load-bearing: if this ran
-      # before "Make the ISO" the default artifact would silently become a
-      # systemd machine, which is exactly the half-done swap SYSTEMD-MIGRATION.md
-      # warns about. Default ISO first and uploaded, then the swap, then a
-      # second ISO -- so the two artifacts are never ambiguous.
+      # ---- one image, both inits -------------------------------------------
+      # build_unified puts the systemd/udev payload into the rootfs that already
+      # boots copper-init, takes only the DEFAULT /sbin/init back to
+      # copper-init, and keeps /lib/systemd reachable. The GRUB menu then offers
+      # both: the default entry boots busybox while "Copper Linux (systemd init)"
+      # passes copper.init=systemd. One ISO, chosen at boot, instead of two
+      # separately-swapped artifacts.
       #
-      # The stage downloads systemd/udev/systemd-sysv from the runner's own
-      # noble mirrors with the empty-dpkg-status device, so a failure here is a
-      # real failure of the stage, not a missing toolchain.
-      - name: Migrate the staged rootfs to systemd PID 1 (opt-in flavour)
-        run: sudo bash iso/build.sh systemd
+      # This must run AFTER the cache save: the stage rewrites the tree, and a
+      # cached post-merge tree is the shape that broke the next run (above).
+      - name: Merge both inits into one image
+        run: sudo bash iso/build.sh unified
 
-      # Rebuild the ISO from the now-systemd tree. Same stages as "Make the
-      # ISO", stamp-checked, so this is just the packaging plus the init-aware
-      # read-back gate (which expects systemctl links, not busybox applets,
-      # when /sbin/init points at /lib/systemd/systemd).
-      - name: Make the systemd ISO
+      - name: Make the ISO
         run: sudo bash iso/build.sh iso
 
-      - name: Upload copper-systemd.iso
+      # The one thing the gates in `checks` cannot do: start the image. Those
+      # gates are structural, stubbed, or replayed in a mount namespace, so they
+      # can all be green while the disc does not boot -- GRUB, the kernel, the
+      # initramfs, finding the medium, the overlay and PID 1 only exist together
+      # on the ISO. These boot it and read the serial console.
+      - name: Install QEMU
+        run: sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      # The default entry: the disc's own GRUB, on the command line it ships.
+      - name: Boot the default ISO
+        run: ./tests/boot-gate.sh iso/out/copper.iso
+
+      # Same image, with ttyS0 as the console, so the first-boot wizard draws
+      # where the gate can see it. This is the only place the wizard is run on
+      # a real boot; tests/account.sh drives the same binary but in a mount
+      # namespace, with a fake /etc.
+      - name: Boot the default ISO to the wizard
+        run: ./tests/boot-gate.sh --serial iso/out/copper.iso
+
+      # The other half of the same disc: copper.init=systemd makes /init exec
+      # /lib/systemd/systemd. This is the only check that systemd actually
+      # starts the Copper units from the shipped tree.
+      - name: Boot the systemd init on the same ISO
+        run: ./tests/boot-gate.sh --systemd iso/out/copper.iso
+
+      - name: Upload copper.iso
         uses: actions/upload-artifact@v4
         with:
-          name: copper-iso-systemd
+          name: copper-iso
           path: iso/out/copper.iso
           retention-days: 14

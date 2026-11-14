@@ -773,20 +773,73 @@ fi
 # not touch the exit status.
 DISPLAY=":$DISPLAY_NUM"
 export DISPLAY
+# Which audio server /etc/copper.conf asks for. Both are in the image; this
+# file is the switch the first-boot wizard writes and the user can edit. A
+# missing file, an unreadable line or an unknown word is PulseAudio, the server
+# this image has always started.
+copper_audio_backend() {
+    _conf=${COPPER_CONF:-/etc/copper.conf}
+    _word=
+    if [ -r "$_conf" ]; then
+        _word=$(sed -n 's/^[[:space:]]*audio[[:space:]]*=[[:space:]]*\([a-z]*\).*$/\1/p' \
+                    "$_conf" 2>/dev/null | tail -n 1)
+    fi
+    case "$_word" in
+        pipewire) printf '%s\n' pipewire ;;
+        *)        printf '%s\n' pulseaudio ;;
+    esac
+}
+
 # Audio. The server is a per-user daemon; PulseAudio refuses to run as root
 # without --system, and the desktop's clients expect the server owning this
 # user's session. Started here, once, before the desktop takes the screen.
+# Which one is /etc/copper.conf's answer; both are installed.
 # COPPER_AUDIO=0 skips it (the gate sets that, so a test run does not launch a
 # daemon on the machine running it).
-if [ "${COPPER_AUDIO:-1}" = 1 ] && command -v pulseaudio >/dev/null 2>&1; then
-    if ! pulseaudio --check >/dev/null 2>&1; then
-        pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || :
-    fi
-    if pulseaudio --check >/dev/null 2>&1; then
-        say "audio: pulseaudio is running"
-    else
-        say "audio: pulseaudio is installed but did not start"
-    fi
+if [ "${COPPER_AUDIO:-1}" = 1 ]; then
+    case "$(copper_audio_backend)" in
+    pipewire)
+        # The graph server, its session manager, and the PulseAudio-protocol
+        # front end. pipewire-pulse does not depend on wireplumber, so all
+        # three are started. The graph socket is the "it came up" signal.
+        _rt=${XDG_RUNTIME_DIR:-/tmp}
+        if command -v pipewire >/dev/null 2>&1; then
+            if [ ! -S "$_rt/pipewire-0" ]; then
+                pipewire >/dev/null 2>&1 &
+            fi
+            if command -v wireplumber >/dev/null 2>&1; then
+                wireplumber >/dev/null 2>&1 &
+            fi
+            if command -v pipewire-pulse >/dev/null 2>&1; then
+                pipewire-pulse >/dev/null 2>&1 &
+            fi
+            i=0
+            while [ "$i" -lt 5 ] && [ ! -S "$_rt/pipewire-0" ]; do
+                sleep 1
+                i=$((i + 1))
+            done
+            if [ -S "$_rt/pipewire-0" ]; then
+                say "audio: pipewire is running"
+            else
+                say "audio: pipewire is installed but did not start"
+            fi
+        else
+            say "audio: pipewire is selected but not installed"
+        fi
+        ;;
+    *)
+        if command -v pulseaudio >/dev/null 2>&1; then
+            if ! pulseaudio --check >/dev/null 2>&1; then
+                pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || :
+            fi
+            if pulseaudio --check >/dev/null 2>&1; then
+                say "audio: pulseaudio is running"
+            else
+                say "audio: pulseaudio is installed but did not start"
+            fi
+        fi
+        ;;
+    esac
 fi
 say "starting XFCE on $DISPLAY"
 say "session output goes to $SESSIONLOG"

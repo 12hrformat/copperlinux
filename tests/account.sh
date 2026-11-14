@@ -187,6 +187,32 @@ if [ -n "$bo_uid" ]; then
     fi
 fi
 
+# The image-wide choices are not cosmetic: the passwd shell is what copper-init
+# execs for the session, and /etc/copper.conf is what the launchers read for
+# audio. The driver answers zsh and pipewire, so those tokens -- not the
+# defaults -- are what have to land.
+bo_shell=$(printf '%s' "$bo_line" | cut -d: -f7)
+if [ "$bo_shell" = "/usr/bin/zsh" ]; then
+    ok "bo's login shell is /usr/bin/zsh (the wizard's answer)"
+else
+    bad "bo's login shell is '$bo_shell', expected /usr/bin/zsh"
+fi
+if grep -qx 'shell=zsh' "$ROOT/etc/copper.conf" 2>/dev/null; then
+    ok "/etc/copper.conf records shell=zsh"
+else
+    bad "/etc/copper.conf does not record shell=zsh"
+fi
+if grep -qx 'audio=pipewire' "$ROOT/etc/copper.conf" 2>/dev/null; then
+    ok "/etc/copper.conf records audio=pipewire"
+else
+    bad "/etc/copper.conf does not record audio=pipewire"
+fi
+if [ "$(cat "$ROOT/etc/copper-init" 2>/dev/null)" = busybox ]; then
+    ok "/etc/copper-init records busybox (the wizard's answer)"
+else
+    bad "/etc/copper-init does not record busybox"
+fi
+
 if [ $fail -gt 0 ]; then
     echo "$fail check(s) failed"
     exit 1

@@ -465,6 +465,23 @@ fi
 
 # ---------------------------------------------------------------------------
 echo
+echo "--- tests/config-gate.sh: every image-wide switch agrees with itself ---"
+# Unprivileged and buildless. It reads both ends of the three switches the
+# image ships: GRUB -> /init for the init, /etc/copper.conf -> copper-init and
+# the passwd record for the shell, /etc/copper.conf -> both launchers for the
+# audio server. A rename on one side is silent -- the image still boots and
+# just ignores the user's answer -- so nothing else in the suite reads every
+# pair.
+if out=$(sh tests/config-gate.sh 2>&1); then
+    n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
+    record config-gate.sh ok "$n checks"
+else
+    record config-gate.sh bad "a config-switch check failed"
+    printf '%s\n' "$out" | grep -E '^  FAIL' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
 echo "=== summary ==="
 echo "  passed    $pass"
 echo "  skipped   $skip"
