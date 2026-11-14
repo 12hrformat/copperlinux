@@ -2660,6 +2660,22 @@ build_hyprland() {
         "$TGT/usr/bin/fuzzel" "$TGT/usr/bin/kitty" "$TGT/usr/bin/dunst"
   copy_stage_in "$STAGE" "$TGT"
 
+  # Shared libraries from this stage must win over whatever an earlier stage
+  # left under the same path. copy_stage_in does not overwrite, and build_niri
+  # runs first and installs libinput10 and libxkbcommon0 from noble -- versions
+  # too old for this compositor (noble has libinput 1.25 with symbols only up to
+  # LIBINPUT_1.25, and libxkbcommon 1.6 with V_1.6.0). The Hyprland binary wants
+  # LIBINPUT_1.28..1.31 and V_1.11.0, so the image silently shipped a new
+  # compositor next to old libraries and died at launch with
+  # "version `LIBINPUT_1.28' not found". Same fix build_niri already carries.
+  while IFS= read -r so; do
+    rel=${so#"$STAGE"/}
+    mkdir -p "$TGT/$(dirname "$rel")"
+    # -L dereferences symlinks to real files; -f forces the overwrite.
+    cp -a -f "$so" "$TGT/$rel"
+  done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
+  echo "  shared libraries from the hyprland stage take precedence over earlier packages"
+
   # polkitd's package postinst makes its authentication helper setuid root and
   # hands two state directories to the polkitd group. No postinst runs in this
   # build, so what arrived from the .deb is a plain 0755 root:root helper. The
