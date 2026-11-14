@@ -3990,6 +3990,16 @@ exec "$real" "$@"
 WRAP
   chmod 0755 "$XW/xorriso"
   echo "==> grub-mkrescue"
+  # Diagnosis for the library-version failure: report what the staging tree
+  # holds for the input libraries, immediately before they are packaged. The
+  # tree-side guard passed and the disc-side guard failed, so one of them is
+  # looking at a different file; comparing their hashes names which.
+  local diag_li diag_x
+  diag_li=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
+  diag_x=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null)
+  echo "  iso: tree libinput.so.10 -> ${diag_li:-MISSING} hash=$(sha256sum "$diag_li" 2>/dev/null | cut -c1-16)"
+  echo "  iso: tree libxkbcommon.so.0 -> ${diag_x:-MISSING} hash=$(sha256sum "$diag_x" 2>/dev/null | cut -c1-16)"
+
   PATH="$XW:$PATH" COPPER_REAL_XORRISO="$REAL_XORRISO" \
     grub-mkrescue -o "$OUT/copper.iso" "$TGT"
   [ -s "$OUT/copper.iso" ] || { echo "grub-mkrescue failed"; exit 1; }
@@ -4044,7 +4054,7 @@ WRAP
     lt=$(readlink -f "$lchk/x/$nf" 2>/dev/null)
     if [ ! -e "$lt" ] || ! grep -qa -e "$sym" "$lt"; then
       echo "iso: /usr/lib/x86_64-linux-gnu/$nf on the DISC does not provide $sym" >&2
-      echo "iso:   $nf -> $(readlink "$lchk/x/$nf" 2>/dev/null || echo '(regular file)')" >&2
+      echo "iso:   $nf -> $(readlink "$lchk/x/$nf" 2>/dev/null || echo '(regular file)') hash=$(sha256sum "$lt" 2>/dev/null | cut -c1-16)" >&2
       echo "iso: the booted compositor would die with \"version '$sym' not found\"" >&2
       exit 1
     fi
