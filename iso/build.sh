@@ -2505,6 +2505,12 @@ build_hyprland() {
   local HA="$WORK/hyprland-apt" status="$WORK/hyprland-status"
   local KEYRING="$HA/etc/apt/keyrings/cppiber-ubuntu-hyprland.gpg"
   mkdir -p "$DH/partial"
+  # The download cache lives in the cached work tree, so debs from an earlier
+  # run survive into this one. They get extracted alongside the freshly
+  # resolved ones, and whichever extracts last wins for a shared path -- so an
+  # older library can land in the image without apt ever resolving it this time.
+  # Start from an empty cache.
+  rm -f "$DH"/*.deb
   : > "$status"
 
   # ---- the archive key, by fingerprint -----------------------------------------
@@ -2628,7 +2634,7 @@ build_hyprland() {
          wl-clipboard cliphist jq brightnessctl playerctl libnotify-bin \
          dbus-x11 \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
-         libxkbcommon0 libinput10 libgtk-layer-shell0
+         libxkbcommon0=1.12.3-1 libinput10=1.31.1-1 libgtk-layer-shell0
   # No pre-flight candidate check here, deliberately. Two ways of writing one
   # were tried and both reported packages that resolve perfectly well:
   #   - `apt-cache policy "pkg=ver"` prints nothing at all for a versioned spec
@@ -2675,6 +2681,19 @@ build_hyprland() {
     cp -a -f "$so" "$TGT/$rel"
   done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
   echo "  shared libraries from the hyprland stage take precedence over earlier packages"
+
+  # Check the bytes that will actually ship, not the intent. This compositor
+  # needs LIBINPUT_1.30 and V_1.11.0; if an older library reached the tree by
+  # any route, the session dies at launch with "version ... not found" on a
+  # machine nobody can type on, long after CI has gone green. Fail here.
+  for need in "libinput.so.10:LIBINPUT_1.30" "libxkbcommon.so.0:V_1.11.0"; do
+    nf=${need%%:*}; sym=${need##*:}
+    np="$TGT/usr/lib/x86_64-linux-gnu/$nf"
+    if [ ! -e "$np" ] || ! grep -qa -e "$sym" "$np"; then
+      echo "hyprland: $np does not provide $sym; the pinned library never reached the image" >&2
+      exit 1
+    fi
+  done
 
   # polkitd's package postinst makes its authentication helper setuid root and
   # hands two state directories to the polkitd group. No postinst runs in this
