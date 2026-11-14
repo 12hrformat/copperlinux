@@ -2655,6 +2655,9 @@ build_hyprland() {
   done
   n=$(ls "$DH"/*.deb 2>/dev/null | wc -l)
   echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
+  echo "  resolved this run:"
+  ls "$DH"/libinput10_*.deb "$DH"/libxkbcommon0_*.deb 2>/dev/null |
+    xargs -r -n1 basename | sed 's/^/    /'
 
   # A cached build tree keeps the files an earlier run staged, and this stage's
   # copy does not overwrite what is already there, so a bar or compositor that a
@@ -4024,6 +4027,29 @@ WRAP
   # packaging drops a mode, a link resolves elsewhere), and the only witness
   # that cannot be wrong about what ships is the thing that ships.
   echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
+
+  # The compositor needs symbol versions its input libraries must define
+  # (LIBINPUT_1.30, V_1.11.0). A tree can carry them and the disc not -- a
+  # symlink retargeted after staging, a cache-restored file -- and the failure
+  # then only appears on a machine nobody can type on, as
+  #   Hyprland: libinput.so.10: version `LIBINPUT_1.30' not found
+  # So read the libraries off the disc, resolve the symlinks there, and check
+  # what boots rather than what was staged.
+  local lchk="$WORK/iso-libcheck"
+  rm -rf "$lchk"; mkdir -p "$lchk"
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract "/usr/lib/x86_64-linux-gnu" "$lchk/x" >/dev/null 2>&1 || true
+  for need in "libinput.so.10:LIBINPUT_1.30" "libxkbcommon.so.0:V_1.11.0"; do
+    nf=${need%%:*}; sym=${need##*:}
+    lt=$(readlink -f "$lchk/x/$nf" 2>/dev/null)
+    if [ ! -e "$lt" ] || ! grep -qa -e "$sym" "$lt"; then
+      echo "iso: /usr/lib/x86_64-linux-gnu/$nf on the DISC does not provide $sym" >&2
+      echo "iso:   $nf -> $(readlink "$lchk/x/$nf" 2>/dev/null || echo '(regular file)')" >&2
+      echo "iso: the booted compositor would die with \"version '$sym' not found\"" >&2
+      exit 1
+    fi
+  done
+  echo "  iso: the compositor's input libraries carry the symbols it needs, on the disc"
 
   # su, read back off the disc for the same reason: it needs 4755 root:root to
   # change uid, and the common-* includes its PAM config names have to be there
