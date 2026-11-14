@@ -2677,21 +2677,11 @@ build_hyprland() {
   # LIBINPUT_1.28..1.31 and V_1.11.0, so the image silently shipped a new
   # compositor next to old libraries and died at launch with
   # "version `LIBINPUT_1.28' not found". Same fix build_niri already carries.
-  # Probe: name the exact bytes the stage holds and the bytes the tree holds,
-  # either side of the copy. The tree-side guard and the disc-side guard
-  # disagree, so something is not doing what it appears to; this says which.
-  local p_src p_before p_after
-  p_src=$(readlink -f "$STAGE/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
-  p_before=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
-  echo "  hyprland: probe stage  libinput -> ${p_src:-MISSING} hash=$(sha256sum "$p_src" 2>/dev/null | cut -c1-16)"
-  echo "  hyprland: probe tree-before libinput -> ${p_before:-MISSING} hash=$(sha256sum "$p_before" 2>/dev/null | cut -c1-16)"
   while IFS= read -r so; do
     rel=${so#"$STAGE"/}
     mkdir -p "$TGT/$(dirname "$rel")"
     cp -a -f "$so" "$TGT/$rel"
   done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
-  p_after=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
-  echo "  hyprland: probe tree-after  libinput -> ${p_after:-MISSING} hash=$(sha256sum "$p_after" 2>/dev/null | cut -c1-16)"
   echo "  shared libraries from the hyprland stage take precedence over earlier packages"
 
   # Check the bytes that will actually ship, not the intent. This compositor
@@ -2728,28 +2718,13 @@ build_hyprland() {
     done
   fi
 
-  # Shared libraries are the one thing copied from a PACKAGE that must be
-  # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
-  # version win, which is right for /etc, for the busybox applet links and for
-  # the static musl tools -- but wrong here: if the PPA ever carries a library
-  # newer than noble's, hyprland links that one, and the version gui already
-  # put in /usr/lib would leave the compositor unable to start. Identical
-  # version -> the copy is the same bytes and this is a no-op; newer -> the
-  # newer library is the one its consumer was built against.
-  rm -rf "$WORK/hyprland-layer"; mkdir -p "$WORK/hyprland-layer"
-  ( cd "$WORK/hyprland-layer" && apt-get -o APT::Sandbox::User=root download \
-      libxkbcommon0 libinput10 libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
-      libseat1 libgtk-layer-shell0 ) \
-    >"$WORK/hyprland-layer.log" 2>&1 \
-    || { echo "hyprland: could not fetch shared libraries" >&2; exit 1; }
-  for deb in "$WORK/hyprland-layer"/*.deb; do
-    dpkg-deb -x "$deb" "$STAGE"
-  done
-  while IFS= read -r so; do
-    rel=${so#"$STAGE"/}
-    mkdir -p "$TGT/$(dirname "$rel")"
-    cp -a -f "$so" "$TGT/$rel"
-  done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
+  # This used to fetch the shared libraries a second time with plain host apt
+  # (--download-only, no version pin, no PPA source) and force-copy them over
+  # the tree after the pinned closure above. That silently reverted the tree
+  # to noble's libinput/libxkbcommon -- the compositor then dies at launch with
+  # "version `LIBINPUT_1.30' not found". Every library the block fetched is
+  # already in the pinned list and arrives through copy_stage_in and the
+  # precedence pass above, so the block is duplication, not coverage.
 
   # The loader, defensively: the gui stage creates it, and every glibc ELF
   # needs it at exactly /lib64/ld-linux-x86-64.so.2 before a single instruction
