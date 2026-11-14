@@ -1067,6 +1067,58 @@ static void start_seatd(void) {
     usleep(200 * 1000);
 }
 
+/* VMware's guest tools.
+
+   A VMware guest is the one hypervisor where the console mode does not follow
+   the window by itself. vmwgfx programs whatever mode the firmware handed it,
+   and when the VMware window is maximised the host offers a new resolution
+   through the guest tools channel; open-vm-tools' resolutionKMS plugin is what
+   receives that hint and programs the KMS connector. Without the daemon the
+   window shows the old framebuffer scaled up, which is exactly what "loses its
+   quality in fullscreen" looks like.
+
+   The systemd flavour has copper-vmtools.service for this. Here PID 1 starts
+   it beside seatd, and only on VMware: the DMI vendor is the same fact
+   ConditionVirtualization=vmware reads, and on any other machine vmtoolsd has
+   nothing to talk to. Best effort -- a machine with no open-vm-tools just says
+   nothing and boots as before. /etc/vmware-tools/tools.conf turns the plugin
+   on; upstream leaves it off when it finds no Xorg vmware driver, and this
+   image has none. */
+static void start_vmtools(void) {
+    static const char *paths[] = { "/usr/bin/vmtoolsd", "/usr/sbin/vmtoolsd", NULL };
+    const char *exe = NULL;
+    for (int i = 0; paths[i]; i++) {
+        if (access(paths[i], X_OK) == 0) { exe = paths[i]; break; }
+    }
+    if (!exe) return;                 /* open-vm-tools not in this image */
+
+    char vendor[64] = "";
+    FILE *vf = fopen("/sys/class/dmi/id/sys_vendor", "r");
+    if (vf) {
+        if (fgets(vendor, sizeof vendor, vf)) {
+            char *nl = strchr(vendor, '\n');
+            if (nl) *nl = '\0';
+        }
+        fclose(vf);
+    }
+    if (!strstr(vendor, "VMware")) return;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        say("could not fork vmtoolsd: %s", strerror(errno));
+        return;
+    }
+    if (pid == 0) {
+        setsid();
+        /* --background daemonises; the short-lived parent exits and PID 1
+           reaps it, and the daemon keeps the plugins loaded. */
+        execl(exe, "vmtoolsd", "--background", (char *)NULL);
+        _exit(127);
+    }
+    usleep(200 * 1000);
+    say("VMware guest tools are up (the console follows the window size)");
+}
+
 
 /* Make fd's terminal this session's controlling terminal.
 
@@ -1839,6 +1891,7 @@ static void run_session(void) {
     if (!g_console_only) {
         start_system_bus();
         start_seatd();
+        start_vmtools();
     }
 
     /* Exactly one session at a time. Keep the pid so the reaper below can wait

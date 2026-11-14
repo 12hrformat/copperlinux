@@ -3,11 +3,10 @@
 #
 # The compositor and its session tools are in the image: the niri stage bakes
 # them from the praksharma PPA. The apps on top -- browsers, editors, media --
-# are ingot packages, and before anything starts this asks whether to install
-# the missing ones (manifest at /etc/copper/niri-apps). What is genuinely absent
-# still gets its own exit code and its own sentence naming the piece, instead of
-# a bare "not found" that is indistinguishable from a broken PATH or a missing
-# library.
+# are ingot packages, and the missing ones are installed before anything starts
+# (manifest at /etc/copper/niri-apps). What is genuinely absent still gets its
+# own exit code and its own sentence naming the piece, instead of a bare "not
+# found" that is indistinguishable from a broken PATH or a missing library.
 #
 # niri is a Wayland compositor, so there is no second process to hand a display
 # to the way startxfce hands one to startxfce4: the compositor IS the session.
@@ -34,8 +33,9 @@
 #   22  the session runtime could not be prepared
 #   23  niri exited while starting up
 #   24  usage error
-#   25  a component is missing but there is no terminal to ask on, and
-#       neither --yes nor --no was given, so nothing was decided
+#
+# There is no "cannot ask" code any more: the components install by default and
+# --no declines them, so a machine without a terminal has nothing to stop on.
 #
 # KNOWN LIMITS, recorded rather than left to be found on a machine.
 #
@@ -167,7 +167,7 @@ startniri -- start the niri compositor on the tty
 
   startniri            set up the session and start niri
   startniri --check    report what is installed and exit, starting nothing
-  startniri --yes      install any missing components without asking
+  startniri --yes      install any missing components (now the default)
   startniri --no       do not install components, just start the session
   startniri --help     this text
 
@@ -178,7 +178,7 @@ Environment, all optional:
   COPPER_SESSIONLOG  where the compositor logs    (default /tmp/niri.log)
   COPPER_NIRI_APPS   where the component manifest lives
                      (default /etc/copper/niri-apps; absence disables the
-                     offer entirely)
+                     install entirely)
   COPPER_INGOT       installer for the components  (default ingot)
   COPPER_SUDO        how to gain root for the install (default sudo; empty
                      means already root or never use it)
@@ -186,11 +186,12 @@ Environment, all optional:
   COPPER_SEATD_SOCK  seatd's socket              (default /run/seatd.sock)
   COPPER_INPUT_SYS   where the input devices live (default /sys/class/input)
   COPPER_UDEV_DATA   the libudev records PID 1 writes (default /run/udev/data)
+  COPPER_AUDIO       start the user PulseAudio server (default 1; 0 skips)
   XDG_RUNTIME_DIR    the session's private runtime directory (default
                      /run/user/<uid>, made here when missing)
 
 Exit codes: 0 ok, 20 no niri, 21 no session config, 22 no runtime,
-23 niri exited while starting, 24 usage, 25 no way to ask about components.
+23 niri exited while starting, 24 usage.
 EOF
 }
 
@@ -353,11 +354,19 @@ else
 fi
 
 # Components. The session is in the image; the apps on top of it are ingot
-# packages, and only the missing ones are offered. The list lives in the
-# manifest, not here: what is offered, what marks it present, and how it is
-# installed change independently of this script. Components whose 'how' is
-# "image" are expected in the ISO already -- a missing one is a broken image, so
-# it is reported and never turned into an install attempt.
+# packages, and the missing ones are installed here, on the first start, before
+# the compositor is handed the console. The list lives in the manifest, not in
+# this script: what is offered, what marks it present, and how it is installed
+# change independently of this script. Components whose 'how' is "image" are
+# expected in the ISO already -- a missing one is a broken image, so it is
+# reported and never turned into an install attempt.
+#
+# This used to ask a Y/n question, and to exit 25 when there was no terminal to
+# ask on. Both are gone: the manifest is the session's own package list, the
+# session cannot be useful without a terminal, an editor, a browser and a
+# fetch tool, and a first boot that stops on a question nobody asked for is a
+# machine that looks broken. --no is how you say no now, once, for a machine
+# that is staying offline.
 missing=
 if [ -r "$APPS" ]; then
     while read -r cname cprobe corigin; do
@@ -375,24 +384,8 @@ fi
 if [ -n "$missing" ]; then
     do_install=
     case "$choice" in
-        yes) do_install=1 ;;
-        no)  say "not installing components (--no)" ;;
-        *)
-            if [ -t 0 ]; then
-                printf 'startniri: before running niri do you want to install its suggested apps? (Y/n) '
-                answer=
-                read -r answer || answer=
-                case "$answer" in
-                    [Nn]*) say "not installing components" ;;
-                    *)     do_install=1 ;;
-                esac
-            else
-                say "a component is missing and there is no way to ask: stdin is not a terminal."
-                say "  startniri --yes   install the missing components first"
-                say "  startniri --no    start the session without them"
-                exit 25
-            fi
-            ;;
+        no) say "not installing components (--no)" ;;
+        *)  do_install=1 ;;
     esac
 
     if [ -n "$do_install" ]; then
@@ -568,6 +561,24 @@ if [ "$soft" = 1 ]; then
     LIBGL_ALWAYS_SOFTWARE=1
     export LIBGL_ALWAYS_SOFTWARE
     say "no render node; forcing software rendering"
+fi
+
+# Audio. cava, mpv and firefox all speak PulseAudio, and the client libraries
+# are in the image, but the server is a per-user daemon -- PulseAudio refuses to
+# run as root without --system, and a client on this tty connects to the server
+# belonging to this user. So the session starts it, once, here. A missing binary
+# is not fatal: the session still runs, it is just silent. COPPER_AUDIO=0 skips
+# it, which is what the gate sets so a test run does not start a daemon on the
+# machine running it.
+if [ "${COPPER_AUDIO:-1}" = 1 ] && command -v pulseaudio >/dev/null 2>&1; then
+    if ! pulseaudio --check >/dev/null 2>&1; then
+        pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || :
+    fi
+    if pulseaudio --check >/dev/null 2>&1; then
+        say "audio: pulseaudio is running"
+    else
+        say "audio: pulseaudio is installed but did not start"
+    fi
 fi
 
 # Hand the session over. Background first so the launch can be watched: a

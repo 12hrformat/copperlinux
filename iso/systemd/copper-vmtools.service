@@ -1,0 +1,42 @@
+# Copper Linux -- VMware guest tools.
+#
+# The under-systemd home for what copper-init's start_vmtools() does: run
+# vmtoolsd as root so its plugins can talk to the host. Only the resolution
+# plugin matters to a desktop, and it is the reason this unit exists at all:
+# resolutionKMS listens for the host's SetResolution hint and programs the KMS
+# connector, which is what makes the guest console follow the VMware window.
+# Without it the kernel driver stays at whatever mode the firmware picked and
+# the desktop is stretched into a larger window -- still the old number of
+# pixels, so it looks soft after a zoom.
+#
+# ConditionVirtualization=vmware keeps this off a bare-metal install and off
+# the other hypervisors; open-vm-tools on a machine that is not VMware would
+# just sit there talking to no host.
+#
+# Restart is bounded for the reason copper-seatd.service gives: a failed unit
+# prints [FAILED] on the tty the first-boot wizard is drawing its form on.
+#
+[Unit]
+Description=Copper VMware guest tools (display autofit)
+ConditionVirtualization=vmware
+ConditionPathExists=|/usr/bin/vmtoolsd
+ConditionPathExists=|/usr/sbin/vmtoolsd
+After=systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+Before=copper-console.service
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The package has used both directories over its life; search both rather than
+# betting on one. exec, so vmtoolsd is the process systemd manages.
+ExecStart=/bin/sh -c 'for p in /usr/bin/vmtoolsd /usr/sbin/vmtoolsd; do \
+    [ -x "$p" ] && exec "$p"; done; \
+    echo "copper-vmtools: no vmtoolsd binary at /usr/bin/vmtoolsd or /usr/sbin/vmtoolsd" >&2; \
+    exit 127'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=copper.target

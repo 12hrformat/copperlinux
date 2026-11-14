@@ -142,6 +142,8 @@ start_qemu() {
     : > "$LOG"
     "$QEMU" -m "$MEM" -smp "$CPUS" -no-reboot \
         -display none -serial stdio -monitor none \
+        -audiodev driver=none,id=aud0 \
+        -device intel-hda -device hda-duplex,audiodev=aud0 \
         "${ACCEL[@]}" "$@" </dev/null >"$LOG" 2>&1 &
     QEMU_PID=$!
 }
@@ -209,13 +211,19 @@ grub)
     # If the handover never happened, the network milestone cannot, and waiting
     # another full deadline only delays the failure report.
     if [ "$failed" -eq 0 ]; then
-        wait_for 'copper: .*(is up, asking DHCP|no network interface|skipping DHCP)' \
+        wait_for 'copper(-[a-z]+)?: .*(is up, asking DHCP|no network interface|skipping DHCP)' \
             "the network setup"; rc=$?
         # The emulated card is always attached and the kernel is built with the
         # driver, so the skip lines mean the interface never came up. Those are
         # failures, not a machine without a NIC -- but matching them ends the
         # wait immediately instead of letting it time out.
-        if [ "$rc" -eq 0 ] && grep -qE 'copper: .*is up, asking DHCP' "$LOG"; then
+        #
+        # The prefix is not always "copper:". The busybox flavour's PID 1 logs
+        # as copper-init and says "copper: ...", while the systemd flavour runs
+        # the DHCP client and the lease script as their own units, which log
+        # under their own names -- "copper-dhcp:" and "copper-net:". The gate
+        # is asking whether the NIC came up, not which process said so.
+        if [ "$rc" -eq 0 ] && grep -qE 'copper(-[a-z]+)?: .*is up, asking DHCP' "$LOG"; then
             note_ok "copper-init brought the emulated NIC up and said so on the serial port"
         else
             [ "$rc" -eq 0 ] && say "copper-init reported no usable network interface"

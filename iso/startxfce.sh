@@ -773,6 +773,21 @@ fi
 # not touch the exit status.
 DISPLAY=":$DISPLAY_NUM"
 export DISPLAY
+# Audio. The server is a per-user daemon; PulseAudio refuses to run as root
+# without --system, and the desktop's clients expect the server owning this
+# user's session. Started here, once, before the desktop takes the screen.
+# COPPER_AUDIO=0 skips it (the gate sets that, so a test run does not launch a
+# daemon on the machine running it).
+if [ "${COPPER_AUDIO:-1}" = 1 ] && command -v pulseaudio >/dev/null 2>&1; then
+    if ! pulseaudio --check >/dev/null 2>&1; then
+        pulseaudio --start --exit-idle-time=-1 >/dev/null 2>&1 || :
+    fi
+    if pulseaudio --check >/dev/null 2>&1; then
+        say "audio: pulseaudio is running"
+    else
+        say "audio: pulseaudio is installed but did not start"
+    fi
+fi
 say "starting XFCE on $DISPLAY"
 say "session output goes to $SESSIONLOG"
 exec "$STARTXFCE4" "$@" >"$SESSIONLOG" 2>&1

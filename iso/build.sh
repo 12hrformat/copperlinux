@@ -63,9 +63,9 @@ KPATH="v${KREL%%.*}.x"
 # lives in 12hrformat/copper-niriconfig and is fetched at build time,
 # pinned to a commit and checked against a hash (build_niri does the fetch and
 # the check).
-NIRI_CFG_SHA=730eb0bfc2397442381f8fa28eb29974a3975456
+NIRI_CFG_SHA=31f547783a964bad3be73fafa0f7215a035aea9c
 NIRI_CFG_URL="https://codeload.github.com/12hrformat/copper-niriconfig/tar.gz/$NIRI_CFG_SHA"
-NIRI_CFG_SHA256=2fcbc7b07a15975251f92d80cbe08b13dc605ab55186b528124440b032615cd8
+NIRI_CFG_SHA256=5834dc358e8f0df9691b2c33dd3b2808d172aac771c07a249e5549bd6f0e76ce
 
 # The praksharma/ubuntu-niri PPA for noble, with a verified fingerprint.
 NIRI_PPA_URL="https://ppa.launchpadcontent.net/praksharma/ubuntu-niri/ubuntu"
@@ -266,6 +266,22 @@ require_kernel_config() {
     exit 1
   fi
 
+  # Sound, asserted for the same reason as the display: a symbol kconfig drops
+  # is a machine with no /dev/snd and an audio stack that can only report "no
+  # sound card". HDA is the one device both VMware Workstation and QEMU's
+  # intel-hda present, and the codecs are what the driver needs to find a PCM
+  # on it -- SND_HDA_GENERIC is the parser for a codec nobody wrote a driver
+  # for, which is exactly what an emulated card looks like.
+  for sym in SOUND SND SND_PCM SND_TIMER SND_HDA SND_HDA_INTEL SND_HDA_GENERIC ; do
+    grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
+  done
+  if [ -n "$missing" ]; then
+    echo "kernel: sound support did not survive olddefconfig:$missing" >&2
+    echo "        Without it there is no /dev/snd: cava has nothing to draw," >&2
+    echo "        and the desktop has no audio at all." >&2
+    exit 1
+  fi
+
   # The disk controllers, asserted for the same reason the display drivers are:
   # a symbol whose dependencies are unmet is dropped by olddefconfig without a
   # word, and a kernel with no driver for the machine's disk boots to a shell
@@ -390,7 +406,12 @@ build_kernel() {
       --enable DRM_QXL --enable DRM_VBOXVIDEO \
       --enable DRM_I915 \
       --enable FB --enable FB_VESA --enable FB_EFI \
-      --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16
+      --enable FRAMEBUFFER_CONSOLE --enable FONT_8x16 \
+      --enable SOUND --enable SND --enable SND_PCM --enable SND_TIMER \
+      --enable SND_HWDEP --enable SND_HDA --enable SND_HDA_INTEL \
+      --enable SND_HDA_GENERIC --enable SND_HDA_CODEC_SIGMATEL \
+      --enable SND_HDA_CODEC_REALTEK --enable SND_HDA_CODEC_ANALOG \
+      --enable SND_HDA_CODEC_HDMI
     # vmxnet3 was renamed at some point around 6.12; asking for both names
     # costs nothing, since kconfig drops whichever one doesn't exist.
     #
@@ -1536,6 +1557,21 @@ build_gui() {
   for p in libasound2t64 libasound2; do
     if gui_carries "$p"; then alsa=$p; break; fi
   done
+  local pulseaudio="" p
+  for p in pulseaudio; do
+    if gui_carries "$p"; then pulseaudio=$p; break; fi
+  done
+  # open-vm-tools: the guest half of VMware's display handshake. Its
+  # resolutionKMS plugin is what makes the console mode follow the VMware
+  # window, so a maximised window is really more pixels instead of a smaller
+  # framebuffer stretched over the screen. The kernel side (vmwgfx) is already
+  # in the image; without this daemon nothing tells the driver the window
+  # changed, which is the "loses its quality when fullscreen" symptom. It is
+  # harmless elsewhere: copper-vmtools.service is conditioned on VMware.
+  local vmtools="" p
+  for p in open-vm-tools; do
+    if gui_carries "$p"; then vmtools=$p; break; fi
+  done
   # firefox, under whichever name the host's distro carries -- with
   # "carries" settled by the candidate check, because the first cut of
   # this probe accepted recognition and the runner died for it:
@@ -1601,6 +1637,14 @@ build_gui() {
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   [ -n "$browser" ] && set -- "$@" "$browser"
+  # pulseaudio: the server cava's client (pulse-simple) and mpv's audio backend
+  # talk to. The gui stage ships the client libraries (libasound for firefox's
+  # ALSA backend, the pulse client stack for the console tools) but used to ship
+  # no daemon at all, so every PulseAudio client in the image reported "no
+  # pulse audio" -- which is where cava sat, and where the desktop's playback
+  # sat too. The daemon is the missing half of the audio stack.
+  [ -n "$pulseaudio" ] && set -- "$@" "$pulseaudio"
+  [ -n "$vmtools" ] && set -- "$@" "$vmtools"
   apt-get \
     -o Dir::State::status="$status" \
     -o Dir::Cache::archives="$DG" \
@@ -3275,7 +3319,7 @@ build_systemd() {
   done
   ln -sf /etc/systemd/system/copper.target \
          "$TGT/etc/systemd/system/multi-user.target.wants/copper.target"
-  for u in copper-seatd.service copper-network.service copper-plymouth-quit.service; do
+  for u in copper-seatd.service copper-network.service copper-plymouth-quit.service copper-vmtools.service; do
     ln -sf "/etc/systemd/system/$u" \
            "$TGT/etc/systemd/system/copper.target.wants/$u"
   done

@@ -107,6 +107,7 @@ run_sut() {
     COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
     COPPER_DRM_DIR="$SUT_DRM" COPPER_SEATD_SOCK="$SUT_SEATD" \
     COPPER_INPUT_SYS="$SUT_INPUT_SYS" COPPER_UDEV_DATA="$SUT_UDEV_DATA" \
+    COPPER_AUDIO=0 \
     WAIT_TRIES="$tries" sh "$SUT" "$@" < /dev/null 2>&1
 }
 
@@ -302,24 +303,34 @@ eq "  an unknown option exits 24" 24 "$rc"
 out=$(sh "$SUT" --help 2>&1); rc=$?
 eq "  --help exits 0" 0 "$rc"
 has "  --help lists the exit codes" "23 niri exited while starting" "$out"
-has "  --help documents the component flags" "--yes" "$out"
-has "  --help lists exit 25" "25 no way to ask" "$out"
+has "  --help documents the component flags" "--no" "$out"
+hasnt "  --help no longer lists a retired exit 25" "25 no way to ask" "$out"
 
 echo
-echo "=== case 11: a component is missing, nothing to ask on, no --yes/--no ==="
+echo "=== case 11: a component is missing with no terminal, so it installs ==="
+# This used to be the "nothing to ask on" case, and the answer used to be exit
+# 25. The install is the default now: a first boot with no tty must not stop on
+# a question nobody can see, so it installs and starts.
 reset
 write_skel
 SKEL="$TMP/skel"
-printf '#!/bin/sh\nexit 0\n' > "$TMP/niri"; chmod +x "$TMP/niri"
+write_live_stub
 cat > "$TMP/apps" <<EOF
 firefox $TMP/missing/firefox ingot
 EOF
-APPS_MANIFEST="$TMP/apps"
-out=$(run_sut "$TMP/niri" 5); rc=$?
-SKEL=; APPS_MANIFEST=
-eq "  exit code is 25 (cannot ask)" 25 "$rc"
-has "  explains there is no terminal" "not a terminal" "$out"
-has "  points at --yes" "--yes" "$out"
+cat > "$TMP/ingot" <<'EOF'
+#!/bin/sh
+echo "ingot-stub: $*" >&2
+exit 0
+EOF
+chmod +x "$TMP/ingot"
+APPS_MANIFEST="$TMP/apps"; INGOT_STUB="$TMP/ingot"
+out=$(run_sut "$TMP/niri" 80); rc=$?
+SKEL=; APPS_MANIFEST=; INGOT_STUB=
+eq "  exit code is 0 (installed, then started)" 0 "$rc"
+has "  says the components are being installed" "installing the missing components" "$out"
+has "  the installer really was invoked" "ingot-stub: install firefox" "$out"
+hasnt "  never printed the question" "do you want to install" "$out"
 
 echo
 echo "=== case 12: --no skips the install and the session starts anyway ==="

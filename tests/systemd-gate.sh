@@ -514,6 +514,7 @@ for want in \
     copper.target.wants/copper-seatd.service \
     copper.target.wants/copper-network.service \
     copper.target.wants/copper-plymouth-quit.service \
+    copper.target.wants/copper-vmtools.service \
     sysinit.target.wants/copper-plymouth.service \
     sysinit.target.wants/copper-zram.service \
     multi-user.target.wants/copper.target \
@@ -599,7 +600,8 @@ fi
 # is one systemd reads with a warning, and the source tree is 777 on Windows.
 for u in copper.target copper-tty-clear.service copper-firstboot.service \
          copper-console.service copper-seatd.service copper-network.service \
-         copper-zram.service copper-plymouth.service copper-plymouth-quit.service; do
+         copper-zram.service copper-plymouth.service copper-plymouth-quit.service \
+         copper-vmtools.service; do
     f="$TGT/etc/systemd/system/$u"
     if [ ! -f "$f" ]; then
         bad "installed $u" "missing"
@@ -642,6 +644,28 @@ if grep -q '/usr/bin/seatd' "$TGT/etc/systemd/system/copper-seatd.service" \
 else
     bad "copper-seatd.service searches both /usr/bin and /usr/sbin" \
         "$(grep ExecStart "$TGT/etc/systemd/system/copper-seatd.service" 2>&1 | tr '\n' '|')"
+fi
+
+# ---- the display follows the VMware window --------------------------------
+# vmwgfx on its own keeps whatever mode the firmware picked; open-vm-tools'
+# resolutionKMS plugin is what programs the connector again when the host
+# window is maximised. That is the difference between a sharp desktop and a
+# smaller framebuffer stretched over the screen. Two halves have to be in the
+# image: the daemon, and a tools.conf that enables the plugin, because upstream
+# leaves it off when it finds no Xorg vmware driver and this image has none.
+# A host that carries no open-vm-tools builds an image without the daemon; that
+# is allowed, and saying so is better than a silent skip.
+if [ -x "$TGT/usr/bin/vmtoolsd" ] || [ -x "$TGT/usr/sbin/vmtoolsd" ]; then
+    ok "vmtoolsd is present where copper-vmtools.service searches"
+    if grep -qE '^[[:space:]]*enable[[:space:]]*=[[:space:]]*true' \
+            "$TGT/etc/vmware-tools/tools.conf" 2>/dev/null; then
+        ok "resolutionKMS is explicitly enabled in tools.conf"
+    else
+        bad "resolutionKMS is explicitly enabled in tools.conf" \
+            "$(cat "$TGT/etc/vmware-tools/tools.conf" 2>&1 | tr '\n' '|')"
+    fi
+else
+    printf '  note  open-vm-tools did not ship on this host; no display autofit in this image\n'
 fi
 
 # ---- ldconfig is masked ----------------------------------------------------

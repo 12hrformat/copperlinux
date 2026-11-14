@@ -136,6 +136,7 @@ run_sut() {
     COPPER_XORGCONF="$TMP/xorg.conf" \
     COPPER_XFCE_APPS="${APPS_MANIFEST:-$TMP/no-apps}" \
     COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
+    COPPER_AUDIO=0 \
     sh "$SUT" "$@" 2>&1
 }
 
