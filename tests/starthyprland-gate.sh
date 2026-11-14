@@ -196,6 +196,11 @@ PATH="$TMP:$PATH";                        export PATH
 : "${COPPER_UDEV_DATA:=$TMP/run/udev/data}"; export COPPER_UDEV_DATA
 # No sudo: the gate must exercise the install path without a password prompt.
 : "${COPPER_SUDO=}";                       export COPPER_SUDO
+# The library stash the launcher restores from. Empty by default so an ordinary
+# case never touches the real /usr/lib on the machine running the gate; the
+# restore case below points both at throwaway trees.
+: "${COPPER_LIBSTASH=}";                   export COPPER_LIBSTASH
+: "${COPPER_LIBDIR=$TMP/usr-lib}";         export COPPER_LIBDIR
 # Keep the wait loop short: the "no answering socket" case would otherwise
 # spend its full budget before falling through.
 : "${WAIT_TRIES=20}";                      export WAIT_TRIES
@@ -326,6 +331,47 @@ if [ -e "$skel_conf/hyprland.conf" ]; then
 else
     ok "no stale hyprland.conf ships beside it"
 fi
+
+# ingot payloads are self-contained: xarchiver's tarball carries noble's
+# libxkbcommon, and unpacking it replaces the image's newer library, which makes
+# Hyprland die at launch with "version `V_1.11.0' not found". The installer stub
+# here clobbers the tree exactly the way such a payload does; the launcher must
+# put the libraries back before starting the compositor.
+rm -rf "$TMP/libstash" "$TMP/libdir"
+mkdir -p "$TMP/libstash" "$TMP/libdir"
+printf 'LIBINPUT_1.30\n' > "$TMP/libstash/libinput.so.10"
+printf 'LIBINPUT_1.30\n' > "$TMP/libstash/libinput.so.10.13.0"
+printf 'V_1.11.0\n'     > "$TMP/libstash/libxkbcommon.so.0"
+printf 'V_1.11.0\n'     > "$TMP/libstash/libxkbcommon.so.0.12.3"
+printf 'no symbol here\n' > "$TMP/libdir/libinput.so.10"
+printf 'no symbol here\n' > "$TMP/libdir/libxkbcommon.so.0"
+printf 'widget          %s/widget          ingot\n' "$TMP" > "$TMP/apps-widget"
+cat > "$TMP/ingot-clobber" <<EOF
+#!/bin/sh
+[ "\${1:-}" = install ] || exit 0
+printf 'clobbered by a payload\n' > "$TMP/libdir/libxkbcommon.so.0"
+exit 0
+EOF
+chmod +x "$TMP/ingot-clobber"
+out=$(COPPER_LIBSTASH="$TMP/libstash" COPPER_LIBDIR="$TMP/libdir" \
+      COPPER_HYPRLAND_APPS="$TMP/apps-widget" COPPER_INGOT="$TMP/ingot-clobber" \
+      run_launcher --yes 2>&1); rc=$?
+eq "session starts with a payload-clobbered library" 0 "$rc"
+has "the restore is announced" "restoring hyprland's input libraries" "$out"
+if grep -qa "LIBINPUT_1.30" "$TMP/libdir/libinput.so.10" &&
+   grep -qa "V_1.11.0" "$TMP/libdir/libxkbcommon.so.0"; then
+    ok "both libraries were put back in the tree"
+else
+    bad "both libraries were put back in the tree" "still the payload's copies"
+fi
+
+# Without a stash there is nothing to restore from, so the launcher must say so
+# plainly instead of handing the compositor a library it cannot link against.
+rm -rf "$TMP/libdir2"; mkdir -p "$TMP/libdir2"
+printf 'no symbol here\n' > "$TMP/libdir2/libinput.so.10"
+printf 'no symbol here\n' > "$TMP/libdir2/libxkbcommon.so.0"
+out=$(COPPER_LIBSTASH="" COPPER_LIBDIR="$TMP/libdir2" run_launcher --yes 2>&1); rc=$?
+eq "session still starts when there is no stash" 0 "$rc"
 
 echo
 if [ "$fails" -gt 0 ]; then

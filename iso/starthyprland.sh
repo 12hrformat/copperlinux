@@ -36,6 +36,7 @@
 #   24  usage error
 #   25  a component is missing but there is no terminal to ask on, and
 #       neither --yes nor --no was given, so nothing was decided
+#   26  a library hyprland needs is still missing after restoring it
 #
 # KNOWN LIMITS, recorded rather than left to be found on a machine.
 #
@@ -496,6 +497,27 @@ if [ -n "$missing" ]; then
             say "components installed, running hyprland now"
         fi
     fi
+fi
+
+# ingot unpacks every payload with a plain tar -xzf, so a package that bundles
+# its own libraries -- xarchiver carries noble's libxkbcommon -- replaces the
+# image's newer ones and Hyprland then refuses to start with "version
+# `V_1.11.0' not found". Re-assert the libraries this compositor was linked
+# against from the copies staged beside the config, then prove they landed.
+LIBSTASH=${COPPER_LIBSTASH:-/usr/share/copper/hyprland-runtime}
+LIBDIR=${COPPER_LIBDIR:-/usr/lib/x86_64-linux-gnu}
+if [ -d "$LIBSTASH" ]; then
+    say "restoring hyprland's input libraries"
+    $SUDO cp -a "$LIBSTASH"/. "$LIBDIR"/
+    $SUDO ldconfig || true
+    for need in "libinput.so.10:LIBINPUT_1.30" "libxkbcommon.so.0:V_1.11.0"; do
+        nf=${need%%:*}; sym=${need##*:}
+        if ! grep -qa -e "$sym" "$LIBDIR/$nf" 2>/dev/null; then
+            say "  $nf still does not provide $sym after restoring it;"
+            say "  hyprland would die with \"version '$sym' not found\"."
+            exit 26
+        fi
+    done
 fi
 
 # The runtime directory. Wayland keeps its sockets in $XDG_RUNTIME_DIR and

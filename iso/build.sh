@@ -2697,6 +2697,23 @@ build_hyprland() {
     fi
   done
 
+  # Keep a private copy of the libraries this compositor was linked against.
+  # ingot payloads are self-contained and unpack with a plain tar -xzf, so any
+  # package that bundles a library -- xarchiver ships noble's libxkbcommon --
+  # replaces the newer one in /usr/lib, and the session then dies at launch with
+  # "version `V_1.11.0' not found". starthyprland restores these after it has
+  # installed components. Resolved by readlink so the real file name survives a
+  # version bump of either library.
+  rm -rf "$TGT/usr/share/copper/hyprland-runtime"
+  mkdir -p "$TGT/usr/share/copper/hyprland-runtime"
+  for copylibs in libinput.so.10 libxkbcommon.so.0; do
+    copysrc="$TGT/usr/lib/x86_64-linux-gnu/$copylibs"
+    [ -e "$copysrc" ] || continue
+    cp -a "$copysrc" "$TGT/usr/share/copper/hyprland-runtime/"
+    copytgt=$(readlink -f "$copysrc") || continue
+    cp -a "$copytgt" "$TGT/usr/share/copper/hyprland-runtime/$(basename "$copytgt")"
+  done
+
   # polkitd's package postinst makes its authentication helper setuid root and
   # hands two state directories to the polkitd group. No postinst runs in this
   # build, so what arrived from the .deb is a plain 0755 root:root helper. The
