@@ -22,6 +22,17 @@ DefaultDependencies=no
 ConditionPathExists=/sys/block/zram0
 Before=sysinit.target swap.target
 After=systemd-udevd.service
+# DefaultDependencies=no keeps this unit out of the boot's automatic edges --
+# and that also means OUT of shutdown.target's, because those edges are the
+# very ones the default dependencies add. Without the two lines below the
+# unit has no stop job at all on shutdown: systemd would leave it running,
+# PID 1 would exec systemd-shutdown with /dev/zram0 still in /proc/swaps, and
+# systemd-shutdown's own `swapoff_all()` would then do the unbounded swapoff
+# this ExecStop exists to avoid. The whole point of the helper is that it runs
+# inside the stop transaction, where TimeoutStopSec is a real bound, so the
+# unit has to be IN that transaction.
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=oneshot
@@ -30,6 +41,19 @@ RemainAfterExit=yes
 # exit status is honest: a kernel that has zram0 but cannot swapon is a defect,
 # and the unit should say so in `systemctl --failed` rather than pretend.
 ExecStart=/usr/bin/copper-zram
+# Deactivate the swap while systemd is still watching, not afterwards. The
+# stop ordering already takes the desktop down first (this unit is
+# Before=sysinit.target, copper-console.service is After= it), so by the time
+# this runs the swap is cheap to drain; copper-zram-stop flushes the page
+# cache first so the pages have somewhere to go back to.
+#
+# TimeoutStopSec is per-unit and overrides the global 10 s default: draining
+# swap is the one stop in this image that can legitimately take longer than a
+# normal unit. It is still a bound, which is the difference that matters.
+# ExecStop=- because a failed drain must not hold the reboot: the helper
+# always exits 0, and the '-' covers the case where it is not there at all.
+ExecStop=-/usr/bin/copper-zram-stop
+TimeoutStopSec=30s
 
 [Install]
 WantedBy=sysinit.target

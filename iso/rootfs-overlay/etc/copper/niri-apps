@@ -27,6 +27,7 @@ firefox              /usr/bin/firefox             ingot
 curl                 /usr/bin/curl                ingot
 git                  /usr/bin/git                 ingot
 vim                  /usr/bin/vim                 ingot
+cmatrix              /usr/bin/cmatrix             ingot
 
 # The gui stage already ships make and nano, and ping is busybox's applet.
 # Their probes pass, so they are never installed; they are listed so the

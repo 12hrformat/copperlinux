@@ -854,6 +854,74 @@ else
     bad "the zram helper actually swaps the device on" \
         "$(grep -n swapon "$TGT/usr/bin/copper-zram" 2>&1 | tr '\n' '|')"
 fi
+
+# ---- the shutdown is bounded (the ~10 minute `sudo reboot`) ----------------
+# systemd-shutdown's swapoff_all() has no timeout: it reads /proc/swaps and
+# calls swapoff(2) on everything it finds, once the unit phase is over. So the
+# swap has to be gone BEFORE that, in copper-zram.service's own ExecStop where
+# TimeoutStopSec is a real bound.
+if [ -x "$TGT/usr/bin/copper-zram-stop" ]; then
+    ok "zram stop helper installed executable at /usr/bin/copper-zram-stop"
+else
+    bad "zram stop helper installed executable at /usr/bin/copper-zram-stop" \
+        "$(ls -l "$TGT/usr/bin/copper-zram-stop" 2>&1)"
+fi
+if grep -q 'swapoff /dev/zram0' "$TGT/usr/bin/copper-zram-stop"; then
+    ok "the stop helper actually deactivates /dev/zram0"
+else
+    bad "the stop helper actually deactivates /dev/zram0" \
+        "$(grep -n swapoff "$TGT/usr/bin/copper-zram-stop" 2>&1 | tr '\n' '|')"
+fi
+if grep -q 'drop_caches' "$TGT/usr/bin/copper-zram-stop"; then
+    ok "the stop helper frees page cache before swapoff"
+else
+    bad "the stop helper frees page cache before swapoff" \
+        "without it swapoff reclaims while it runs; that is the stall"
+fi
+if grep -qx 'ExecStop=-/usr/bin/copper-zram-stop' \
+        "$TGT/etc/systemd/system/copper-zram.service"; then
+    ok "copper-zram.service drains swap in its own stop job"
+else
+    bad "copper-zram.service drains swap in its own stop job" \
+        "$(grep ExecStop "$TGT/etc/systemd/system/copper-zram.service" 2>&1 | tr '\n' '|')"
+fi
+# DefaultDependencies=no also means OUT of shutdown.target's implicit edges:
+# without the explicit pair these units have no stop job at all, and the
+# helper above is never reached.
+for u in copper-zram.service copper-plymouth.service; do
+    if grep -qx 'Conflicts=shutdown.target' "$TGT/etc/systemd/system/$u" \
+       && grep -qx 'Before=shutdown.target' "$TGT/etc/systemd/system/$u"; then
+        ok "$u is in the shutdown transaction (DefaultDependencies=no trap)"
+    else
+        bad "$u is in the shutdown transaction (DefaultDependencies=no trap)" \
+            "$(grep -E '^(Conflicts|Before)=' "$TGT/etc/systemd/system/$u" 2>&1 | tr '\n' '|')"
+    fi
+done
+# The manager-wide cap on every other unit's stop.
+if [ -f "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" ] \
+   && grep -qx 'DefaultTimeoutStopSec=10s' \
+          "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf"; then
+    ok "the manager-wide stop timeout is capped at 10 s"
+else
+    bad "the manager-wide stop timeout is capped at 10 s" \
+        "$(cat "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" 2>&1 | tr '\n' '|')"
+fi
+if [ "$(stat -c '%a' "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" 2>/dev/null)" = 644 ]; then
+    ok "the system.conf.d drop-in is mode 644"
+else
+    bad "the system.conf.d drop-in is mode 644" \
+        "$(ls -l "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" 2>&1)"
+fi
+# The desktop lives in the console unit's cgroup, so the per-unit bound is
+# what stops a wedged compositor from holding shutdown.target.
+if grep -qx 'KillMode=mixed' "$TGT/etc/systemd/system/copper-console.service" \
+   && grep -qx 'TimeoutStopSec=5s' "$TGT/etc/systemd/system/copper-console.service"; then
+    ok "copper-console.service stops its cgroup in 5 s"
+else
+    bad "copper-console.service stops its cgroup in 5 s" \
+        "$(grep -E '^(KillMode|TimeoutStopSec)=' "$TGT/etc/systemd/system/copper-console.service" 2>&1 | tr '\n' '|')"
+fi
+
 if [ -f "$TGT/etc/systemd/journald.conf" ] \
    && grep -qE '^RuntimeMaxUse=' "$TGT/etc/systemd/journald.conf"; then
     ok "journald is capped (the live image has no journal to keep)"
@@ -1011,7 +1079,9 @@ fi
 # thing under test, not in a copy of it.
 sdin_block() { sed -n '/^  local sdin=/,/^  done$/p' "$BUILD"; }
 SB=$(sdin_block)
-for h in copper-tty-clear copper-dhcp copper-zram copper-splash-show copper-splash-quit; do
+for h in copper-tty-clear copper-dhcp copper-zram copper-zram-stop \
+         copper-splash-show copper-splash-quit \
+         system.conf.d; do
     if printf '%s\n' "$SB" | grep -q "systemd/$h"; then
         ok "the systemd stage stamps on $h"
     else
@@ -1032,7 +1102,7 @@ done
 # it out of build_systemd, because build.sh has other `for cmd in` loops (the
 # power commands) that have nothing to do with this assertion.
 STAGE_EXEC_LOOPS=$(extract build_systemd | grep -oE 'for cmd in [^;]+;')
-for c in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/bin/copper-zram; do
+for c in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/bin/copper-zram usr/bin/copper-zram-stop; do
     if printf '%s\n' "$STAGE_EXEC_LOOPS" | grep -qF "$c"; then
         ok "the stage asserts $c is in the tree"
     else

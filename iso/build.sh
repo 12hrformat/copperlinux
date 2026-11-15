@@ -1373,6 +1373,7 @@ assert_shell_scripts_parse() {
     for f in iso/copper.sh \
              iso/rootfs-overlay/usr/bin/ingot \
              iso/systemd/copper-tty-clear iso/systemd/copper-dhcp \
+             iso/systemd/copper-zram iso/systemd/copper-zram-stop \
              iso/systemd/copper-splash-show iso/systemd/copper-splash-quit; do
       [ -f "$REPO/$f" ] || {
         echo "build: $f is missing, so the POSIX check cannot run on it" >&2
@@ -1389,8 +1390,8 @@ assert_shell_scripts_parse() {
     # check at all, because it reads like the busybox tools were verified.
     # This loop was skipping every one of them over a wrong path, and
     # `[ -f ] || continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 6 ] || {
-      echo "build: the POSIX check covered $n_posix of 6 busybox tools" >&2; exit 1; }
+    [ "$n_posix" -eq 8 ] || {
+      echo "build: the POSIX check covered $n_posix of 8 busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
@@ -3140,10 +3141,16 @@ build_systemd() {
   # staged, skipping" and the ISO shipped the PREVIOUS helper -- a stale
   # artifact with a green light, which is the entire failure mode the stamp
   # exists to prevent.
+  #
+  # copper-zram-stop is the same rule twice over: it is the ExecStop of
+  # copper-zram.service, so editing it changes the shutdown of every boot.
+  # The system.conf.d drop-in is a manager setting, not a helper, but it is
+  # installed by this stage and the same staleness argument applies.
   local sdin=("$SELF" "$ROOT/systemd"/*.service "$ROOT/systemd"/*.target)
   for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network \
            "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp" \
-           "$ROOT/systemd/copper-zram" \
+           "$ROOT/systemd/copper-zram" "$ROOT/systemd/copper-zram-stop" \
+           "$ROOT/systemd/system.conf.d"/*.conf \
            "$ROOT/systemd/copper-splash-show" \
            "$ROOT/systemd/copper-splash-quit"; do
     [ -e "$p" ] && sdin+=("$p")
@@ -3329,15 +3336,17 @@ build_systemd() {
          "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service"
   # The helpers are SCRIPTS, not units, and they are the files in this
   # directory that have to be executable and to live on PATH (their units run
-  # them as /usr/bin/copper-tty-clear, /usr/bin/copper-dhcp and the two
-  # splash helpers). 0755 here, not 0644 like the units: a unit systemd reads
-  # is data, a program systemd execs is not.
+  # them as /usr/bin/copper-tty-clear, /usr/bin/copper-dhcp, /usr/bin/copper-zram
+  # and the two splash helpers). 0755 here, not 0644 like the units: a unit
+  # systemd reads is data, a program systemd execs is not.
   install -D -m 0755 "$ROOT/systemd/copper-tty-clear" \
           "$TGT/usr/bin/copper-tty-clear"
   install -D -m 0755 "$ROOT/systemd/copper-dhcp" \
           "$TGT/usr/bin/copper-dhcp"
   install -D -m 0755 "$ROOT/systemd/copper-zram" \
           "$TGT/usr/bin/copper-zram"
+  install -D -m 0755 "$ROOT/systemd/copper-zram-stop" \
+          "$TGT/usr/bin/copper-zram-stop"
   install -D -m 0755 "$ROOT/systemd/copper-splash-show" \
           "$TGT/usr/bin/copper-splash-show"
   install -D -m 0755 "$ROOT/systemd/copper-splash-quit" \
@@ -3349,6 +3358,16 @@ build_systemd() {
   for f in "$ROOT/systemd"/*.network; do
     [ -e "$f" ] || continue
     install -m 0644 "$f" "$TGT/etc/systemd/network/"
+  done
+  # Manager-wide settings are a drop-in, not a file to drop in /etc/systemd:
+  # the *.conf loop above is for the files systemd reads by that name directly
+  # (journald.conf and friends), and a system.conf.d entry one directory too
+  # high would be silently ignored while looking installed. install -D makes
+  # the directory, so the image does not depend on the systemd package having
+  # created it.
+  for f in "$ROOT/systemd/system.conf.d"/*.conf; do
+    [ -e "$f" ] || continue
+    install -D -m 0644 "$f" "$TGT/etc/systemd/system.conf.d/$(basename "$f")"
   done
 
   local u
@@ -3543,7 +3562,7 @@ build_systemd() {
   # asserted executable at the exact path the unit names. The two splash
   # helpers get the same treatment: copper-plymouth.service and
   # copper-plymouth-quit.service exec them by absolute path.
-  for h in copper-tty-clear copper-splash-show copper-splash-quit; do
+  for h in copper-tty-clear copper-splash-show copper-splash-quit copper-zram-stop; do
     if [ ! -x "$TGT/usr/bin/$h" ]; then
       echo "systemd: /usr/bin/$h is missing or not executable;" >&2
       echo "          a unit would exec a path that does not exist" >&2
@@ -3594,6 +3613,63 @@ build_systemd() {
       exit 1
     fi
   done
+
+  # ---- the shutdown bounds ------------------------------------------------
+  # These are one-line gates for a property that is invisible until a machine
+  # is asked to power off, and each one has a failure mode that is silent:
+  #
+  #   - DefaultDependencies=no also opts a unit OUT of shutdown.target's
+  #     implicit Conflicts=/Before= edges, so a unit with that setting has no
+  #     stop job at all. copper-zram.service without the explicit pair would
+  #     never run its ExecStop, systemd-shutdown would find /dev/zram0 still
+  #     in /proc/swaps, and its own swapoff is unbounded -- the exact ten
+  #     minutes this work exists to remove. The same pair is what makes the
+  #     plymouth daemon quit before systemd-shutdown has to kill it.
+  #   - The drop-in is the manager-wide 10 s cap. Installed one directory too
+  #     high it would be a file nobody reads, which looks identical to a file
+  #     that works until the next wedged stop.
+  #   - TimeoutStopSec on the console is the per-unit bound; KillMode=mixed is
+  #     what lets the five seconds be a bound on the whole cgroup rather than
+  #     a wait for a compositor to notice SIGTERM.
+  if [ ! -f "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" ]; then
+    echo "systemd: the system.conf.d drop-in did not install; every stop falls" >&2
+    echo "          back to the 90 s default it exists to replace" >&2
+    exit 1
+  fi
+  if [ "$(stat -c '%a' "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" 2>/dev/null)" != 644 ]; then
+    echo "systemd: the system.conf.d drop-in is not mode 644" >&2
+    exit 1
+  fi
+  if ! grep -qx 'DefaultTimeoutStopSec=10s' \
+          "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf"; then
+    echo "systemd: the system.conf.d drop-in has no DefaultTimeoutStopSec=10s" >&2
+    exit 1
+  fi
+  for uf in copper-zram.service copper-plymouth.service; do
+    if ! grep -qx 'Conflicts=shutdown.target' "$TGT/etc/systemd/system/$uf"; then
+      echo "systemd: $uf has DefaultDependencies=no but no" >&2
+      echo "          Conflicts=shutdown.target; it would have no stop job" >&2
+      exit 1
+    fi
+    if ! grep -qx 'Before=shutdown.target' "$TGT/etc/systemd/system/$uf"; then
+      echo "systemd: $uf has no Before=shutdown.target; its stop would not be" >&2
+      echo "          ordered into the shutdown transaction" >&2
+      exit 1
+    fi
+  done
+  if ! grep -qx 'ExecStop=-/usr/bin/copper-zram-stop' \
+          "$TGT/etc/systemd/system/copper-zram.service"; then
+    echo "systemd: copper-zram.service does not stop its swap through the" >&2
+    echo "          helper; systemd-shutdown's unbounded swapoff would run" >&2
+    exit 1
+  fi
+  if ! grep -qx 'KillMode=mixed' "$TGT/etc/systemd/system/copper-console.service" \
+     || ! grep -qx 'TimeoutStopSec=5s' "$TGT/etc/systemd/system/copper-console.service"; then
+    echo "systemd: copper-console.service has no bounded stop; the desktop's" >&2
+    echo "          cgroup holds the shutdown for the 90 s default" >&2
+    exit 1
+  fi
+
   # copper-init still has to exist: the console service runs the --console half
   # of it. A migration that deleted it here would leave the machine with no
   # wizard and no shell.
@@ -3602,11 +3678,13 @@ build_systemd() {
     exit 1
   fi
   # Every other command the units name has to be in the tree too, for the same
-  # reason. Each of these is an ExecStart, or something an ExecStart runs:
+  # reason. Each of these is an ExecStart or ExecStop, or something one of them
+  # runs:
   #
-  #   /usr/bin/copper-dhcp   copper-network.service's ExecStart
-  #   /sbin/udhcpc           what copper-dhcp execs
-  #   /bin/sh                copper-seatd.service's ExecStart (/bin/sh -c '…')
+  #   /usr/bin/copper-dhcp       copper-network.service's ExecStart
+  #   /sbin/udhcpc               what copper-dhcp execs
+  #   /bin/sh                    copper-seatd.service's ExecStart (/bin/sh -c '…')
+  #   /usr/bin/copper-zram-stop  copper-zram.service's ExecStop
   #
   # The unit verify below cannot see these on its own: it runs chrooted, but
   # its filter treats "Command X is not executable" as host noise, because the
@@ -3615,7 +3693,7 @@ build_systemd() {
   # defect there -- the image is missing a binary a Copper unit names, and
   # that unit can never start. That is the seatd bug again, one unit over:
   # the unit named a path the image did not have, and nothing here said so.
-  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth usr/bin/copper-zram; do
+  for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth usr/bin/copper-zram usr/bin/copper-zram-stop; do
     if [ ! -x "$TGT/$cmd" ]; then
       echo "systemd: $cmd is missing or not executable; a Copper unit names it" >&2
       echo "          and that unit would fail to start on every boot" >&2

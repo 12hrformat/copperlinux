@@ -41,6 +41,16 @@ DefaultDependencies=no
 ConditionKernelCommandLine=splash
 After=systemd-vconsole-setup.service
 Before=copper-network.service copper-firstboot.service copper-console.service copper-tty-clear.service
+# DefaultDependencies=no is deliberate for the boot ordering above, but it
+# also opts the unit out of shutdown.target's implicit Conflicts=/Before=
+# edges. So plymouthd had no stop job: it held the DRM device and /dev/tty1
+# into systemd-shutdown, which then had to SIGTERM it from there, and the
+# splash stayed on the console over the shutdown message. These two lines put
+# it back in the shutdown transaction, ahead of anything else that needs the
+# console. In the ordinary case copper-plymouth-quit has already ended the
+# daemon at boot and the stop job is a no-op.
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=forking
@@ -48,6 +58,11 @@ RuntimeDirectory=plymouth
 PIDFile=/run/plymouth/pid
 ExecStart=/usr/sbin/plymouthd --mode=boot --pid-file=/run/plymouth/pid --ignore-serial-consoles
 ExecStartPost=-/usr/bin/copper-splash-show
+# Plymouth's own clean exit rather than a signal, so the daemon drops the
+# display and the VT in the order it expects. Bounded small: a splash that
+# will not quit is not worth waiting for.
+ExecStop=-/usr/bin/plymouth --quit
+TimeoutStopSec=3s
 
 [Install]
 WantedBy=sysinit.target

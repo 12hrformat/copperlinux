@@ -61,6 +61,23 @@ TTYVHangup=no
 # Do not thrash, but always come back.
 Restart=always
 RestartSec=1s
+# Bound the stop, hard. The desktop lives in this unit's cgroup: the shell is
+# the main process, and niri, kitty and everything they started are its
+# children. The default KillMode=control-group sends SIGTERM to all of them
+# and then waits the FULL default TimeoutStopSec -- 90 s -- for the cgroup to
+# empty, so one compositor or terminal that ignores SIGTERM held the reboot
+# for a minute and a half.
+#
+# KillMode=mixed signals only the main process, then SIGKILLs whatever is
+# left after five seconds. copper-init --console has no SIGTERM handler (its
+# power-signal handlers belong to the PID-1 half; see main() in
+# src-init/copper-init.c), so it exits at once, and a live session has
+# nothing to flush that a graceful compositor shutdown would preserve.
+# SendSIGKILL=yes is the default; it is spelled out so a future global
+# SendSIGKILL=no cannot quietly turn the bound into a wait.
+KillMode=mixed
+SendSIGKILL=yes
+TimeoutStopSec=5s
 
 [Install]
 WantedBy=copper.target

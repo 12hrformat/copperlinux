@@ -1,0 +1,68 @@
+#!/bin/sh
+# Copper Linux -- take the compressed swap down BEFORE systemd-shutdown does.
+#
+# The ~10 minute `sudo reboot` was this. systemd-shutdown's own last act is
+# `swapoff_all()` in src/shutdown/detach-swap.c, which calls swapoff(2) on
+# every entry in /proc/swaps and has NO timeout: arg_timeout (90 s) only ever
+# reaches broadcast_signal(), and the unmount/swapoff/detach loop is bounded
+# only by "did anything change". Swapping a full zram device back into RAM is
+# the one genuinely expensive step in that loop -- it has to find a home for
+# every page it reads back, on a machine that may have chosen swap precisely
+# because memory was tight -- and the kernel will spend minutes on it. That is
+# the stall under "Deactivating swaps." / "Shutting down...".
+#
+# So the unit stops itself instead. This runs as copper-zram.service's
+# ExecStop, inside systemd's ordinary stop transaction, where TimeoutStopSec
+# is a real bound (the unit sets one). By then the stop ordering has already
+# taken the desktop down -- copper-console.service is After=sysinit.target and
+# this unit is Before=sysinit.target, so on shutdown the console goes first --
+# which is what makes the swap cheap: the processes that owned the swapped
+# pages are gone and their swap entries were freed as they exited.
+#
+# drop_caches first: even with the owners gone, swapoff has to read the pages
+# back, and page cache is the cheapest memory to give up for that. Without it
+# the kernel starts reclaiming while swapoff is running, which is how a second
+# turns into a minute.
+#
+# POSIX sh: this runs under the image's busybox ash, where `local`, arrays and
+# [[ ]] do not exist. See assert_shell_scripts_parse() in iso/build.sh.
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+
+Z=/sys/block/zram0
+[ -e "$Z" ] || exit 0
+
+# Only if it is actually in use. A skipped or failed copper-zram start leaves
+# nothing to take down, and systemd-shutdown's swapoff_all() then finds an
+# empty /proc/swaps and returns immediately.
+if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+    exit 0
+fi
+
+echo "copper-zram-stop: flushing page cache before swapoff" >&2
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+if command -v swapoff >/dev/null 2>&1; then
+    swapoff /dev/zram0
+elif /bin/busybox --list 2>/dev/null | grep -qx swapoff; then
+    /bin/busybox swapoff /dev/zram0
+else
+    # Never block the shutdown on a tool the image does not have. systemd's
+    # own path still runs; it is just the slow one.
+    echo "copper-zram-stop: no swapoff tool; systemd-shutdown will do it" >&2
+    exit 0
+fi
+
+# Verify rather than trust the exit status: swapoff(2) can fail with EBUSY
+# after a partial job, and the difference matters to what happens next.
+if grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+    echo "copper-zram-stop: swapoff did not finish; systemd-shutdown will retry" >&2
+    exit 0
+fi
+
+# Swapoff released the pages; resetting the device also releases the
+# compressed store, so nothing is left holding RAM in the last seconds of the
+# shutdown. Best effort -- the machine is going down either way.
+echo 0 > "$Z/disksize" 2>/dev/null || true
+echo "copper-zram-stop: /dev/zram0 deactivated"
