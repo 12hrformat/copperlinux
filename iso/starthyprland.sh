@@ -293,6 +293,29 @@ report_check() {
     else
         say "session bus: not set (the launcher starts one)"
     fi
+
+    # Input. Everything above proves the compositor can start; nothing here
+    # proves anything can drive it, and a session with no keyboard looks exactly
+    # like a working one until someone tries to type. Show what the kernel sees
+    # and how PID 1 classified it: libinput discards a device whose udev record
+    # does not carry ID_INPUT_KEYBOARD / ID_INPUT_MOUSE, so the two halves of
+    # this report together name the broken layer.
+    say "input:"
+    if [ -d "$INPUT_SYS" ] && [ -n "$(ls "$INPUT_SYS" 2>/dev/null)" ]; then
+        for d in "$INPUT_SYS"/event*; do
+            [ -e "$d" ] || continue
+            say "  ${d##*/}: $(cat "$d/device/name" 2>/dev/null || echo '(name unavailable)')"
+        done
+    else
+        say "  no event devices under $INPUT_SYS"
+    fi
+    udevdata=${COPPER_UDEV_DATA:-/run/udev/data}
+    if [ -d "$udevdata" ]; then
+        say "  udev records marking a keyboard: $(grep -rl '^ID_INPUT_KEYBOARD=1' "$udevdata" 2>/dev/null | wc -l)"
+        say "  udev records marking a pointer:   $(grep -rl -e '^ID_INPUT_MOUSE=1' -e '^ID_INPUT_TOUCHPAD=1' -e '^ID_INPUT_POINTINGSTICK=1' "$udevdata" 2>/dev/null | wc -l)"
+    else
+        say "  udev data missing at $udevdata"
+    fi
 }
 
 # Argument parsing. The launcher is a session entry point, and every flag it
