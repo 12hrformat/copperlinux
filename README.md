@@ -54,15 +54,17 @@ works from the prompt whatever you picked.
 ## Niri desktop
 
 Niri is Copper's second desktop, optional like Hyprland and never the default.
-Its configuration lives in `12hrformat/copper-niriconfig`, fetched at build time
-and pinned by commit and hash; the build stage unpacks it to
+Its configuration is vendored in this repository under
+`iso/rootfs-overlay/usr/share/copper/niri-skel`; the build copies it to
 `/usr/share/copper/niri-skel` and `startniri` seeds it into the user's home.
+It was originally pinned from `12hrformat/copper-niriconfig` at commit
+`31f5477` (tarball sha256 `5834dc35…`).
 
-Copper layers its own adjustments on top rather than editing that tree: a small
-`copper-tweaks.kdl`, shipped in this repository and appended with niri's
-positional top-level `include`, gentles the animation springs so motion settles
-instead of snapping, rounds every window, and dims unfocused windows slightly.
-Removing the include line restores the upstream configuration exactly.
+Copper layers its own adjustments on top: a small `copper-tweaks.kdl`, shipped
+in this repository and appended with niri's positional top-level `include`,
+gentles the animation springs so motion settles instead of snapping, rounds
+every window, and dims unfocused windows slightly. Removing the include line
+restores the shipped configuration exactly.
 
 ## Hyprland desktop
 

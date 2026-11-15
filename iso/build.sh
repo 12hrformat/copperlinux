@@ -59,12 +59,12 @@ export FORCE_UNSAFE_CONFIGURE=1
 KREL=${KREL:-6.12.10}
 KPATH="v${KREL%%.*}.x"
 
-# The niri session's configuration tree is NOT vendored into this repo: it
-# lives in 12hrformat/copper-niriconfig and is fetched at build time,
-# pinned to a commit and checked against a hash (build_niri does the fetch and
-# the check).
+# The niri session's configuration tree is vendored in this repository under
+# iso/rootfs-overlay/usr/share/copper/niri-skel; build_niri copies it into the
+# image. It was originally fetched from 12hrformat/copper-niriconfig, and these
+# two constants record the commit and tarball hash it was vendored from, so the
+# provenance of the shipped bytes is not lost.
 NIRI_CFG_SHA=31f547783a964bad3be73fafa0f7215a035aea9c
-NIRI_CFG_URL="https://codeload.github.com/12hrformat/copper-niriconfig/tar.gz/$NIRI_CFG_SHA"
 NIRI_CFG_SHA256=5834dc358e8f0df9691b2c33dd3b2808d172aac771c07a249e5549bd6f0e76ce
 
 # The praksharma/ubuntu-niri PPA for noble, with a verified fingerprint.
@@ -1977,7 +1977,7 @@ build_gui() {
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
 # 6f. the niri session: the compositor from the praksharma PPA,
-#     the configuration from copper-niriconfig
+#     the vendored niri configuration
 # ---------------------------------------------------------------
 # niri is the optional second desktop. The first-boot wizard records whether it
 # was chosen (/etc/copper-desktop), startniri starts it from the tty, and this
@@ -1995,11 +1995,12 @@ build_gui() {
 # staging tree and cp -a -n into the rootfs, where the busybox applets, the musl
 # tools and the overlay's /etc already are and win.
 #
-# The configuration lives in 12hrformat/copper-niriconfig. It is NOT vendored
-# into this repo; it is fetched from that repo at a pinned commit, checked
-# against a hash, and unpacked to /usr/share/copper/niri-skel. startniri seeds
-# it into the user's home the first time it runs, as the user, so the files are
-# owned by them (a root copy would leave a config the user cannot edit).
+# The configuration is vendored in this repo under
+# iso/rootfs-overlay/usr/share/copper/niri-skel and copied to
+# /usr/share/copper/niri-skel. startniri seeds it into the user's home the
+# first time it runs, as the user, so the files are owned by them (a root copy
+# would leave a config the user cannot edit). It was vendored from
+# 12hrformat/copper-niriconfig at the commit recorded in NIRI_CFG_SHA.
 #
 # The PPA is added in isolation: apt is pointed at a private sourceparts
 # directory holding a copy of the host's own sources plus the PPA, so the host's
@@ -2008,9 +2009,9 @@ build_gui() {
 # fingerprint is checked before it is trusted.
 #
 # noble's waybar is 0.9.24 and predates niri's `niri/workspaces` modules, which
-# arrived in 0.11. The bar in the config repo therefore uses `custom` modules
-# that ask niri over its IPC socket, rather than chasing a second, newer GTK
-# stack into the image. See the config repo's README.
+# arrived in 0.11. The bar configuration therefore uses `custom` modules that
+# ask niri over its IPC socket, rather than chasing a second, newer GTK stack
+# into the image.
 build_niri() {
   # The skeleton is unpacked here, but a stage that runs earlier can take files
   # back out of it: build_rootfs sweeps every zero-byte file in the tree, and a
@@ -2032,7 +2033,13 @@ build_niri() {
      && stamped_skip "$WORK/niri.stamp" "$SELF" \
         "$ROOT/rootfs-overlay/etc/copper/niri-apps" \
         "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png" \
-        "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"; then
+        "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl" \
+        "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/niri/config.kdl \
+        "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/config.jsonc \
+        "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/style.css \
+        "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/scripts/window.sh \
+        "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/scripts/workspaces.sh \
+        "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/kitty/kitty.conf; then
     echo "niri: already staged, skipping"; return
   fi
   echo "==> niri session"
@@ -2298,54 +2305,30 @@ build_niri() {
     echo "  (no update-desktop-database in the image; menu cache left unbuilt)"
   fi
 
-  # ---- the configuration, pinned and hashed -----------------------------
-  # The tree lives in its own repo so it can be re-pinned without a kernel
-  # build. The fetch is verified against NIRI_CFG_SHA256; a mismatch is a hard
-  # stop, because a config tree that is not the one that was reviewed is exactly
-  # the thing this pin exists to prevent. Retried once, because a truncated
-  # download is a transport failure and not a changed artifact.
-  local cfg="$DL/niri-cfg-$NIRI_CFG_SHA.tar.gz" got try
-  for try in 1 2; do
-    if [ -s "$cfg" ] \
-       && [ "$(sha256sum "$cfg" | cut -d' ' -f1)" = "$NIRI_CFG_SHA256" ]; then
-      break
-    fi
-    rm -f "$cfg"
-    echo "  < $NIRI_CFG_URL" >&2
-    wget -q -t 3 -O "$cfg.part" "$NIRI_CFG_URL" || {
-      rm -f "$cfg.part"; continue; }
-    got=$(sha256sum "$cfg.part" | cut -d' ' -f1)
-    if [ "$got" != "$NIRI_CFG_SHA256" ]; then
-      echo "niri: configuration tarball sha256 is $got, expected $NIRI_CFG_SHA256" >&2
-      rm -f "$cfg.part"
-      continue
-    fi
-    mv "$cfg.part" "$cfg"
-    break
-  done
-  if [ ! -s "$cfg" ] \
-     || [ "$(sha256sum "$cfg" | cut -d' ' -f1)" != "$NIRI_CFG_SHA256" ]; then
-    echo "niri: could not fetch the configuration tree at the pinned commit" >&2
-    echo "      $NIRI_CFG_URL" >&2
-    exit 1
-  fi
-  echo "  configuration tree verified ($NIRI_CFG_SHA)"
-
-  local cfgd="$WORK/niri-cfg" top
-  rm -rf "$cfgd"; mkdir -p "$cfgd"
-  tar -xzf "$cfg" -C "$cfgd"
-  top="$cfgd/copper-niriconfig-$NIRI_CFG_SHA"
-  if [ ! -d "$top/dotfiles" ]; then
-    echo "niri: the configuration tarball has no dotfiles/ tree" >&2
+  # ---- the configuration, vendored --------------------------------------
+  # This tree used to be fetched from 12hrformat/copper-niriconfig at a pinned
+  # commit and checked against NIRI_CFG_SHA256. It is now vendored in this
+  # repository, so the whole session -- compositor config, bar, notifications,
+  # launcher and terminal -- is designed, reviewed and built in one place. The
+  # bytes are the ones that pin produced; NIRI_CFG_SHA and NIRI_CFG_SHA256
+  # record where they came from, and the stamp below is what notices an edit.
+  #
+  # Copied, not symlinked: the staged rootfs has to be self-contained, and a
+  # symlink into the source tree would dangle the moment the build tree is
+  # cached without the repository.
+  local skel_src="$ROOT/rootfs-overlay/usr/share/copper/niri-skel"
+  if [ ! -d "$skel_src/.config/niri" ]; then
+    echo "niri: the vendored configuration tree is missing at $skel_src" >&2
     exit 1
   fi
   rm -rf "$TGT/usr/share/copper/niri-skel"
   mkdir -p "$TGT/usr/share/copper/niri-skel"
-  cp -a "$top/dotfiles/." "$TGT/usr/share/copper/niri-skel/"
+  cp -a "$skel_src/." "$TGT/usr/share/copper/niri-skel/"
   if [ ! -e "$TGT/usr/share/copper/niri-skel/.config/niri/config.kdl" ]; then
-    echo "niri: the seeded config has no niri/config.kdl" >&2
+    echo "niri: the vendored config has no niri/config.kdl" >&2
     exit 1
   fi
+  echo "  configuration tree staged from the repository ($NIRI_CFG_SHA)"
 
   # git does not carry the exec bit across platforms, so the tree can arrive
   # with every script mode 0644. The bar runs its helper scripts by path, and a
@@ -2361,7 +2344,7 @@ build_niri() {
   echo "  $n scripts in the config tree marked executable"
 
   # A CR in any of those files fails on the target and the target has no editor
-  # to fix it with; the config repo states the LF policy, and this proves it
+  # to fix it with; the tree is checked in with LF, and this proves it
   # held for the artifact that actually arrived.
   if grep -rIl $'\r' "$TGT/usr/share/copper/niri-skel" 2>/dev/null \
        | head -n 1 | grep -q .; then
@@ -2508,7 +2491,13 @@ build_niri() {
   stamp_set "$WORK/niri.stamp" "$SELF" \
     "$ROOT/rootfs-overlay/etc/copper/niri-apps" \
     "$ROOT/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png" \
-    "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"
+    "$ROOT/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl" \
+    "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/niri/config.kdl \
+    "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/config.jsonc \
+    "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/style.css \
+    "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/scripts/window.sh \
+    "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/waybar/scripts/workspaces.sh \
+    "$ROOT"/rootfs-overlay/usr/share/copper/niri-skel/.config/kitty/kitty.conf
 }
 
 

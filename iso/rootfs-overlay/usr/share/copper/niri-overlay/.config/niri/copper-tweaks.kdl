@@ -1,10 +1,10 @@
-// Copper Linux -- session feel, layered over the pinned niri configuration.
+// Copper Linux -- session feel, layered over the shipped niri configuration.
 //
 // build_niri appends `include "copper-tweaks.kdl"` to config.kdl once the
-// pinned tree has been unpacked, and niri merges includes positionally: what
-// comes later wins. That is what lets Copper tune the desktop without editing
-// or re-pinning the upstream configuration in 12hrformat/copper-niriconfig --
-// removing the include restores the upstream behaviour exactly.
+// vendored tree has been copied into the image, and niri merges includes
+// positionally: what comes later wins. That is what lets Copper tune the
+// desktop without editing the shipped configuration itself -- removing the
+// include restores the shipped behaviour exactly.
 
 // ---------------------------------------------------------------------------
 // Animations
