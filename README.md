@@ -23,6 +23,8 @@ Copper linux is a work in progress. It's not ready for production use yet, but i
 
 Copper linux also has its own package manager, **ingot**, which is hosted on GitHub Pages. It fetches packages from a JSON index on Pages, downloads the payload from the real URL, verifies the hash, and installs it. It's designed to be simple and fast.
 
+Payloads live in GitHub releases, and on some networks the release CDN throttles a download to a crawl. ingot therefore fetches release assets through a public GitHub mirror first and falls back to the direct URL last, checking the page's sha256 on each source so a mirror that answers with the wrong bytes is skipped instead of trusted. The manifest always keeps the canonical URL. Set `INGOT_MIRRORS` to a space-separated list of prefixes (for example `INGOT_MIRRORS=https://ghfast.top`) to choose your own, or to `none` to talk to GitHub directly.
+
 ---
 
 ## Boot, and starting a desktop

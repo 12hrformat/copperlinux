@@ -142,12 +142,12 @@ draw_bar() {
 # NOT wc -c's `SIZE filename` output shape. Off a terminal, or with no size
 # known, it is a plain quiet wget.
 download_once() { # download_once <file> <url> <total>
-  file=$1; url=$2; total=${3:-}
+  _d_file=$1; _d_url=$2; _d_total=${3:-}
   # Bar only for real payloads on a real terminal: tiny packages (libpcap 136K,
   # tcpdump 533K) finish faster than the bar can tick, and logs/scripts are
   # quiet pipes, not terminals.
-  if [ -t 2 ] && [ -n "$total" ] && [ "$total" -ge 1048576 ]; then
-    wget -q -c -O "$file" "$url" &
+  if [ -t 2 ] && [ -n "$_d_total" ] && [ "$_d_total" -ge 1048576 ]; then
+    wget -q -c -O "$_d_file" "$_d_url" &
     wpid=$!
     prev=0
     speed=0
@@ -155,22 +155,90 @@ download_once() { # download_once <file> <url> <total>
     while kill -0 "$wpid" 2>/dev/null; do
       sleep 1
       t_now=$(date +%s)
-      now=$(stat -c %s "$file" 2>/dev/null || echo 0)
+      now=$(stat -c %s "$_d_file" 2>/dev/null || echo 0)
       case "$now" in ''|*[!0-9]*) now=0 ;; esac
       dt=$((t_now - t_last)); [ "$dt" -lt 1 ] && dt=1
       speed=$(( (now - prev) / dt )); [ "$speed" -lt 0 ] && speed=0
-      draw_bar "$now" "$total" "$speed"
+      draw_bar "$now" "$_d_total" "$speed"
       prev=$now; t_last=$t_now
     done
     wait "$wpid"
     rc=$?
-    done_now=$(stat -c %s "$file" 2>/dev/null || echo 0)
+    done_now=$(stat -c %s "$_d_file" 2>/dev/null || echo 0)
     case "$done_now" in ''|*[!0-9]*) done_now=0 ;; esac
-    draw_bar "$done_now" "$total" "$speed"
+    draw_bar "$done_now" "$_d_total" "$speed"
     printf '\n' >&2
     return $rc
   fi
-  wget -q -c -O "$file" "$url"
+  wget -q -c -O "$_d_file" "$_d_url"
+}
+
+# ---- where the bytes come from -------------------------------------------
+# The release CDN behind github.com is what throttles on some networks: the
+# same asset that arrives at 11-24 KB/s directly measured ~1.7 MB/s through a
+# public GitHub mirror, which is the difference between a 120 MB package
+# taking two minutes or two hours. A mirror is a URL PREFIX -- the location is
+#     <prefix>/https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
+# so the mirror fetches exactly the asset the page names.
+#
+# Order matters: mirrors first, the direct URL LAST, so a network where the
+# mirrors are blocked still installs, it is just slow. Only release assets are
+# rewritten. The package pages themselves live on GitHub Pages, which is not
+# the throttled host, and a proxy hop in front of a metadata fetch would add a
+# failure mode for nothing.
+#
+# INGOT_MIRRORS overrides the list (space separated); "none" or empty turns
+# mirrors off, which is what a test does so it exercises one source only.
+mirror_prefixes() {   # -> the mirrors to try, one per line
+  if [ -n "${INGOT_MIRRORS+x}" ]; then
+    case "$INGOT_MIRRORS" in
+      ''|none|off|no) return 0 ;;
+    esac
+    printf '%s\n' $INGOT_MIRRORS
+    return 0
+  fi
+  printf '%s\n' https://ghfast.top https://gh-proxy.com
+}
+
+dl_sources() {   # dl_sources <url> -> candidates, best first, one per line
+  case "$1" in
+    https://github.com/*/releases/download/*) ;;
+    *) printf '%s\n' "$1"; return 0 ;;
+  esac
+  for _src_mp in $(mirror_prefixes); do
+    printf '%s/%s\n' "$_src_mp" "$1"
+  done
+  printf '%s\n' "$1"
+}
+
+# dl_attempt <file> <url> <total> <sha256|""> -- one source, up to five shots.
+# The file is removed first: --continue against a DIFFERENT source would ask
+# the next server for the tail of bytes it never served.
+dl_attempt() {
+  _a_file=$1; _a_url=$2; _a_total=${3:-}; _a_want=${4:-}
+  rm -f "$_a_file"
+  _a_tries=5
+  while [ "$_a_tries" -gt 0 ]; do
+    if download_once "$_a_file" "$_a_url" "$_a_total"; then
+      if [ -z "$_a_want" ]; then
+        [ -s "$_a_file" ] && return 0
+      elif [ "$(sha256sum "$_a_file" | awk '{print $1}')" = "$_a_want" ]; then
+        return 0
+      else
+        # A mirror can deny service; it cannot inject. The sha256 in the page
+        # is the authority, so bytes that do not match it are thrown away and
+        # the next source is tried instead of failing the install. This is the
+        # case where a proxy answers 200 with its own error page.
+        echo "ingot: $_a_url did not serve the payload the page describes" >&2
+        rm -f "$_a_file"
+        return 1
+      fi
+    fi
+    _a_tries=$((_a_tries - 1))
+    [ "$_a_tries" -gt 0 ] && { echo "ingot: transfer dropped; retrying ($_a_tries left)" >&2; sleep 2; }
+  done
+  echo "ingot: no complete transfer from $_a_url" >&2
+  return 1
 }
 
 # fetch url -> file. busybox wget and GNU wget both accept -O and -q.
@@ -188,25 +256,26 @@ download_once() { # download_once <file> <url> <total>
 # The release CDN drops long slow transfers ("connection closed prematurely"
 # from busybox, i.e. the server closed the socket before content-length bytes
 # arrived). One wget shot therefore fails most of the time on a 120MB payload;
-# retry a few times with -c so each attempt resumes the bytes already pulled
-# instead of restarting. busybox wget checks that the server honored the Range
-# header and starts over itself when it did not.
-dl() { # dl <file> <url> [size]
-  file=$1; url=$2; total=${3:-}
-  if [ -n "$total" ]; then
-    echo "ingot: downloading $(basename "$url") ($(human_size "$total"))" >&2
+# retry a few times on each source with -c so each attempt resumes the bytes
+# already pulled instead of restarting. busybox wget checks that the server
+# honored the Range header and starts over itself when it did not.
+#
+# Every source is tried in turn (see dl_sources above). The variables are all
+# prefixed because this is POSIX sh with no `local`: cmd_install keeps the
+# canonical $url and $want across this call, and a mirror URL leaking into
+# them would be written into the manifest as the package's home.
+dl() { # dl <file> <url> [size] [sha256]
+  dl_file=$1; dl_url=$2; dl_total=${3:-}; dl_want=${4:-}
+  if [ -n "$dl_total" ]; then
+    echo "ingot: downloading $(basename "$dl_url") ($(human_size "$dl_total"))" >&2
   else
-    echo "ingot: fetching $url" >&2
+    echo "ingot: fetching $dl_url" >&2
   fi
-  tries=5
-  while [ "$tries" -gt 0 ]; do
-    if download_once "$file" "$url" "$total"; then
-      [ -s "$file" ] && return 0
-    fi
-    tries=$((tries - 1))
-    [ "$tries" -gt 0 ] && { echo "ingot: transfer dropped; retrying ($tries left)" >&2; sleep 2; }
+  for _dl_src in $(dl_sources "$dl_url"); do
+    [ "$_dl_src" = "$dl_url" ] || echo "ingot: source $_dl_src" >&2
+    dl_attempt "$dl_file" "$_dl_src" "$dl_total" "$dl_want" && return 0
   done
-  echo "ingot: download failed ($url)" >&2
+  echo "ingot: download failed ($dl_url)" >&2
   return 1
 }
 
@@ -282,12 +351,15 @@ cmd_install() { # cmd_install <name> [force] — force installs over an existing
 
   # The real payload, from the REAL url in the JSON. A size in the page makes
   # dl draw a live progress bar on a terminal; without it the
-  # same download just runs quietly.
+  # same download just runs quietly. The sha256 goes along so each source is
+  # checked as it arrives: a mirror that serves an error page instead of the
+  # asset falls through to the next source here, rather than failing the
+  # install after the last one has been tried.
   payload="/tmp/$name.payload.$$"
   size=$(jget size "$meta")
   version=$(jget version "$meta")
   echo "ingot: installing $name $version" >&2
-  dl "$payload" "$url" "$size" || { rm -f "/tmp/$name" "$payload"; return 1; }
+  dl "$payload" "$url" "$size" "$want" || { rm -f "/tmp/$name" "$payload"; return 1; }
 
   # The whole point of carrying the hash: a corrupted or replaced download
   # must not install. Compare before touching the tree.

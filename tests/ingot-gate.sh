@@ -523,6 +523,60 @@ else
   fi
 fi
 
+# ---- mirrors: where a release asset is fetched from ----------------------
+# The speed fix is a URL-prefix rewrite, so it needs no network to test: pull
+# the two functions out of the shipped client and ask where it would fetch.
+extract_src() { sed -n "/^$1()/,/^}/p" "$INGOT"; }
+eval "$(extract_src mirror_prefixes)"
+eval "$(extract_src dl_sources)"
+
+REL=https://github.com/12hrformat/copper-ingot-repo/releases/download/payloads-v1/wine-9.0.repack-4build3-copper1.tar.gz
+first=$(dl_sources "$REL" | head -n1)
+last=$(dl_sources "$REL" | tail -n1)
+case "$first" in
+  https://*/https://github.com/*/releases/download/*)
+    note_ok "a release asset is fetched through a mirror first" ;;
+  *)
+    note_bad "a release asset does not try a mirror first: $first" ;;
+esac
+[ "$last" = "$REL" ] \
+  && note_ok "the direct GitHub URL is still the last resort" \
+  || note_bad "the direct GitHub URL is not last: $last"
+
+# A mirror must never become the package's recorded home: cmd_inspect prints
+# the manifest URL, so the page's canonical URL is what has to survive, and a
+# Pages URL must not be rewritten at all (Pages is not the throttled host).
+PAGES=https://12hrformat.github.io/copper-ingot-repo/iso/copper/pkg/tools/wine
+[ "$(dl_sources "$PAGES")" = "$PAGES" ] \
+  && note_ok "a GitHub Pages URL is not rewritten to a mirror" \
+  || note_bad "a GitHub Pages URL got a mirror prefix"
+
+[ "$(INGOT_MIRRORS= dl_sources "$REL")" = "$REL" ] \
+  && note_ok "INGOT_MIRRORS= turns the mirrors off" \
+  || note_bad "INGOT_MIRRORS= still adds a mirror"
+
+[ "$(INGOT_MIRRORS=none dl_sources "$REL")" = "$REL" ] \
+  && note_ok "INGOT_MIRRORS=none turns the mirrors off" \
+  || note_bad "INGOT_MIRRORS=none still adds a mirror"
+
+[ "$(INGOT_MIRRORS=https://mirror.example dl_sources "$REL" | head -n1)" \
+  = "https://mirror.example/$REL" ] \
+  && note_ok "INGOT_MIRRORS replaces the built-in mirror list" \
+  || note_bad "INGOT_MIRRORS did not replace the built-in mirror list"
+
+ARCHIVE=https://github.com/12hrformat/copperlinux/archive/refs/heads/main.tar.gz
+[ "$(dl_sources "$ARCHIVE")" = "$ARCHIVE" ] \
+  && note_ok "a non-release GitHub URL is not rewritten" \
+  || note_bad "a non-release GitHub URL got a mirror prefix"
+
+# The sha256 is checked per source, inside the loop, so one bad mirror falls
+# through to the next instead of failing the install after the last source.
+if sed -n '/^dl()/,/^}/p' "$INGOT" | grep -q 'dl_attempt'; then
+  note_ok "a bad source falls through instead of ending the download"
+else
+  note_bad "dl() does not walk several sources"
+fi
+
 echo "    summary: pass=$pass fail=$fail"
 [ "$fail" -eq 0 ] || exit 1
 exit 0
