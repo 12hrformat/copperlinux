@@ -95,10 +95,11 @@ lint_scripts() {
   local s
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
            "$ROOT/rootfs-overlay/usr/bin/ingot" \
+           "$ROOT/rootfs-overlay/usr/bin/copper-audio" \
            "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/starthyprland.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script, ingot, startxfce, startniri and starthyprland parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot, copper-audio, startxfce, startniri and starthyprland parse clean"
 }
 lint_scripts
 
@@ -1038,6 +1039,12 @@ build_rootfs() {
   [ -x "$TGT/usr/bin/ingot" ] || {
     echo "rootfs: ingot is not executable"; exit 1; }
 
+  # copper-audio is what the launchers call after starting the server, and what
+  # a user types when the machine is quiet. Same caveat again.
+  chmod 0755 "$TGT/usr/bin/copper-audio"
+  [ -x "$TGT/usr/bin/copper-audio" ] || {
+    echo "rootfs: copper-audio is not executable"; exit 1; }
+
   for f in etc/profile etc/bash.bashrc etc/skel/.bashrc; do
     if [ ! -f "$TGT/$f" ]; then
       echo "rootfs: missing Bash startup file /$f" >&2
@@ -1372,6 +1379,7 @@ assert_shell_scripts_parse() {
     local n_posix=0
     for f in iso/copper.sh \
              iso/rootfs-overlay/usr/bin/ingot \
+             iso/rootfs-overlay/usr/bin/copper-audio \
              iso/systemd/copper-tty-clear iso/systemd/copper-dhcp \
              iso/systemd/copper-zram iso/systemd/copper-zram-stop \
              iso/systemd/copper-splash-show iso/systemd/copper-splash-quit; do
@@ -1501,6 +1509,7 @@ build_gui() {
      && [ -x "$TGT/usr/bin/zsh" ] \
      && [ -x "$TGT/usr/bin/pipewire" ] \
      && [ -x "$TGT/usr/bin/wireplumber" ] \
+     && [ -x "$TGT/usr/bin/amixer" ] \
      && grep -q '^_seatd:' "$TGT/etc/group" \
      && stamped_skip "$WORK/gui.stamp" "$SELF"; then
     echo "gui: already staged, skipping"
@@ -1563,6 +1572,22 @@ build_gui() {
   for p in pulseaudio; do
     if gui_carries "$p"; then pulseaudio=$p; break; fi
   done
+  # alsa-utils: the mixer, and the only way to hear whether a card works at
+  # all. libasound lets a client open the card, but nothing in the image could
+  # unmute it -- and a fresh HDA codec can come out of reset with its outputs
+  # down, which is a silent machine whose every log says the server is fine.
+  # amixer/alsactl/speaker-test are three binaries and a handful of K, and they
+  # are what /usr/bin/copper-audio drives. Named, not assumed: noble carries it
+  # in main, and a build host without it must fail here rather than ship quiet.
+  local alsa_utils="" p
+  for p in alsa-utils; do
+    if gui_carries "$p"; then alsa_utils=$p; break; fi
+  done
+  if [ -z "$alsa_utils" ]; then
+    echo "gui: no installable alsa-utils; the image would have no mixer and" >&2
+    echo "gui: no way to unmute a card that comes up silent" >&2
+    exit 1
+  fi
   # open-vm-tools: the guest half of VMware's display handshake. Its
   # resolutionKMS plugin is what makes the console mode follow the VMware
   # window, so a maximised window is really more pixels instead of a smaller
@@ -1681,6 +1706,7 @@ build_gui() {
   # pulse audio" -- which is where cava sat, and where the desktop's playback
   # sat too. The daemon is the missing half of the audio stack.
   [ -n "$pulseaudio" ] && set -- "$@" "$pulseaudio"
+  set -- "$@" "$alsa_utils"
   [ -n "$vmtools" ] && set -- "$@" "$vmtools"
   set -- "$@" "$zsh" "$pipewire" "$pipewire_pulse" "$wireplumber"
   apt-get \
@@ -1918,6 +1944,7 @@ build_gui() {
            usr/bin/dbus-daemon usr/bin/dbus-launch \
            usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse \
            usr/bin/wireplumber \
+           usr/bin/amixer usr/bin/alsactl usr/bin/speaker-test \
            usr/share/dbus-1/system.conf \
            lib64/ld-linux-x86-64.so.2 \
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do

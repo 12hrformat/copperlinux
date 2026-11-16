@@ -1,0 +1,167 @@
+#!/bin/sh
+# copper-audio -- the mixer and the audio servers, from one command.
+#
+# The image ships both servers (pulseaudio, and pipewire + wireplumber +
+# pipewire-pulse) and a session starts the one /etc/copper.conf names. What
+# neither the kernel config nor the server can do is raise the mixer: an HDA
+# codec comes out of reset with its outputs muted or at zero on plenty of
+# machines, and a live image persists no mixer state. A running server over a
+# muted card is a silent machine that reports itself healthy in every log.
+#
+# So:
+#
+#   copper-audio           same as status
+#   copper-audio init      unmute and raise the usual playback controls on
+#                          every card, then store the state (root)
+#   copper-audio status    cards, mixer levels, which server is running
+#   copper-audio test      1 second of 440 Hz on the default device
+#   copper-audio server    print the backend and whether it is up
+#
+# Both launchers call `copper-audio init` after the server starts, so a fresh
+# boot is audible without anyone opening a mixer. Nothing here is fatal: a
+# machine with no card still boots, it is just quiet.
+
+set -u
+
+CONF=${COPPER_CONF:-/etc/copper.conf}
+RT=${XDG_RUNTIME_DIR:-/tmp}
+
+say() { printf 'copper-audio: %s\n' "$*" >&2; }
+
+# The same reader the launchers use, so "which server" has one answer.
+backend() {
+    _w=
+    if [ -r "$CONF" ]; then
+        _w=$(sed -n 's/^[[:space:]]*audio[[:space:]]*=[[:space:]]*\([a-z]*\).*$/\1/p' \
+                 "$CONF" 2>/dev/null | tail -n 1)
+    fi
+    case "$_w" in
+        pipewire) printf '%s\n' pipewire ;;
+        *)        printf '%s\n' pulseaudio ;;
+    esac
+}
+
+# Card indices, one per line, from the kernel's own list rather than from
+# /dev/snd ordering (controlC0 and pcmC0D0p can be missing independently).
+cards() {
+    sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p' /proc/asound/cards 2>/dev/null
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Playback control names by codec: Master/PCM on most HDA, Speaker/Headphone on
+# laptops, Front/Surround/Center/LFE on 5.1, HDMI on the digital outputs. A name
+# the card does not have makes amixer exit nonzero and is skipped.
+raise_card() { # raise_card <index>
+    _c=$1
+    _done=
+    for _n in Master PCM Speaker Headphone Front Surround Center LFE HDMI; do
+        if amixer -c "$_c" -q sset "$_n" 80% unmute >/dev/null 2>&1; then
+            _done="$_done $_n"
+        fi
+    done
+    if [ -n "$_done" ]; then
+        say "card $_c: raised$_done"
+    else
+        say "card $_c: no playback control this tool knows; check 'amixer -c $_c scontrols'"
+    fi
+    # A capture side left at zero is the other half of "the microphone does not
+    # work"; raise it too, since nothing else in the image does.
+    for _n in Capture "Mic" "Internal Mic"; do
+        amixer -c "$_c" -q sset "$_n" 70% cap >/dev/null 2>&1 || :
+    done
+}
+
+cmd_init() {
+    if [ ! -r /proc/asound/cards ]; then
+        say "this kernel has no /proc/asound; no sound support built in"
+        return 1
+    fi
+    _cs=$(cards)
+    if [ -z "$_cs" ]; then
+        say "no sound card: the kernel found no HDA codec"
+        return 1
+    fi
+    if ! have amixer; then
+        say "amixer is not installed (alsa-utils); cannot raise the mixer"
+        return 1
+    fi
+    for _c in $_cs; do
+        raise_card "$_c"
+    done
+    # Store it, so a persisted install keeps the levels across boots. On a live
+    # session this lands in the overlay and does not survive a reboot, which is
+    # why the launchers call init on every boot instead of trusting the file.
+    if have alsactl && [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
+        alsactl store >/dev/null 2>&1 || :
+    fi
+    return 0
+}
+
+server_state() {
+    case "$(backend)" in
+    pipewire)
+        if [ -S "$RT/pipewire-0" ]; then
+            printf 'pipewire: running (socket %s/pipewire-0)\n' "$RT"
+        else
+            printf 'pipewire: not running\n'
+        fi
+        ;;
+    *)
+        if [ -S "$RT/pulse/native" ]; then
+            printf 'pulseaudio: running (socket %s/pulse/native)\n' "$RT"
+        elif [ -n "${PULSE_SERVER:-}" ]; then
+            printf 'pulseaudio: client points at %s\n' "$PULSE_SERVER"
+        else
+            printf 'pulseaudio: not running\n'
+        fi
+        ;;
+    esac
+}
+
+cmd_status() {
+    printf 'selected: %s (/etc/copper.conf)\n' "$(backend)"
+    server_state
+    if [ -r /proc/asound/cards ]; then
+        printf '\ncards (/proc/asound/cards):\n'
+        sed 's/^/  /' /proc/asound/cards
+    else
+        printf '\ncards: none -- this kernel has no sound support\n'
+    fi
+    for _c in $(cards); do
+        if have amixer; then
+            printf '\nmixer, card %s:\n' "$_c"
+            amixer -c "$_c" sget Master 2>/dev/null \
+                | grep -E 'Playback|Mono' | sed 's/^/  /' \
+                || printf '  (no Master control on this card)\n'
+        fi
+    done
+}
+
+cmd_test() {
+    if have speaker-test; then
+        say "440 Hz, 1 second, on the default device"
+        if speaker-test -q -t sine -f 440 -l 1 -c 2 >/dev/null 2>&1; then
+            say "tone played"
+            return 0
+        fi
+        say "speaker-test failed: the card is busy or the mixer is still down"
+        return 1
+    fi
+    say "speaker-test is not installed (alsa-utils)"
+    return 1
+}
+
+case "${1:-status}" in
+    init)   cmd_init ;;
+    status) cmd_status ;;
+    test)   cmd_test ;;
+    server) server_state ;;
+    -h|--help|help)
+        sed -n 's/^# \{0,1\}//p' "$0" | sed -n '/^  copper-audio/,/^$/p'
+        ;;
+    *)
+        say "unknown command '$1'; try: copper-audio [init|status|test|server]"
+        exit 2
+        ;;
+esac

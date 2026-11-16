@@ -109,7 +109,7 @@ has iso/firstboot/copper-firstboot.c 'fprintf(c, "audio=%s\n", audio_word)' \
     "the wizard writes audio= to /etc/copper.conf"
 has iso/firstboot/copper-firstboot.c 'fprintf(i, "%s\n", init_word)' \
     "the wizard writes /etc/copper-init"
-has iso/firstboot/copper-firstboot.c '\-s %s %s' \
+has iso/firstboot/copper-firstboot.c '-s %s %s' \
     "adduser gets the chosen login shell"
 has iso/firstboot/copper-firstboot.c 'create_user_direct(user, shell_path)' \
     "the direct passwd writer gets the chosen login shell"
@@ -146,11 +146,28 @@ for f in iso/startniri.sh iso/startxfce.sh; do
 done
 
 echo
+echo "config: the mixer is raised, not just a server started"
+has iso/rootfs-overlay/usr/bin/copper-audio 'cmd_init' \
+    "copper-audio has an init that raises the mixer"
+has iso/rootfs-overlay/usr/bin/copper-audio 'sset "$_n" 80% unmute' \
+    "copper-audio unmutes and raises the playback controls"
+has iso/rootfs-overlay/usr/bin/copper-audio 'alsactl store' \
+    "copper-audio stores the mixer state when it can"
+for f in iso/startniri.sh iso/startxfce.sh; do
+    has "$f" 'copper-audio init' "$f raises the mixer after starting the server"
+done
+
+echo
 echo "config: the build ships both sides of every switch"
 has iso/build.sh 'for p in zsh; do' "the gui stage requires an installable zsh"
 has iso/build.sh 'for p in pipewire; do' "the gui stage requires pipewire"
 has iso/build.sh 'for p in pipewire-pulse; do' "the gui stage requires pipewire-pulse"
 has iso/build.sh 'for p in wireplumber; do' "the gui stage requires wireplumber"
+has iso/build.sh 'for p in alsa-utils; do' "the gui stage requires alsa-utils"
+has iso/build.sh 'usr/bin/amixer usr/bin/alsactl usr/bin/speaker-test' \
+    "the gui stage asserts the mixer tools in the tree"
+has iso/build.sh 'chmod 0755 "$TGT/usr/bin/copper-audio"' \
+    "the rootfs stage makes copper-audio executable"
 hasre iso/build.sh 'usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse' \
     "the gui stage asserts the audio and shell binaries in the tree"
 hasre iso/build.sh '^build_unified' "the unified stage exists"

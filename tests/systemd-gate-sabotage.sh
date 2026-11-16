@@ -389,21 +389,20 @@ else
     fails=$((fails + 1))
 fi
 
-# 25. power_links stops asking which init the tree carries. This is the bug
-#     the last CI run shipped: the `iso` chain re-runs the desktop stages over
-#     the systemd tree -- build_rootfs clobbers /etc/group and takes the
-#     _seatd group with it, and that group is part of what those stages' skip
-#     guards ask about -- and each of them calls power_links. A power_links
-#     that always wrote busybox undid the systemd flavour's systemctl links on
-#     the way to the disc, and the systemd ISO failed its own read-back gate:
+# 25. power_links stops writing the wrapper and points the power commands at
+#     systemctl directly. One ISO boots either init now, so the tree cannot
+#     decide this at build time: a link straight to systemctl is a busybox boot
+#     whose `reboot` talks to a systemd that is not running, which is bug 29
+#     again in the other direction. The `iso` chain re-runs the desktop stages
+#     over the systemd tree, and each of them calls power_links, so it is also
+#     the place a half-finished swap used to leak into the disc.
 #
-#         iso: the ISO boots systemd but its power commands are wrong: ...
-#
-#     Planted by making the flavour question answer "no" for every tree, so the
-#     systemd branch is dead code and every tree gets busybox's links.
-run_case "power_links blind to the tree's init" "$B" \
-    'if [ "$(init_flavour "$root")" = systemd ]; then' \
-    'if false; then' \
+#     Planted in the loop that writes the four commands: the wrapper link
+#     becomes a systemctl link. The read-back gate has to notice that the
+#     command is no longer /sbin/shutdown.
+run_case "power_links links straight to systemctl" "$B" \
+    'ln -sf /sbin/shutdown "$root/sbin/$cmd"' \
+    'ln -sf /usr/bin/systemctl "$root/sbin/$cmd"' \
     "power_links on a systemd tree"
 
 # 26. The WIZARD stops claiming tty1 from getty. This is the bug the first

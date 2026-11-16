@@ -632,6 +632,14 @@ if [ "${COPPER_AUDIO:-1}" = 1 ]; then
         fi
         ;;
     esac
+
+    # A server on a muted card is a silent machine that reports itself healthy:
+    # the codec can come out of reset with its outputs down, and a live image
+    # keeps no mixer state between boots. Raise the controls here, once, after
+    # the server has the device. See iso/rootfs-overlay/usr/bin/copper-audio.
+    if command -v copper-audio >/dev/null 2>&1; then
+        copper-audio init >/dev/null 2>&1 || :
+    fi
 fi
 
 # Hand the session over. Background first so the launch can be watched: a

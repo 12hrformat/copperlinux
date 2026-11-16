@@ -51,6 +51,36 @@ First boot also asks which desktop you want, `xfce`, `niri` or `hyprland`;
 XFCE is the default and both `niri` and `hyprland` are opt-in. Either launcher
 works from the prompt whatever you picked.
 
+## Sound
+
+Copper ships **both** audio servers and starts whichever `/etc/copper.conf` names:
+
+```
+audio=pulseaudio      # the default
+audio=pipewire        # pipewire + wireplumber + pipewire-pulse
+```
+
+The first-boot wizard asks for one and writes the line; switching later is a
+one-line edit and a new session, not a reinstall. Both serve the PulseAudio
+protocol, which is what firefox, mpv and cava speak.
+
+A running server on a muted card is a silent machine that looks healthy in
+every log, so the launchers do more than start a daemon: they call
+`copper-audio init`, which unmutes and raises the playback controls on every
+card the kernel reports. The same command is available from a prompt:
+
+| Command | What it does |
+|---|---|
+| `copper-audio` / `copper-audio status` | The selected server, whether it is running, the cards and their Master level. |
+| `copper-audio init` | Unmute and raise Master/PCM/Speaker/Headphone/Front/HDMI to 80% on every card, then store the state if it can. |
+| `copper-audio test` | One second of 440 Hz on the default device. |
+| `copper-audio server` | Just which server is up. |
+
+The kernel ships the HDA driver, the Intel HDA controller and the Realtek,
+analog, HDMI and SigmaTel codecs, which is what VMware and QEMU present. The
+image has no card for anything else; if `/proc/asound/cards` is empty, the
+machine's audio hardware is not HDA and the driver is genuinely missing.
+
 ## Niri desktop
 
 Niri is Copper's second desktop, optional like Hyprland and never the default.
