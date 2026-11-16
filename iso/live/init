@@ -34,11 +34,21 @@ notice() {
 }
 
 /bin/busybox mount -t proc proc /proc 2>/dev/null
-if read -r cmdline < /proc/cmdline; then
-    case " $cmdline " in
-        *" quiet "*) QUIET=1 ;;
-    esac
-fi
+# The kernel command line, read ONCE, here.
+#
+# Read it with the `read` builtin and keep it in $cmdline: this initramfs has
+# no applets. build_initramfs packs /bin/busybox and this script and nothing
+# else -- no /bin/cat, /bin/grep, /bin/sed symlinks -- so a `$(cat
+# /proc/cmdline)` later in the file finds no `cat` at all, and with its stderr
+# thrown away it just looks like an empty command line. That is exactly how
+# `copper.init=systemd` came to be ignored: /init parsed the args a second
+# time with `cat`, got nothing, and handed over to copper-init on the systemd
+# entry. Anything outside the shell must be spelled /bin/busybox <applet>.
+cmdline=
+read -r cmdline < /proc/cmdline 2>/dev/null || :
+case " $cmdline " in
+    *" quiet "*) QUIET=1 ;;
+esac
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 /bin/busybox mkdir -p /mnt/root /mnt/upper /mnt/merged /run
@@ -190,8 +200,13 @@ fi
 # writes it, and the copy that persistence carried across is readable here
 # because the overlay is already mounted. An image without systemd (the plain
 # busybox build) simply falls back to copper-init and says so.
+#
+# $cmdline is the string read at the top of this file. Do NOT re-read
+# /proc/cmdline with `cat` here: there is no cat in the initramfs (see above),
+# and its failure is silent, which makes it look exactly like "no arguments".
+# Unquoted on purpose: the loop wants word splitting.
 init_choice=
-for arg in $(cat /proc/cmdline 2>/dev/null); do
+for arg in $cmdline; do
     case "$arg" in
         copper.init=systemd) init_choice=systemd ;;
         copper.init=busybox) init_choice=busybox ;;

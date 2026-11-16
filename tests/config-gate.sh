@@ -94,6 +94,16 @@ has iso/live/init 'copper.init=busybox' "/init reads copper.init=busybox"
 has iso/live/init '/etc/copper-init' "/init falls back to the wizard's saved init"
 has iso/live/init '/lib/systemd/systemd' "/init execs systemd at the merged-usr path"
 has iso/live/init 'switch_root /mnt/merged /sbin/init' "/init execs /sbin/init for the default"
+# The initramfs is not a rootfs: build_initramfs packs busybox and /init and
+# nothing else, so there is no cat, grep or sed in it. A bare external command
+# fails silently under `2>/dev/null`, which is how `$(cat /proc/cmdline)`
+# made copper.init=systemd look like no arguments at all.
+has iso/live/init 'read -r cmdline < /proc/cmdline' \
+    "the initramfs reads the command line with the read builtin"
+has iso/live/init 'for arg in $cmdline; do' \
+    "the init choice parses the command line already read"
+hasnt iso/live/init 'cat /proc/cmdline' \
+    "the initramfs does not call cat, which is not in it"
 
 echo
 echo "config: the wizard asks for all three and writes both files"
