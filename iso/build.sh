@@ -1376,13 +1376,20 @@ assert_shell_scripts_parse() {
   done
 
   if [ -n "$posix" ]; then
-    local n_posix=0
-    for f in iso/copper.sh \
-             iso/rootfs-overlay/usr/bin/ingot \
-             iso/rootfs-overlay/usr/bin/copper-audio \
-             iso/systemd/copper-tty-clear iso/systemd/copper-dhcp \
-             iso/systemd/copper-zram iso/systemd/copper-zram-stop \
-             iso/systemd/copper-splash-show iso/systemd/copper-splash-quit; do
+    local n_posix=0 posix_files posix_want
+    # One list, and the count taken from it. The previous version carried the
+    # list and the expected count separately, and adding copper-audio turned
+    # that into "the POSIX check covered 9 of 8 busybox tools" -- a build that
+    # dies on the bookkeeping rather than on the code. So: one list, no
+    # number to remember.
+    posix_files="iso/copper.sh
+             iso/rootfs-overlay/usr/bin/ingot
+             iso/rootfs-overlay/usr/bin/copper-audio
+             iso/systemd/copper-tty-clear iso/systemd/copper-dhcp
+             iso/systemd/copper-zram iso/systemd/copper-zram-stop
+             iso/systemd/copper-splash-show iso/systemd/copper-splash-quit"
+    posix_want=$(printf '%s\n' $posix_files | wc -w)
+    for f in $posix_files; do
       [ -f "$REPO/$f" ] || {
         echo "build: $f is missing, so the POSIX check cannot run on it" >&2
         bad=1; continue; }
@@ -1398,8 +1405,8 @@ assert_shell_scripts_parse() {
     # check at all, because it reads like the busybox tools were verified.
     # This loop was skipping every one of them over a wrong path, and
     # `[ -f ] || continue` is precisely the construct that hides that.
-    [ "$n_posix" -eq 8 ] || {
-      echo "build: the POSIX check covered $n_posix of 8 busybox tools" >&2; exit 1; }
+    [ "$n_posix" -eq "$posix_want" ] || {
+      echo "build: the POSIX check covered $n_posix of $posix_want busybox tools" >&2; exit 1; }
     echo "build: $n_bash shell scripts parse, and $n_posix busybox tools are POSIX sh"
   else
     echo "build: $n_bash shell scripts parse (no POSIX shell here for the busybox tools)"
