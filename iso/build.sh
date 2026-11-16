@@ -1748,6 +1748,38 @@ build_gui() {
 
   copy_stage_in "$STAGE" "$TGT"
 
+  # /usr/bin/zsh exists only because zsh's postinst makes it. The package ships
+  # the binary at /bin/zsh and says so in its own postinst:
+  #
+  #     # New hardcoded symlinks which unfortunately can't be shipped inside
+  #     # the package itself since some people want to merge /bin and /usr/bin
+  #     if [ ! -e /usr/bin/zsh -a ! -L /usr/bin/zsh ]; then
+  #       ln -s /bin/zsh /usr/bin/zsh
+  #     fi
+  #
+  # No maintainer script runs on this image, so nothing ever made that link,
+  # and the package layout alone cannot: Copper's tree is deliberately not
+  # merged-usr (/bin is a real directory holding busybox), so /bin/zsh is not
+  # reachable under /usr/bin. Every part of the image asks for the /usr/bin
+  # spelling -- the wizard writes it into passwd, copper-init exports $SHELL,
+  # kitty execs $SHELL, and the required-file check below asserts it -- so the
+  # stage has to make the link itself, exactly as the postinst would.
+  #
+  # Relative, not absolute: an absolute /bin/zsh inside the staged tree
+  # resolves against the BUILD HOST, where it is bash or nothing, and the
+  # check below would then read "missing" for a link that is right in the
+  # image. `../../bin/zsh` from /usr/bin is /bin/zsh in both worlds.
+  if [ ! -e "$TGT/usr/bin/zsh" ] && [ ! -L "$TGT/usr/bin/zsh" ]; then
+    if [ -x "$TGT/bin/zsh" ]; then
+      ln -s ../../bin/zsh "$TGT/usr/bin/zsh"
+      echo "  zsh: /usr/bin/zsh -> ../../bin/zsh (the link its postinst makes)"
+    else
+      echo "gui: the zsh package unpacked no /bin/zsh, so the login shell the" >&2
+      echo "     wizard writes (/usr/bin/zsh) cannot be created" >&2
+      exit 1
+    fi
+  fi
+
   # The Wayland session's fallback keymap and XFCE's pointer both depend on data files,
   # not just their shared libraries. Catch a missing package payload here so
   # the booted desktop cannot silently have no keymap or an invisible cursor.
@@ -1951,7 +1983,7 @@ build_gui() {
            usr/bin/dbus-daemon usr/bin/dbus-launch \
            usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse \
            usr/bin/wireplumber \
-           usr/bin/amixer usr/bin/alsactl usr/bin/speaker-test \
+           usr/bin/amixer usr/sbin/alsactl usr/bin/speaker-test \
            usr/share/dbus-1/system.conf \
            lib64/ld-linux-x86-64.so.2 \
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do

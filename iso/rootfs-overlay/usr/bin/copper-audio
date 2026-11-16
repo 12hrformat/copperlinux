@@ -92,8 +92,16 @@ cmd_init() {
     # Store it, so a persisted install keeps the levels across boots. On a live
     # session this lands in the overlay and does not survive a reboot, which is
     # why the launchers call init on every boot instead of trusting the file.
-    if have alsactl && [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
-        alsactl store >/dev/null 2>&1 || :
+    #
+    # alsactl is /usr/sbin/alsactl, not /usr/bin: a plain `command -v alsactl`
+    # misses it on any PATH without the sbin directories (which is the default
+    # for a non-root login), so it is looked up by absolute path as well.
+    _alsactl=
+    for _p in /usr/sbin/alsactl /sbin/alsactl /usr/bin/alsactl; do
+        if [ -x "$_p" ]; then _alsactl=$_p; break; fi
+    done
+    if [ -n "$_alsactl" ] && [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
+        "$_alsactl" store >/dev/null 2>&1 || :
     fi
     return 0
 }

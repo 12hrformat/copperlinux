@@ -151,8 +151,8 @@ has iso/rootfs-overlay/usr/bin/copper-audio 'cmd_init' \
     "copper-audio has an init that raises the mixer"
 has iso/rootfs-overlay/usr/bin/copper-audio 'sset "$_n" 80% unmute' \
     "copper-audio unmutes and raises the playback controls"
-has iso/rootfs-overlay/usr/bin/copper-audio 'alsactl store' \
-    "copper-audio stores the mixer state when it can"
+has iso/rootfs-overlay/usr/bin/copper-audio '"$_alsactl" store' \
+    "copper-audio stores the mixer state through the alsactl it found"
 for f in iso/startniri.sh iso/startxfce.sh; do
     has "$f" 'copper-audio init' "$f raises the mixer after starting the server"
 done
@@ -164,8 +164,12 @@ has iso/build.sh 'for p in pipewire; do' "the gui stage requires pipewire"
 has iso/build.sh 'for p in pipewire-pulse; do' "the gui stage requires pipewire-pulse"
 has iso/build.sh 'for p in wireplumber; do' "the gui stage requires wireplumber"
 has iso/build.sh 'for p in alsa-utils; do' "the gui stage requires alsa-utils"
-has iso/build.sh 'usr/bin/amixer usr/bin/alsactl usr/bin/speaker-test' \
-    "the gui stage asserts the mixer tools in the tree"
+has iso/build.sh 'usr/bin/amixer usr/sbin/alsactl usr/bin/speaker-test' \
+    "the gui stage asserts the mixer tools where alsa-utils puts them"
+has iso/build.sh 'ln -s ../../bin/zsh "$TGT/usr/bin/zsh"' \
+    "the gui stage creates /usr/bin/zsh, which only zsh's postinst would"
+has iso/rootfs-overlay/usr/bin/copper-audio '/usr/sbin/alsactl' \
+    "copper-audio finds alsactl in /usr/sbin"
 has iso/build.sh 'chmod 0755 "$TGT/usr/bin/copper-audio"' \
     "the rootfs stage makes copper-audio executable"
 hasre iso/build.sh 'usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse' \
