@@ -211,6 +211,17 @@ has tests/shutdown-gate.sh 'COPPER_INIT' "the shutdown gate forces the running i
 has tests/boot-gate.sh 'copper.init=systemd' "the boot gate boots the systemd branch"
 
 echo
+echo "config: the ISO read-back agrees with the unified power wrapper"
+# power_links points every power name at /sbin/shutdown on BOTH flavours and
+# the wrapper dispatches at runtime, so the disc checkout must expect the
+# wrapper on the busybox half too. It used to expect /bin/busybox there, and
+# the first build that got past the gui stage failed on the disc as a result.
+hasnt iso/build.sh '[ "$pt" = "/bin/busybox" ]' \
+    "the busybox half of the ISO check expects the wrapper, not an applet link"
+has iso/build.sh 'exec /bin/busybox "$mode"' \
+    "the busybox half checks the wrapper hands over to the busybox applet"
+
+echo
 if [ "$fail" -ne 0 ]; then
     echo "config: FAILED"
     exit 1

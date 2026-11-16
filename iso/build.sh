@@ -4512,23 +4512,35 @@ WRAP
     fi
     echo "  iso: systemd is PID 1, power commands are right, and agetty is on the disc"
   else
+    # The busybox half of the unified image. Every power name is Copper's
+    # wrapper in BOTH directories, not a busybox applet link: one disc boots
+    # either init, so the links cannot be flavour-specific, and the wrapper
+    # reads the running init and execs the applet when copper-init is PID 1.
+    # A link straight to /bin/busybox here is the old single-flavour shape and
+    # would signal systemd a convention it does not read.
     for cmd in reboot poweroff halt; do
       for d in "$ex/sbin" "$ex/usr-sbin"; do
         pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
-        [ "$pt" = "/bin/busybox" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
+        [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad ${d#"$ex"/}/$cmd -> $pt"
       done
     done
     pt=$(readlink "$ex/usr-sbin/shutdown" 2>/dev/null || echo missing)
     [ "$pt" = "/sbin/shutdown" ] || pbad="$pbad usr-sbin/shutdown -> $pt"
     if [ ! -f "$ex/sbin/shutdown" ] || [ -L "$ex/sbin/shutdown" ]; then
       pbad="$pbad sbin/shutdown (not the wrapper file)"
+    elif ! grep -qF 'exec /bin/busybox "$mode"' "$ex/sbin/shutdown"; then
+      # On this flavour the wrapper has to reach the busybox applet: those
+      # applets signal PID 1, and copper-init's on_power_signal() is what
+      # performs the orderly shutdown. A wrapper that only knew systemctl
+      # would leave `sudo reboot` on the console doing nothing.
+      pbad="$pbad sbin/shutdown (does not hand over to the busybox applet)"
     fi
     if [ -n "$pbad" ]; then
       echo "iso: power commands in the ISO are wrong:$pbad" >&2
       echo "iso: /usr/sbin is searched before /sbin, so 'sudo reboot' would not reboot" >&2
       exit 1
     fi
-    echo "  iso: power commands point at busybox/wrapper in sbin and usr/sbin, on the disc"
+    echo "  iso: power commands point at the Copper wrapper in sbin and usr/sbin, on the disc"
   fi
 
   # The boot command line, read back off the disc (bug 25, and bug 7 with it).
