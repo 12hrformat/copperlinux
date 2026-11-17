@@ -219,6 +219,14 @@ has tests/account.sh 'records shell=zsh' "the account test checks the written sh
 has tests/account.sh 'records audio=pipewire' "the account test checks the written audio"
 has tests/shutdown-gate.sh 'COPPER_INIT' "the shutdown gate forces the running init"
 has tests/boot-gate.sh 'copper.init=systemd' "the boot gate boots the systemd branch"
+# noble's systemd logs "Starting copper-firstboot.service - Copper first-boot
+# wizard..." (with colour escapes around the unit name), not "Starting Copper
+# ...". The gate has to wait for the names and descriptions the shipped
+# .service files actually carry, or a working systemd boot fails on log shape.
+has tests/boot-gate.sh 'copper-(firstboot|console)\.service' \
+    "the boot gate waits for the shipped systemd unit names"
+has iso/systemd/copper-firstboot.service 'Description=Copper first-boot wizard' \
+    "the wizard unit carries the description the boot gate waits for"
 
 echo
 echo "config: the ISO read-back agrees with the unified power wrapper"

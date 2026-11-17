@@ -299,8 +299,13 @@ systemd)
     # systemd starts the Copper units itself; the wizard is one of them and
     # prompts on tty1, which is why this is a "Starting/Started" milestone and
     # not the wizard's own greeting. A busybox boot never prints these lines.
+    # Match the unit NAME and its Description from the shipped .service files:
+    # noble's systemd prints "Starting <unit> - <Description>...", with the
+    # unit name wrapped in SGR colour escapes. The old pattern looked for
+    # "Starting Copper ..." and never matched that line, so a fully working
+    # systemd boot failed the gate for the shape of the log, not the boot.
     if [ "$failed" -eq 0 ]; then
-        wait_for 'Starting Copper (first-boot wizard|console)' \
+        wait_for 'copper-(firstboot|console)\.service.*Copper (first-boot wizard|console)' \
             "systemd starting the Copper units"; rc=$?
         report "$rc" "systemd started the Copper units (wizard/console)"
         [ "$rc" -eq 0 ] || failed=1
