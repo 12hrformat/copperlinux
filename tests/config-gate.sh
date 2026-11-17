@@ -194,6 +194,29 @@ hasre iso/build.sh '^  unified\)' "the unified stage is dispatachable"
 hasre iso/build.sh 'unified.*all' "default_flavour normalises a cached unified tree"
 
 echo
+echo "config: the PPA stages survive a flapping Launchpad"
+# Launchpad answers 503 to some requests and 200 to the next. apt-get update
+# exits 0 when one source fails, so testing its status is not enough: the
+# stage must ask whether the pinned package has a candidate and retry until
+# it does, or CI goes red with nothing in the image changed.
+hasre iso/build.sh '^apt_update_for\(\)' "there is a shared PPA-ready retry helper"
+has iso/build.sh "apt-cache \"\$@\" policy \"\$pkg\"" \
+    "the helper checks for a real candidate, not just apt's exit status"
+has iso/build.sh 'policy=$(apt-cache "$@" policy "$pkg" 2>/dev/null) || policy=' \
+    "the candidate probe captures first, avoiding the SIGPIPE trap"
+has iso/build.sh 'Acquire::Retries=5' \
+    "each index fetch gets its own retries too"
+has iso/build.sh 'download attempt $dltry failed' \
+    "a failed .deb fetch is retried, not fatal on the first 503"
+for line in \
+    'apt_update_for niri' \
+    'apt_update_for hyprland'; do
+    has iso/build.sh "$line" "$line is used by its stage"
+done
+hasnt iso/build.sh 'apt-get "\$\{AOPT\[@\]\}" update -qq' \
+    "no PPA stage trusts a bare apt-get update"
+
+echo
 echo "config: CI builds one image and boots both halves"
 has .github/workflows/build-iso.yml 'sudo bash iso/build.sh unified' \
     "the workflow builds the unified tree"

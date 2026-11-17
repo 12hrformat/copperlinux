@@ -193,6 +193,46 @@ unpack() {                  # unpack tarball -> prints its dir
   echo "$d"
 }
 
+# PPA indexes flap. Launchpad answers 503 to one request and 200 to the next
+# (measured on the niri and hyprland PPAs in November 2026: six consecutive
+# requests came back 503, 503, 200, 503, 200, 503). apt-get update does NOT
+# fail for a single dead source -- it warns, exits 0, and carries on with the
+# sources that did answer. The update therefore looks successful while the
+# PPA's package list is missing, and the pinned compositor then dies with
+# "E: Unable to locate package niri" several lines later. That is exactly how
+# CI went red on 2026-11-17 with nothing in the image changed.
+#
+# So ask apt itself whether the package has an installable candidate, rather
+# than trusting the update's exit status. Acquire::Retries (set by the callers)
+# gives each individual index fetch several immediate tries; this loop gives
+# an outage that outlasts them eight tries with a short backoff in between.
+#   apt_update_for <package> <logfile> <apt options...>
+apt_update_for() {
+  local pkg="$1" log="$2" try policy
+  shift 2
+  : > "$log"
+  for try in 1 2 3 4 5 6 7 8; do
+    apt-get "$@" update -qq >>"$log" 2>&1 || :
+    # Capture before grepping. Piping apt-cache straight into `grep -q` can
+    # kill apt-cache with SIGPIPE when grep leaves on the first hit, and under
+    # pipefail that reports failure even on a match -- the hyprland stage
+    # hit exactly that. A here-string has no writer to interrupt.
+    # The candidate check itself is build_gui's: a name apt only recognizes
+    # through Provides/Replaces prints "(none)" and must not count.
+    policy=$(apt-cache "$@" policy "$pkg" 2>/dev/null) || policy=
+    if grep -q '^ *Candidate: [^ (]' <<<"$policy"; then
+      echo "  apt indexes ready for $pkg (attempt $try)"
+      return 0
+    fi
+    [ "$try" -ge 8 ] && break
+    echo "apt: no candidate for $pkg after attempt $try; retrying in 15s" >&2
+    sleep 15
+  done
+  echo "apt: $pkg never appeared in the indexes; apt said:" >&2
+  tail -n 40 "$log" >&2 2>/dev/null || :
+  return 1
+}
+
 # ---------------------------------------------------------------
 # 1. Linux kernel, from kernel.org, with Copper's .config subset
 # ---------------------------------------------------------------
@@ -2183,8 +2223,13 @@ build_niri() {
     # Translation-en the archive then 404s -- a file nobody uses killing
     # the stage (seen 2026-11-11).
     -o Acquire::Languages=none
+    # Launchpad flaps between 503 and 200 from one request to the next; let
+    # apt retry each index fetch on its own before the outer loop steps in.
+    -o Acquire::Retries=5
   )
-  apt-get "${AOPT[@]}" update -qq
+  apt_update_for niri "$WORK/niri-update.log" "${AOPT[@]}" \
+    || { echo "niri: the PPA never became reachable; cannot stage the session" >&2
+         exit 1; }
 
   # The list is what has to be in the image for the session to come up with no
   # network at all: the compositor and the pieces its own config names, plus the
@@ -2238,8 +2283,18 @@ build_niri() {
          bibata-cursor-theme \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
          libxkbcommon0 libinput10 libgtk-layer-shell0
-  apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
-    >"$WORK/niri-apt.log" 2>&1 \
+  # The pinned compositor's .deb comes from the same flapping PPA. A failed
+  # fetch here used to end the stage even with good indexes; retry, and let
+  # apt skip the debs it already downloaded on the second attempt.
+  local dltry ok=0
+  for dltry in 1 2 3; do
+    if apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
+       >"$WORK/niri-apt.log" 2>&1; then ok=1; break; fi
+    [ "$dltry" -ge 3 ] && break
+    echo "niri: download attempt $dltry failed; retrying in 15s" >&2
+    sleep 15
+  done
+  [ "$ok" -eq 1 ] \
     || { echo "niri: apt could not resolve the session closure:" >&2
          tail -n 30 "$WORK/niri-apt.log" >&2 2>/dev/null || :
          exit 1; }
@@ -2709,8 +2764,12 @@ build_hyprland() {
     # Translation-en the archive then 404s -- a file nobody uses killing
     # the stage (seen 2026-11-11).
     -o Acquire::Languages=none
+    # Same flapping PPA as niri's: retry each fetch, then the whole update.
+    -o Acquire::Retries=5
   )
-  apt-get "${AOPT[@]}" update -qq
+  apt_update_for hyprland "$WORK/hyprland-update.log" "${AOPT[@]}" \
+    || { echo "hyprland: the PPA never became reachable; cannot stage the session" >&2
+         exit 1; }
 
   # ---- the closure -------------------------------------------------------------
   # Dir::State::status empty: every dependency counts as missing, the same
@@ -2774,17 +2833,29 @@ build_hyprland() {
          dbus-x11 \
          libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
          libxkbcommon0=1.12.3-1 libinput10=1.31.1-1 libgtk-layer-shell0
-  # No pre-flight candidate check here, deliberately. Two ways of writing one
-  # were tried and both reported packages that resolve perfectly well:
+  # No pre-flight check on every pinned name, deliberately. Two ways of
+  # writing one were tried and both reported packages that resolve perfectly
+  # well:
   #   - `apt-cache policy "pkg=ver"` prints nothing at all for a versioned spec
   #     on the apt in noble (2.7), not even an error;
   #   - `apt-cache ... | grep -q PATTERN` under `set -o pipefail` fails even on
   #     a match, because grep -q exits at the first hit and apt-cache dies of
   #     SIGPIPE before the pipeline can report success.
-  # apt-get below names the package it cannot resolve, and its log is what this
-  # stage reports, exactly as build_niri does.
-  apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
-    >"$WORK/hyprland-apt.log" 2>&1 \
+  # apt_update_for above checks only the one package that comes from the PPA,
+  # by unversioned name and with its output captured first, so it hits neither
+  # trap. For the rest, apt-get below names the package it cannot resolve and
+  # its log is what this stage reports, exactly as build_niri does.
+  # The compositor's .deb is served by the same flapping PPA, so a failed
+  # fetch gets the same three lives as in build_niri.
+  local dltry ok=0
+  for dltry in 1 2 3; do
+    if apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
+       >"$WORK/hyprland-apt.log" 2>&1; then ok=1; break; fi
+    [ "$dltry" -ge 3 ] && break
+    echo "hyprland: download attempt $dltry failed; retrying in 15s" >&2
+    sleep 15
+  done
+  [ "$ok" -eq 1 ] \
     || { echo "hyprland: apt could not resolve the session closure:" >&2
          tail -n 30 "$WORK/hyprland-apt.log" >&2 2>/dev/null || :; exit 1; }
 
