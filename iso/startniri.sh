@@ -48,7 +48,11 @@
 #     carry the rest.
 #   - A machine whose framebuffer has a DRM node but no render node (a VM with no
 #     3D) gets software rendering forced, because GL there fails in a way that
-#     looks like a compositor bug. On real hardware nothing is forced.
+#     looks like a compositor bug. VMware is forced too, even with 3D enabled
+#     and a renderD node: vmwgfx's GBM/EGL path exposes a node but can hang niri
+#     in renderer init. GBM_ALWAYS_SOFTWARE (Mesa's GBM switch, not GLX's
+#     LIBGL_ALWAYS_SOFTWARE alone) plus llvmpipe keeps the session on a virtual
+#     GPU. On real hardware nothing is forced.
 #   - niri's IPC has no device listing, so this cannot ask the compositor
 #     whether it holds a keyboard. Input shown here is the input libinput is
 #     willing to accept, not proof the compositor claimed it; the udev records
@@ -183,6 +187,7 @@ Environment, all optional:
   COPPER_SUDO        how to gain root for the install (default sudo; empty
                      means already root or never use it)
   COPPER_DRM_DIR     where DRM nodes live        (default /dev/dri)
+  COPPER_NIRI_VMWARE force VMware software path  (auto from DMI; 0 disables)
   COPPER_SEATD_SOCK  seatd's socket              (default /run/seatd.sock)
   COPPER_INPUT_SYS   where the input devices live (default /sys/class/input)
   COPPER_UDEV_DATA   the libudev records PID 1 writes (default /run/udev/data)
@@ -548,19 +553,76 @@ fi
 
 # The renderer. A framebuffer with a DRM node but no render node is a VM with no
 # 3D, where GL fails in a way that reads as a compositor bug rather than a
-# missing GPU. Force the software path there, and only there: on a machine with
-# a render node nothing is overridden, and COPPER_NIRI_SOFTWARE=1 forces it by
-# hand for a machine the heuristic gets wrong.
+# missing GPU. VMware is the other VM shape: with 3D enabled it DOES advertise
+# /dev/dri/renderD*, yet vmwgfx's GBM/EGL path can wedge niri right after
+# "initializing the primary renderer" -- before the Wayland socket exists, so
+# there is no session to inspect. Mesa's GBM software switch is the one that
+# matters here: LIBGL_ALWAYS_SOFTWARE covers GLX clients but GBM reads
+# GBM_ALWAYS_SOFTWARE. llvmpipe renders the native framebuffer, so the VMware
+# window stays sharp when maximised.
+#
+# COPPER_NIRI_SOFTWARE=1 forces this on any machine and =0 opts out of the
+# automatic choices. COPPER_NIRI_VMWARE does the same for the VMware half alone;
+# by default the DMI product/vendor strings decide.
+vmware=0
+case "${COPPER_NIRI_VMWARE:-auto}" in
+    1) vmware=1 ;;
+    0) vmware=0 ;;
+    *)
+        for dmi in /sys/class/dmi/id/product_name /sys/class/dmi/id/sys_vendor; do
+            if [ -r "$dmi" ] && grep -qi 'vmware' "$dmi" 2>/dev/null; then
+                vmware=1
+                break
+            fi
+        done
+        ;;
+esac
 soft=0
-if [ "${COPPER_NIRI_SOFTWARE:-0}" = 1 ]; then
-    soft=1
-elif [ -e "$DRM_DIR" ] && ! ls "$DRM_DIR"/renderD* >/dev/null 2>&1; then
-    soft=1
-fi
+case "${COPPER_NIRI_SOFTWARE:-auto}" in
+    1) soft=1 ;;
+    0) soft=0 ;;
+    *)
+        if [ "$vmware" = 1 ] ||
+           { [ -e "$DRM_DIR" ] && ! ls "$DRM_DIR"/renderD* >/dev/null 2>&1; }; then
+            soft=1
+        fi
+        ;;
+esac
 if [ "$soft" = 1 ]; then
     LIBGL_ALWAYS_SOFTWARE=1
-    export LIBGL_ALWAYS_SOFTWARE
-    say "no render node; forcing software rendering"
+    GBM_ALWAYS_SOFTWARE=1
+    GALLIUM_DRIVER=llvmpipe
+    export LIBGL_ALWAYS_SOFTWARE GBM_ALWAYS_SOFTWARE GALLIUM_DRIVER
+    if [ "$vmware" = 1 ]; then
+        say "VMware virtual GPU: forcing software GBM (llvmpipe)"
+    else
+        say "no render node; forcing software rendering"
+    fi
+fi
+
+# A virtual GPU's overlay and cursor planes are the other place a compositor can
+# stall before its Wayland socket appears. niri's top-level `include` merges a
+# second file into the user's config, so a generated wrapper can add just those
+# two debug options without editing anything under ~/.config/niri. NIRI_CONFIG
+# is removed from the environment niri hands to children, so apps still see the
+# user's real config path. An explicit NIRI_CONFIG from the caller wins.
+if [ "$vmware" = 1 ] && [ -z "${NIRI_CONFIG:-}" ]; then
+    vmconfig="$XDG_RUNTIME_DIR/niri-vmware-config.kdl"
+    vm_include=$(printf '%s\n' "$user_niri/config.kdl" |
+        sed 's/\\/\\\\/g; s/"/\\"/g' 2>/dev/null)
+    if [ -n "$vm_include" ] &&
+       { printf 'include "%s"\n' "$vm_include"
+         printf 'debug {\n'
+         printf '    disable-direct-scanout\n'
+         printf '    disable-cursor-plane\n'
+         printf '}\n'
+       } > "$vmconfig" 2>/dev/null; then
+        NIRI_CONFIG=$vmconfig
+        export NIRI_CONFIG
+        say "VMware niri config: $vmconfig (direct scanout and cursor plane off)"
+    else
+        say "could not write the VMware niri config; starting with the user's own"
+    fi
 fi
 
 # Which audio server /etc/copper.conf asks for. Both are in the image; this

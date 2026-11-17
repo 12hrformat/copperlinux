@@ -749,30 +749,24 @@ build_tools() {
 # this was caught -- by reading the links back off the shipped disc, and
 # re-checked there by build_iso's gate.
 #
-# WHICH tools depends on which init the tree carries, and the tree is not
-# remembered in a variable: the staged tree outlives any one build.sh run, so
-# init_flavour() reads sbin/init and answers. The two answers are:
+# ONE image now carries both inits, and the GRUB entry (or the wizard's saved
+# /etc/copper-init) decides which one actually becomes PID 1. A build-time tree
+# therefore cannot pick the power tools: /sbin/init in the staged tree says
+# which flavour was built LAST, not which one is running. All four names are
+# Copper's wrapper in both directories, and the wrapper asks the running PID 1
+# at call time -- /proc/1/comm is "systemd" on a systemd boot and "copper-init"
+# otherwise. systemctl gets `systemctl --no-block <mode>` (a blocking client is
+# SIGTERMed by the very shutdown it started, cancels its own job, and hands the
+# prompt back halfway); copper-init gets the busybox applet, which signals the
+# convention its on_power_signal() reads.
 #
-#   - busybox (the shipped default): reboot/poweroff/halt are the applets,
-#     which signal PID 1 the way copper-init reads it.
-#   - systemd (the migration): reboot/poweroff/halt are symlinks to Copper's
-#     wrapper in both directories, and the wrapper is what knows to run
-#     `systemctl --no-block`. Pointing them straight at systemctl made every
-#     shutdown wait in a client that the shutdown itself stops: systemd sends
-#     SIGTERM to it, it cancels its own job, and `sudo reboot` from the console
-#     stopped halfway and handed the prompt back. A busybox applet there
-#     signals a PID 1 convention systemd does not read at all.
-#
-# shutdown is Copper's own wrapper on BOTH flavours, and it is installed as a
-# real file at /sbin/shutdown with /usr/sbin/shutdown pointing at it. There are
-# two reasons. busybox ships no shutdown applet, so on the default tree the
-# wrapper is the only implementation. And systemd-sysv's compatibility
-# `shutdown` treats a bare invocation as "power off in one minute" -- a real
-# util-linux default, but on a live ISO it looks like the command did nothing,
-# which is exactly the report (`sudo shutdown` was silent; `sudo reboot`
-# worked). The wrapper maps bare/`now` to an immediate poweroff and, like
-# reboot/poweroff/halt, it ends up calling systemctl --no-block on the systemd
-# tree.
+# shutdown itself has to be Copper's wrapper on both flavours, as a real file
+# at /sbin/shutdown with /usr/sbin/shutdown pointing at it. busybox ships no
+# shutdown applet, and systemd-sysv's compatibility `shutdown` treats a bare
+# invocation as "power off in one minute" -- a real util-linux default, but on
+# a live ISO it looks like the command did nothing (`sudo shutdown` was silent;
+# `sudo reboot` worked). The wrapper maps bare/`now` to an immediate poweroff
+# and then dispatches by running init.
 #
 # This has to be right on EVERY call, not only the first. The `iso` chain
 # re-runs the desktop stages over the tree -- build_rootfs clobbers /etc/group
@@ -793,10 +787,11 @@ power_links() {          # power_links <staged-root>
   mkdir -p "$root/sbin" "$root/usr/sbin"
   # All four names are the wrapper on both flavours. One image can boot either
   # init now, so the build-time tree cannot decide this: the wrapper reads the
-  # RUNNING init (/run/systemd/system) and either runs `systemctl --no-block`
-  # or execs the busybox applet. A link straight to systemctl breaks the
-  # busybox boot, and a link straight to busybox signals a PID 1 convention
-  # systemd does not read. iso/shutdown.sh carries the dispatch.
+  # RUNNING PID 1 (/proc/1/comm) and either runs `systemctl --no-block` or execs
+  # the busybox applet. A link straight to systemctl breaks the busybox boot,
+  # and a link straight to busybox signals a PID 1 convention systemd does not
+  # read. iso/shutdown.sh carries the dispatch; tests/shutdown-gate.sh binds a
+  # fake comm file to check both halves without COPPER_INIT masking the path.
   for cmd in reboot poweroff halt; do
     ln -sf /sbin/shutdown "$root/sbin/$cmd"
     ln -sf /sbin/shutdown "$root/usr/sbin/$cmd"
@@ -924,15 +919,12 @@ copy_stage_in() {        # copy_stage_in <stage> <target>
 default_flavour() {
   if [ "$(init_flavour "$TGT")" = systemd ]; then
     ln -sf /usr/bin/copper-init "$TGT/sbin/init"
-    # The systemd flavour replaced Copper's own /sbin/shutdown wrapper with a
-    # link to systemctl. Put the wrapper back before power_links points
-    # /usr/sbin/shutdown at it: busybox ships no shutdown applet, so the
-    # wrapper IS the shutdown command on a default tree, and a default tree
-    # whose /sbin/shutdown is systemctl's link ships a `sudo shutdown` that
-    # talks to a PID 1 that is not there. rm first, so what is left is a
-    # regular file and not a link -- install replaces a symlink with the file
-    # it copies, but removing it outright says so rather than leaving it to
-    # the install implementation.
+    # A cached tree from before the unified wrapper may still have systemctl's
+    # link here. Replace it with the real file before power_links points the
+    # other names at /sbin/shutdown: busybox ships no shutdown applet, and a
+    # stale systemctl link makes `sudo shutdown` talk to a PID 1 that is not
+    # there. rm first so what is left is a regular file and not a link -- the
+    # ISO read-back gate checks that shape too.
     rm -f "$TGT/sbin/shutdown"
     install -m 0755 "$ROOT/shutdown.sh" "$TGT/sbin/shutdown"
     echo "  sbin/init: systemd -> copper-init (the tree came in systemd-flavoured)"
@@ -4516,15 +4508,15 @@ WRAP
   # -- found by inspecting that artifact, so the same inspection is what this
   # gate automates. Same readback discipline as sudo's mode above.
   #
-  # Which links are CORRECT depends on which init the disc carries, so read
-  # sbin/init off the disc first (an absolute symlink, so readlink, not -e --
-  # see init_flavour) and check the power commands against that answer. On the
-  # busybox image they must be busybox applets, because that is what signals
-  # copper-init. On the systemd image they must be the Copper wrapper (which
-  # runs `systemctl --no-block`): a direct systemctl link waits in the unit the
-  # shutdown is about to stop, gets SIGTERMed, cancels its own job, and hands
-  # the prompt back -- the "sudo reboot stops halfway" report -- while a
-  # busybox applet signals a PID 1 convention systemd does not read at all.
+  # All four power names are the wrapper on BOTH halves of the unified image;
+  # sbin/init is read back anyway so a cached tree cannot sneak a different
+  # PID 1 onto the disc underneath them. The wrapper decides at call time from
+  # /proc/1/comm: systemd gets `systemctl --no-block <mode>`, copper-init gets
+  # the busybox applet. A direct systemctl link waits in the unit the shutdown
+  # is about to stop, gets SIGTERMed, cancels its own job, and hands the prompt
+  # back -- the "sudo reboot stops halfway" report. A direct busybox link on a
+  # systemd boot signals a convention nothing there reads. Both runtime halves
+  # are covered in tests/shutdown-gate.sh with a bound fake comm file.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /sbin "$ex/sbin" >/dev/null 2>&1 || true
   xorriso -osirrox on -indev "$OUT/copper.iso" \
@@ -4538,6 +4530,15 @@ WRAP
   if [ "$flavour" = unknown ]; then
     echo "iso: /sbin/init in the ISO points nowhere recognisable:" >&2
     echo "iso: $(readlink "$ex/sbin/init" 2>/dev/null || echo 'not a symlink')" >&2
+    exit 1
+  fi
+  # The unified disc boots either init, so the wrapper must ask the RUNNING
+  # PID 1, not a build-time link or a directory baked into /run. The branch
+  # checks below only see that both dispatch strings survived; this one sees
+  # that the decision itself is made from the kernel's comm for PID 1.
+  if [ -f "$ex/sbin/shutdown" ] && ! grep -qF '/proc/1/comm' "$ex/sbin/shutdown"; then
+    echo "iso: the power wrapper does not read /proc/1/comm to find the running init" >&2
+    echo "iso: a baked /run/systemd/system would make a busybox boot call systemctl" >&2
     exit 1
   fi
   if [ "$flavour" = systemd ]; then

@@ -29,9 +29,14 @@
 # without shutting anything down, this replaces /sbin inside a private mount
 # namespace with stubs that print their own name. The mount is chained with
 # `&&`, so if the namespace is unavailable the wrapper never runs at all --
-# this test can never reach the real poweroff. /sbin/init is a stub too, so the
-# host's real init decides nothing: the systemd and busybox branches are each
-# exercised deliberately.
+# this test can never reach the real poweroff.
+#
+# COPPER_INIT forces the branch in the main table below. The wrapper's real
+# detector reads /proc/1/comm, and the host running this gate is not the image
+# being tested, so most cases set the override. The last group binds a fake
+# comm file over /proc/1/comm and leaves COPPER_INIT empty, exercising the
+# production path: "copper-init" there must win over a baked /run/systemd/
+# system directory, which is the live-ISO failure this gate now prevents.
 #
 # Root only (mount namespace). Run: sudo tests/shutdown-gate.sh
 # updated by farcrowx, bug 33, tests/shutdown-gate.sh
@@ -90,10 +95,11 @@ done
 # no run. PATH starts with the stub dir so a stubbed systemctl wins over the
 # host's real one; readlink and sync still resolve from the usual places.
 #
-# COPPER_INIT forces the wrapper's branch. The wrapper would otherwise ask the
-# RUNNING system (/run/systemd/system), and the test host is itself a systemd
-# machine -- so every busybox case here would silently take the systemd branch.
-# It defaults to busybox; the systemd cases set it explicitly.
+# COPPER_INIT forces the wrapper's branch. Without it the wrapper asks the
+# RUNNING system (/proc/1/comm), and the test host is neither of the inits in
+# this image -- so the table below would be testing the runner, not the disc.
+# It defaults to busybox; the systemd cases set it explicitly, and the final
+# group below binds a fake comm file to exercise the unoverridden path.
 ns_run() {   # ns_run <stubdir> <program> [args...]
     d=$1; p=$2; shift 2
     unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' COPPER_INIT='${COPPER_INIT:-busybox}' '$p' $*" 2>/dev/null
@@ -101,6 +107,19 @@ ns_run() {   # ns_run <stubdir> <program> [args...]
 ns_err() {   # ns_err <stubdir> <program> [args...] -- stderr merged
     d=$1; p=$2; shift 2
     unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' COPPER_INIT='${COPPER_INIT:-busybox}' '$p' $*" 2>&1
+}
+
+# Production detector, not the override: bind a fake comm file over PID 1's.
+# COPPER_INIT is set to the EMPTY string so the wrapper takes its normal path.
+comm_run() { # comm_run <comm> <stubdir> <program> [args...]
+    c=$1; d=$2; p=$3; shift 3
+    printf '%s\n' "$c" > "$TMP/pid1comm"
+    unshare -m sh -c "mount --bind '$TMP/pid1comm' /proc/1/comm && mount --bind '$d' /sbin && PATH='$d:$NS_PATH' COPPER_INIT= '$p' $*" 2>/dev/null
+}
+
+comm_probe() { # print the bound comm value, or nothing if the mount is barred
+    printf 'probe\n' > "$TMP/pid1comm-probe"
+    unshare -m sh -c "mount --bind '$TMP/pid1comm-probe' /proc/1/comm && cat /proc/1/comm" 2>/dev/null
 }
 
 if [ "$(ns_run "$TMP/sbin" "$WRAP" now)" != "poweroff" ]; then
@@ -116,6 +135,17 @@ check() {   # check <stubdir> <program> <want> [args...]
         echo "ok   ${p##*/} $* -> $want"
     else
         echo "FAIL ${p##*/} $* -> $want (got '$got')"
+        fail=1
+    fi
+}
+
+check_comm() { # check_comm <comm> <stubdir> <program> <want> [args...]
+    c=$1; d=$2; p=$3; want=$4; shift 4
+    got=$(comm_run "$c" "$d" "$p" "$@")
+    if [ "$got" = "$want" ]; then
+        echo "ok   /proc/1/comm=$c: ${p##*/} $* -> $want"
+    else
+        echo "FAIL /proc/1/comm=$c: ${p##*/} $* -> $want (got '$got')"
         fail=1
     fi
 }
@@ -141,9 +171,9 @@ check "$TMP/sbin" "$TMP/links/poweroff" reboot -r now
 # ---- the systemd image: systemctl --no-block --------------------------------
 # The request must be handed to PID 1 and returned, not waited on. --no-block
 # is what stops the shutdown from cancelling itself by stopping the caller.
-# The branch is forced: the wrapper reads /run/systemd/system, and the host
-# running this gate IS a systemd machine, so without COPPER_INIT the busybox
-# cases above would take the systemd branch too.
+# The branch is forced: the wrapper reads the running PID 1, and the host
+# running this gate is not the image under test, so without COPPER_INIT these
+# cases would test the runner's init instead of the wrapper's systemd path.
 COPPER_INIT=systemd
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block poweroff" now
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block reboot"   -r now
@@ -151,6 +181,18 @@ check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block halt"     -H now
 check "$TMP/sysbin" "$TMP/links/reboot"   "systemctl --no-block reboot"
 check "$TMP/sysbin" "$TMP/links/poweroff" "systemctl --no-block poweroff"
 COPPER_INIT=busybox
+
+# ---- the running-PID-1 detector, with no override ---------------------------
+# This gate host has /run/systemd/system, and the shipped busybox ISO bakes the
+# same directory into the tree. A wrapper that still trusted that directory
+# would send BOTH of these to systemctl; the kernel's comm for PID 1 is the
+# answer that has to win. COPPER_INIT is deliberately empty in comm_run.
+if [ "$(comm_probe)" = probe ]; then
+    check_comm copper-init "$TMP/sbin"  "$TMP/links/shutdown" reboot -r now
+    check_comm systemd     "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block reboot" -r now
+else
+    echo "skip: cannot bind-mount /proc/1/comm; runtime detector not exercised"
+fi
 
 # The recursion guard: if /sbin/init ever fails to read as systemd on a systemd
 # machine, the link /sbin/poweroff -> this wrapper would exec itself forever.

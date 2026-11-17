@@ -96,12 +96,30 @@ sync
 # any more: on the unified image both inits are present and /sbin/init points at
 # copper-init by default. Ask the running system instead.
 #
-# /run/systemd/system exists as soon as systemd is PID 1 and does not exist on a
-# busybox boot -- copper-init mounts a fresh tmpfs over /run and never creates
-# it. The readlink test stays as a fallback for a tree where systemd was the
-# only init. COPPER_INIT lets the gate force either answer without rebooting
-# (tests/shutdown-gate.sh sets it; nothing on a real boot does).
+# The running PID 1 is the only authority here. This image ships both inits and
+# can boot either one: /sbin/init is copper-init's link on the default boot even
+# when the GRUB systemd entry actually handovers to /lib/systemd/systemd, so
+# readlink /sbin/init says nothing about what is running. /run/systemd/system is
+# almost as unreliable: the systemd build stage bakes that directory into the
+# tree, and a boot whose /run was not remounted fresh can still see it while
+# copper-init is PID 1 -- which is exactly when `shutdown` was printing
+# systemctl's "System has not been booted with systemd" error.
+#
+# /proc/1/comm is the kernel's own name for PID 1: "systemd" on a systemd boot,
+# "copper-init" here. Read it with the shell's `read`, so this works before any
+# external command is needed. The two older tests stay as a fallback for a
+# kernel without /proc/1/comm. COPPER_INIT lets the gate force either answer
+# without rebooting (tests/shutdown-gate.sh sets it; nothing on a real boot
+# does).
 init_kind=${COPPER_INIT:-}
+if [ -z "$init_kind" ] && [ -r /proc/1/comm ]; then
+    initcomm=
+    IFS= read -r initcomm < /proc/1/comm 2>/dev/null || initcomm=
+    case "$initcomm" in
+        systemd) init_kind=systemd ;;
+        *)       init_kind=busybox ;;
+    esac
+fi
 if [ -z "$init_kind" ]; then
     if [ -d /run/systemd/system ]; then
         init_kind=systemd

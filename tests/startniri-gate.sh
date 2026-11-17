@@ -96,10 +96,16 @@ run_sut() {
     # case under test.
     SUT_INPUT_SYS=${SUT_INPUT_SYS:-$TMP/no-input}
     SUT_UDEV_DATA=${SUT_UDEV_DATA:-$TMP/no-udevdata}
+    # The renderer choices must not follow this runner's DMI or /dev/dri: by
+    # default VMware detection is off and the software override is auto, so the
+    # cases below say exactly which machine shape they are testing. SUT_HOME can
+    # carry a quote for the KDL-escaping case.
+    SUT_VMWARE=${SUT_VMWARE:-0}
+    SUT_HOME=${SUT_HOME:-$TMP/home}
     # stdin is /dev/null, so the launcher's interactive question is never put
     # to a terminal here: every case below is deterministic whether or not the
     # person running the gate has one.
-    HOME="$TMP/home" XDG_RUNTIME_DIR="$SUT_RUNTIME" \
+    HOME="$SUT_HOME" XDG_RUNTIME_DIR="$SUT_RUNTIME" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/dummy-bus" \
     COPPER_NIRI="$niri" COPPER_NIRI_SKEL="$SKEL" \
     COPPER_SESSIONLOG="$TMP/niri.log" \
@@ -107,7 +113,7 @@ run_sut() {
     COPPER_INGOT="${INGOT_STUB:-ingot}" COPPER_SUDO="" \
     COPPER_DRM_DIR="$SUT_DRM" COPPER_SEATD_SOCK="$SUT_SEATD" \
     COPPER_INPUT_SYS="$SUT_INPUT_SYS" COPPER_UDEV_DATA="$SUT_UDEV_DATA" \
-    COPPER_AUDIO=0 \
+    COPPER_NIRI_VMWARE="$SUT_VMWARE" COPPER_AUDIO=0 \
     WAIT_TRIES="$tries" sh "$SUT" "$@" < /dev/null 2>&1
 }
 
@@ -126,6 +132,9 @@ fi
   echo "ARG=\${1:-}"
   echo "XDG_RUNTIME_DIR=\$XDG_RUNTIME_DIR"
   echo "LIBGL_ALWAYS_SOFTWARE=\${LIBGL_ALWAYS_SOFTWARE:-}"
+  echo "GBM_ALWAYS_SOFTWARE=\${GBM_ALWAYS_SOFTWARE:-}"
+  echo "GALLIUM_DRIVER=\${GALLIUM_DRIVER:-}"
+  echo "NIRI_CONFIG=\${NIRI_CONFIG:-}"
   echo "WLR_RENDERER=\${WLR_RENDERER:-}"
   echo "DBUS_SESSION_BUS_ADDRESS=\${DBUS_SESSION_BUS_ADDRESS:-}"
   printf 'IDENTITY=%s|%s|%s|%s\n' "\$XDG_SESSION_TYPE" "\$XDG_CURRENT_DESKTOP" "\$XDG_SESSION_DESKTOP" "\$DESKTOP_SESSION"
@@ -637,6 +646,71 @@ else
     bad "  build_niri includes the overlay and stamps it as an input" \
         "the include or a stamp input is gone from iso/build.sh"
 fi
+
+echo
+echo "=== case 26: VMware forces software GBM even with a render node ==="
+# VMware with 3D enabled still advertises /dev/dri/renderD128, so the
+# "no render node" heuristic in case 5 never saw it: niri wedged in renderer
+# init right after its EGL warning, before the Wayland socket existed.
+# SUT_VMWARE=1 stands in for the DMI match; the render node is present on
+# purpose, to prove the heuristic alone is not enough.
+reset
+write_skel
+SKEL="$TMP/skel"
+: > "$TMP/dri/renderD128"
+SUT_DRM="$TMP/dri"
+SUT_VMWARE=1
+write_live_stub
+out=$(run_sut "$TMP/niri" 80); rc=$?
+SKEL=; SUT_DRM=; SUT_VMWARE=
+eq "  exit code is 0" 0 "$rc"
+has "  says it forced the VMware software path" \
+    "VMware virtual GPU: forcing software GBM" "$out"
+eq "  LIBGL_ALWAYS_SOFTWARE reached the compositor" 1 \
+    "$(sed -n 's/^LIBGL_ALWAYS_SOFTWARE=//p' "$TMP/niri.env" 2>/dev/null)"
+eq "  GBM_ALWAYS_SOFTWARE (Mesa's GBM switch) reached the compositor" 1 \
+    "$(sed -n 's/^GBM_ALWAYS_SOFTWARE=//p' "$TMP/niri.env" 2>/dev/null)"
+eq "  the Gallium driver is llvmpipe" llvmpipe \
+    "$(sed -n 's/^GALLIUM_DRIVER=//p' "$TMP/niri.env" 2>/dev/null)"
+vmconfig=$(sed -n 's/^NIRI_CONFIG=//p' "$TMP/niri.env" 2>/dev/null)
+eq "  the wrapper lives in the runtime dir" \
+    "$TMP/run/niri-vmware-config.kdl" "$vmconfig"
+if [ -s "$vmconfig" ] 2>/dev/null; then
+    ok "  the generated niri config exists and is not empty"
+else
+    bad "  the generated niri config exists and is not empty" "NIRI_CONFIG='$vmconfig'"
+fi
+eq "  the wrapper includes the user's config" \
+    "include \"$TMP/home/.config/niri/config.kdl\"" \
+    "$(sed -n '1p' "$vmconfig" 2>/dev/null)"
+if grep -q '^    disable-direct-scanout$' "$vmconfig" 2>/dev/null &&
+   grep -q '^    disable-cursor-plane$' "$vmconfig" 2>/dev/null; then
+    ok "  direct scanout and the cursor plane are disabled"
+else
+    bad "  direct scanout and the cursor plane are disabled" \
+        "$(cat "$vmconfig" 2>/dev/null | tr '\n' '|')"
+fi
+eq "  the user's config.kdl was not rewritten" "// cfg" \
+    "$(cat "$TMP/home/.config/niri/config.kdl" 2>/dev/null)"
+
+echo
+echo "=== case 27: a quote in the home path is escaped in the KDL include ==="
+# KDL strings need \" for a literal quote. Without it the generated wrapper is
+# a config error, which would leave a VMware session with no compositor at all.
+reset
+mkdir -p "$TMP/home\"q"
+write_skel
+SKEL="$TMP/skel"
+SUT_HOME="$TMP/home\"q"
+SUT_VMWARE=1
+write_live_stub
+out=$(run_sut "$TMP/niri" 80); rc=$?
+SKEL=; SUT_HOME=; SUT_VMWARE=
+eq "  exit code is 0" 0 "$rc"
+vmconfig=$(sed -n 's/^NIRI_CONFIG=//p' "$TMP/niri.env" 2>/dev/null)
+eq "  the include escapes the quote" \
+    "include \"$TMP/home\\\"q/.config/niri/config.kdl\"" \
+    "$(sed -n '1p' "$vmconfig" 2>/dev/null)"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"
