@@ -230,12 +230,30 @@ out=$(COPPER_HYPRLAND=/nonexistent/hyprland run_launcher 2>&1); rc=$?
 eq "compositor missing exits 20" 20 "$rc"
 has "compositor missing names the path" "/nonexistent/hyprland" "$out"
 
+# With --yes the launcher runs `ingot install hyprland` itself when the install
+# stub actually puts a compositor in place. This is the first-launch path on a
+# fresh image: the launcher arrives from the payload, but a half-installed or
+# later-clobbered tree has to be repairable without a second manual step.
+cat > "$TMP/ingot-installs" <<EOF
+#!/bin/sh
+[ "\${1:-}" = install ] || exit 0
+[ "\${2:-}" = hyprland ] || exit 0
+cp "$TMP/hyprland" "\${COPPER_HYPRLAND:-/usr/bin/Hyprland}"
+chmod +x "\${COPPER_HYPRLAND:-/usr/bin/Hyprland}"
+EOF
+chmod +x "$TMP/ingot-installs"
+rm -f "$TMP/installed-hyprland"
+out=$(COPPER_HYPRLAND="$TMP/installed-hyprland" COPPER_INGOT="$TMP/ingot-installs" \
+      run_launcher --yes 2>&1); rc=$?
+eq "--yes installs a missing compositor and starts it" 0 "$rc"
+has "the on-demand install is announced" "installing hyprland with ingot" "$out"
+
 # --check on the same machine reports it and still exits 0: a report is not a
 # launch, and a unit that runs it must not read a nonzero as "the session died".
 out=$(COPPER_HYPRLAND=/nonexistent/hyprland run_launcher --check 2>&1); rc=$?
 eq "--check exits 0 even when the compositor is missing" 0 "$rc"
 has "--check says NOT INSTALLED" "NOT INSTALLED" "$out"
-has "--check points at the stage that stages it" "hyprland stage" "$out"
+has "--check points at the payload install" "sudo ingot install hyprland" "$out"
 
 # No configuration anywhere: launch stops with 21.
 out=$(COPPER_HYPRLAND_SKEL="$TMP/noskel" \
@@ -315,22 +333,23 @@ out=$(COPPER_HYPRLAND_APPS="$TMP/hyprland-apps-missing" run_launcher --yes 2>&1)
 eq "install failure still starts the session" 0 "$rc"
 has "install failure is reported, not swallowed" "could not install nmap" "$out"
 
-# The shipped session config must be the file the launcher and Hyprland both
-# look for. Hyprland 0.57 loads Lua from hyprland.lua and ignores a .conf beside
-# it entirely, so a tree shipping the wrong name boots on defaults while looking
-# configured -- a failure no amount of launcher testing can see.
-skel_conf="$REPO/iso/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr"
-if [ -e "$skel_conf/hyprland.lua" ]; then
-    ok "the shipped session config is hyprland.lua"
+# Nothing Hyprland-specific is baked into the ISO now. The compositor, the Lua
+# config tree and the launcher all come from the ingot payload; the launcher
+# lives in this repo only so the payload can be built and this gate can test it.
+if [ -e "$REPO/iso/rootfs-overlay/usr/share/copper/hyprland-skel" ]; then
+    bad "no Hyprland skeleton is baked into the image" \
+        "the tree still carries a stale copy"
 else
-    bad "the shipped session config is hyprland.lua" "absent from the skeleton"
+    ok "no Hyprland skeleton is baked into the image"
 fi
-if [ -e "$skel_conf/hyprland.conf" ]; then
-    bad "no stale hyprland.conf ships beside it" \
-        "Hyprland 0.57 ignores it; a user would edit a dead file"
+if [ -e "$REPO/iso/rootfs-overlay/etc/copper/hyprland-apps" ]; then
+    bad "no Hyprland manifest is baked into the image" \
+        "the tree still carries a stale copy"
 else
-    ok "no stale hyprland.conf ships beside it"
+    ok "no Hyprland manifest is baked into the image"
 fi
+has "the launcher names the payload install" "sudo ingot install hyprland" \
+    "$(cat "$SUT")"
 
 # ingot payloads are self-contained: xarchiver's tarball carries noble's
 # libxkbcommon, and unpacking it replaces the image's newer library, which makes

@@ -1,13 +1,16 @@
 #!/bin/sh
 # starthyprland -- start the Hyprland session on the tty.
 # 
-# The compositor and its session tools are in the image, staged by the
-# hyprland build stage of the image build. The apps on top -- waybar, kitty,
-# fuzzel, dunst, wl-clipboard, ... -- are ingot packages, and before anything
-# starts this offers to install the missing ones (manifest at
-# /etc/copper/hyprland-apps). What is genuinely absent still gets its own exit
-# code and its own sentence naming the piece, instead of a bare "not found"
-# that is indistinguishable from a broken PATH or a missing library.
+# The compositor, its session tools and the config tree are an ingot payload:
+# `sudo ingot install hyprland` puts them all in place. Nothing Hyprland-specific
+# is baked into the ISO any more, so a fresh image has no starthyprland until
+# that install runs. When the launcher is present but the compositor is not, it
+# offers to run the install itself (or does it silently with --yes). The apps on
+# top -- waybar, kitty, fuzzel, dunst, wl-clipboard, ... -- follow the manifest
+# shipped beside the launcher (default /usr/share/copper/hyprland-apps). What is
+# genuinely absent still gets its own exit code and its own sentence naming the
+# piece, instead of a bare "not found" that is indistinguishable from a broken
+# PATH or a missing library.
 #
 # Hyprland is a Wayland compositor, so there is no second process to hand a
 # display to the way startxfce hands one to startxfce4: the compositor IS the
@@ -29,7 +32,7 @@
 # Exit codes, which are a contract rather than decoration:
 #
 #   0   hyprland ran and exited cleanly
-#   20  no hyprland in the image
+#   20  no hyprland installed (run sudo ingot install hyprland)
 #   21  no session configuration for this user
 #   22  the session runtime could not be prepared
 #   23  hyprland exited while starting up
@@ -87,8 +90,15 @@ UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
 USER_HYPR_CONF=${COPPER_USER_HYPR_CONF:-$HOME/.config/hypr}
 
 # The component manifest and the installer it drives. starthyprland only offers
-# components; it does not hardcode which ones.
-APPS=${COPPER_HYPRLAND_APPS:-/etc/copper/hyprland-apps}
+# components; it does not hardcode which ones. The payload ships the manifest
+# under /usr/share; /etc is the fallback for an install made by an older image.
+if [ -n "${COPPER_HYPRLAND_APPS:-}" ]; then
+    APPS=$COPPER_HYPRLAND_APPS
+elif [ -f /usr/share/copper/hyprland-apps ]; then
+    APPS=/usr/share/copper/hyprland-apps
+else
+    APPS=/etc/copper/hyprland-apps
+fi
 INGOT=${COPPER_INGOT:-ingot}
 SUDO=${COPPER_SUDO-sudo}
 # Root needs no sudo, and the image may not even have it. "-" (not ":=") so an
@@ -113,7 +123,7 @@ Environment, all optional:
   COPPER_HYPRLAND_SKEL     the shipped config tree that seeds a user's home
                            (default /usr/share/copper/hyprland-skel)
   COPPER_SESSIONLOG        where the compositor logs    (default /tmp/hyprland.log)
-  COPPER_HYPRLAND_APPS     component manifest           (default /etc/copper/hyprland-apps)
+  COPPER_HYPRLAND_APPS     component manifest           (default /usr/share/copper/hyprland-apps)
   COPPER_INGOT             installer for the components (default ingot)
   COPPER_SUDO              how to gain root for the install (default sudo; empty means already root or never use it)
   COPPER_DRM_DIR           where DRM nodes live         (default /dev/dri)
@@ -204,7 +214,7 @@ report() {
         say "found hyprland: $HYPRLAND"
     else
         say "NO hyprland at $HYPRLAND"
-        say "  this is the compositor, staged by the hyprland stage of the image build. Nothing can start until it is staged."
+        say "  the compositor is an ingot package: run 'sudo ingot install hyprland'."
     fi
     if [ "$user_config" = 1 ]; then
         say "found a session config: $user_conf"
@@ -226,7 +236,7 @@ report_check() {
         say "hyprland: present at $HYPRLAND"
     else
         say "hyprland: NOT INSTALLED at $HYPRLAND"
-        say "  staged by the hyprland stage of iso/build.sh; nothing can start until it is"
+        say "  install it with 'sudo ingot install hyprland'; nothing can start until it is"
     fi
 
     # Runtime libraries. ldd is the honest check: a compositor that starts and
@@ -331,16 +341,44 @@ fi
 
 # The compositor. Checked before anything else, and outside any branch that
 # starts a session: a machine with the config but no compositor must say so with
-# exit 20, not die on a bare exec failure.
+# exit 20, not die on a bare exec failure. Hyprland is an ingot payload now, so
+# give the user the install before that exit when there is a way to ask (a tty
+# or --yes). --no, a scripted call and a host with no ingot all skip it, which is
+# what the gate exercises.
+if [ "$have_hyprland" != 1 ]; then
+    want_install=0
+    if command -v "$INGOT" >/dev/null 2>&1; then
+        if [ "$use_install" = 1 ]; then
+            want_install=1
+        elif [ "$use_install" = "" ] && [ -t 0 ] && [ -t 1 ]; then
+            printf 'starthyprland: hyprland is not installed. install it with ingot? (Y/n) '
+            answer=
+            read -r answer || answer=
+            case "$answer" in
+                ''|[Yy]|[Yy][Ee][Ss]) want_install=1 ;;
+            esac
+        fi
+    fi
+    if [ "$want_install" = 1 ]; then
+        say "installing hyprland with ingot"
+        # $SUDO is intentionally unquoted: it is empty for root and for a
+        # caller that opted out, and "sudo" otherwise.
+        if $SUDO "$INGOT" install hyprland && [ -x "$HYPRLAND" ]; then
+            have_hyprland=1
+        else
+            say "the ingot install did not put a compositor at $HYPRLAND"
+        fi
+    fi
+fi
 if [ "$have_hyprland" != 1 ]; then
     report
     say "cannot start the session: there is no compositor at $HYPRLAND"
-    say "the hyprland stage of the image build stages it; see build.sh, hyprland."
+    say "install it with 'sudo ingot install hyprland', then run starthyprland again."
     exit 20
 fi
 
-# The configuration. The tree is shipped in the image and copied into the home
-# on first start, but a home that was made another way -- a second user, a home
+# The configuration. The tree arrives with the payload and is copied into the
+# home on first start, but a home that was made another way -- a second user, a home
 # wiped by hand, a wizard path that skipped the copy -- should still get a
 # working session rather than an empty compositor and a black screen. So when
 # the user has no config and the image has one to give, seed it. When neither is

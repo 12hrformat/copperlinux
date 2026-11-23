@@ -51,6 +51,13 @@ case " $cmdline " in
 esac
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
+# AppImages mount through FUSE. FUSE_FS is built into this kernel, so devtmpfs
+# normally publishes /dev/fuse on its own; make the node explicitly if it did
+# not, so a live image can still run an AppImage even on a kernel that exposed
+# the device late. Major 10, minor 229 is the fixed FUSE device number.
+if [ ! -c /dev/fuse ]; then
+    /bin/busybox mknod /dev/fuse c 10 229 2>/dev/null || :
+fi
 /bin/busybox mkdir -p /mnt/root /mnt/upper /mnt/merged /run
 
 # Once we're in a shell there's no display, no ssh and no working command line
@@ -70,6 +77,13 @@ find_media() {
                /dev/nvme0n1p[0-9]*; do
         [ -b "$dev" ] || continue
         /bin/busybox mount -t iso9660 -o ro "$dev" /mnt/root 2>/dev/null || continue
+        # The marker is written by build_iso whatever bootloader packaged the
+        # disc. grub.cfg is the fallback for media built before the marker
+        # existed; a systemd-boot or other provider need not carry GRUB at all.
+        if [ -f /mnt/root/boot/copper-media ]; then
+            MEDIA="$dev"
+            return 0
+        fi
         if [ -f /mnt/root/boot/grub/grub.cfg ]; then
             MEDIA="$dev"
             return 0
@@ -79,7 +93,7 @@ find_media() {
     return 1
 }
 
-find_media || rescue "no Copper medium: looked for an iso9660 filesystem with /boot/grub/grub.cfg on it"
+find_media || rescue "no Copper medium: looked for an iso9660 filesystem with /boot/copper-media on it"
 say "initramfs up, medium is $MEDIA"
 
 # Writable top layer over the read-only ISO root.

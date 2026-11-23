@@ -1908,7 +1908,10 @@ static void run_session(void) {
         hint = "startniri for niri (or startxfce for XFCE)";
         break;
     case HYPERRAND:
-        hint = "starthyprland for hyprland (or startxfce for XFCE)";
+        /* Hyprland is an ingot payload, not part of the image. Say the install
+           command first: a hint that only names starthyprland sends someone to
+           a command that is not there until the payload has been installed. */
+        hint = "sudo ingot install hyprland, then starthyprland (or startxfce for XFCE)";
         break;
     default:
         hint = "startxfce for XFCE (or startniri for niri)";

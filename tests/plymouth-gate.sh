@@ -35,7 +35,7 @@ set -u
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$REPO/iso/src-init/copper-init.c"
-GRUB="$REPO/iso/boot/grub.cfg"
+ENTRIES="$REPO/iso/boot/entries"
 SHOWUNIT="$REPO/iso/systemd/copper-plymouth.service"
 QUITUNIT="$REPO/iso/systemd/copper-plymouth-quit.service"
 SHOW="$REPO/iso/systemd/copper-splash-show"
@@ -49,20 +49,22 @@ if [ ! -f "$SRC" ]; then
 fi
 
 # ---- 1. the kernel switch, and tty0 still owning /dev/console -------------
-# The grub.cfg half: the splash entry must ask for the splash, must tell
-# plymouthd the serial console is not the display, must keep the kernel quiet
-# (quiet loglevel=3), must force systemd's [ OK ] status block back on
+# The boot-entry half: the default (splash) entry must ask for the splash, must
+# tell plymouthd the serial console is not the display, must keep the kernel
+# quiet (quiet loglevel=3), must force systemd's [ OK ] status block back on
 # (systemd.show_status=1), and must still leave tty0 last (the last console=
-# is the one that owns /dev/console -- bug 7).
-cl=$(sed -n '/^[[:space:]]*linux .*splash/p' "$GRUB" | head -n1)
+# is the one that owns /dev/console -- bug 7). Read the shared entry list, not
+# one provider's rendered menu: GRUB is just the default renderer of these
+# arguments, and the same list drives any replacement provider.
+cl=$(awk -F'|' '$1 == "default" && $3 ~ /splash/ { print $3 }' "$ENTRIES" | head -n1)
 if [ -z "$cl" ]; then
-    echo "FAIL grub.cfg has no splash entry"
+    echo "FAIL $ENTRIES has no splash default entry"
     fail=1
 else
     for sw in splash plymouth.ignore-udev plymouth.ignore-serial-consoles; do
         case " $cl " in
-            *" $sw "*) echo "ok   grub splash entry passes $sw" ;;
-            *) echo "FAIL grub splash entry is missing $sw"; fail=1 ;;
+            *" $sw "*) echo "ok   default boot entry passes $sw" ;;
+            *) echo "FAIL default boot entry is missing $sw"; fail=1 ;;
         esac
     done
     # The screen belongs to the animation and then to systemd's status lines.
@@ -71,23 +73,23 @@ else
     # systemd's default "auto" suppresses status while a splash is up.
     for sw in quiet loglevel=3 systemd.show_status=1; do
         case " $cl " in
-            *" $sw "*) echo "ok   grub splash entry passes $sw" ;;
-            *) echo "FAIL grub splash entry is missing $sw"; fail=1 ;;
+            *" $sw "*) echo "ok   default boot entry passes $sw" ;;
+            *) echo "FAIL default boot entry is missing $sw"; fail=1 ;;
         esac
     done
     # And the opposite: a splash entry with no quiet would put kernel text
     # back over the animation, which is the bug this switch exists to close.
     if printf '%s\n' "$cl" | grep -q ' quiet '; then
-        echo "ok   grub splash entry keeps the kernel quiet"
+        echo "ok   default boot entry keeps the kernel quiet"
     else
-        echo "FAIL grub splash entry leaks kernel chatter (no quiet)"
+        echo "FAIL default boot entry leaks kernel chatter (no quiet)"
         fail=1
     fi
     last=$(printf '%s\n' "$cl" | tr ' ' '\n' | grep '^console=' | tail -n1)
     if [ "$last" = "console=tty0" ]; then
-        echo "ok   grub splash entry keeps tty0 last (bug 7)"
+        echo "ok   default boot entry keeps tty0 last (bug 7)"
     else
-        echo "FAIL grub splash entry's last console= is '$last', not console=tty0"
+        echo "FAIL default boot entry's last console= is '$last', not console=tty0"
         fail=1
     fi
 fi

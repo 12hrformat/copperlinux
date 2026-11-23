@@ -5,7 +5,8 @@ Everything under `iso/` contributes to a fully from-source Linux distro:
 ```
 iso/build.sh                the whole pipeline, stage by stage
 iso/live/init               live initramfs: find medium, overlay, hand off
-iso/boot/grub.cfg           GRUB menu (normal + verbose)
+iso/boot/entries            shared boot entries (id | title | kernel args)
+iso/bootloaders/            pluggable bootloader providers (grub is default)
 iso/src-init/copper-init.c  our PID 1 (no systemd)
 iso/firstboot/copper-firstboot.c   first-boot personalization wizard
 iso/rootfs-overlay/         default /etc for the rootfs
@@ -17,9 +18,10 @@ iso/rootfs-overlay/usr/share/udhcpc/default.script   the DHCP lease script
 A Copper ISO is a `grub-mkrescue` image. It boots like this:
 
 1. GRUB loads `vmlinuz` + `initrd.img` (the unpacked live system).
-2. `/init` (a busybox ash script) mounts proc/sys/dev, scans the bus for a
-   `iso9660` medium that carries `/boot/grub/grub.cfg` (that's us), mounts
-   it read-only, then stacks a **writable overlay** on top and `switch_root`s
+2. `/init` (a busybox ash script) mounts proc/sys/dev, scans the bus for an
+   `iso9660` medium carrying `/boot/copper-media` (that's us; the marker is
+   written by the build whatever bootloader packaged the disc), mounts it
+   read-only, then stacks a **writable overlay** on top and `switch_root`s
    into the merged tree. The writable layer is a tmpfs unless a disk carrying
    the label `COPPER` is attached — that disk is claimed instead, and that is
    what makes a session survive a reboot.

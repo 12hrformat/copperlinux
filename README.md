@@ -40,9 +40,9 @@ machine.
 || `startxfce --check` | Reports what's installed and exits, starting nothing. |
 || `startniri` | Starts niri — the optional second desktop — on the tty. |
 || `startniri --check` | Reports what's installed and exits, starting nothing. |
-|| `starthyprland` | Seeds the Hypr wait session config and starts the Hyprland compositor on the tty. |
+|| `starthyprland` | Seeds the Hyprland session config and starts the Hyprland compositor on the tty (requires `sudo ingot install hyprland` first). |
 || `starthyprland --check` | Reports what's installed and exits, starting nothing. |
-|| `starthyprland --yes` / `--no` | Install any missing components (prompts by default). |
+|| `starthyprland --yes` / `--no` | Install the payload/components without asking, or start without them. |
 
 On the default Copper-init image, **Ctrl+Alt+F3** opens a password-protected
 login prompt on tty3. Use the account and password created during first boot;
@@ -100,12 +100,19 @@ restores the shipped configuration exactly.
 
 ## Hyprland desktop
 
-Hyprland is Copper's third desktop. It is optional and never the default, and
-it ships in the same image alongside XFCE and Niri: the three desktops are
-independent, started by their own launcher, and coexist without touching each
-other. The first-boot wizard stores the choice in the first line of
-`/etc/copper-desktop` and copper-init prints the matching launcher hint on the
-prompt.
+Hyprland is Copper's third desktop. It is optional and never the default. Unlike
+XFCE and Niri, **nothing Hyprland-specific is baked into the image**: the
+compositor, its runtime libraries, the session config and the `starthyprland`
+launcher all arrive as a single ingot payload. Install it with:
+
+```
+sudo ingot install hyprland
+```
+
+Once installed, it coexists with XFCE and Niri without touching either; each is
+started by its own launcher. The first-boot wizard stores the choice in the
+first line of `/etc/copper-desktop` and copper-init prints the matching launcher
+hint (including the install command when the payload is absent).
 
 ```
 | Command | What it does |
@@ -115,10 +122,10 @@ prompt.
 | `starthyprland --yes` / `--no` | Offer, or decline, installing the components the manifest lists. |
 ```
 
-The session config is Copper-branded and is shipped in the ISO at
+The session config is Copper-branded and is installed with the payload at
 `/usr/share/copper/hyprland-skel`. On first launch — and on every launch for a
 home that is missing files the skeleton provides — the launcher seeds it into
-the user's home from the ISO, so a home wiped by hand or made another way is
+the user's home from that tree, so a home wiped by hand or made another way is
 still repairable in place:
 
 | Path | What it is |
@@ -149,19 +156,20 @@ The shipped configuration binds, as sensible defaults:
 | SUPER + mouse | Move and resize the window under the pointer |
 | SUPER + M | Quit the compositor (a safe, documented exit; not a panic) |
 
-### Building the Hyprland stage
+### Installing the Hyprland payload
 
 ```
-sudo bash iso/build.sh hyprland
+sudo ingot install hyprland
 ```
 
-The stage pulls the Hyprland session closure from the community Hyprland PPA
-(`ppa:cppiber/hyprland`) with the archive key fetched and verified by
-fingerprint at the top of `iso/build.sh`, then extracts and stages it alongside
-Copper's session config. Ubuntu 24.04 carries no Hyprland package of its own —
-it only appears in Ubuntu 25.10 — and the Hypr* team maintains no packages, so
-this archive is where the session comes from. It is a first-class stage: it can
-be built on its own, and it is in the full, no-systemd, and systemd chains.
+The ingot payload pulls the full Hyprland session closure from the community
+Hyprland PPA (`ppa:cppiber/hyprland`) — Ubuntu 24.04 carries no Hyprland package
+of its own, it only appears in Ubuntu 25.10, and the Hypr* team maintains no
+packages, so this archive is where the session comes from. The payload carries
+the compositor, the session tools, the matching input libraries and Copper's
+branded config together, so the install is a single transaction rather than a
+set of half-independent packages. The payload is built and published in the
+`copper-ingot-repo` project; the ISO itself only needs `ingot` to fetch it.
 
 ### Troubleshooting
 
@@ -193,11 +201,23 @@ missing, **22** if the server started but never opened a display, **23** if the
 server exited while starting, and **24** on a usage error. That's a contract —
 a script can branch on the exit code without parsing a message.
 
-Boot entries in GRUB:
+### Bootloader is pluggable
+
+The ISO build does not hardcode a menu or a packaging tool. It reads the shared
+entry list at `iso/boot/entries` (one `id|title|kernel command line` per line)
+and asks a provider selected by `COPPER_BOOTLOADER=<name>` (default: `grub`) to
+render that list and package the media. A provider lives in
+`iso/bootloaders/<name>/provider.sh` and exports `bootloader_configure`,
+`bootloader_make_iso` and an optional `bootloader_check`. See
+`iso/bootloaders/README.md`. GRUB is the provider that ships, producing one
+BIOS+UEFI image with no second bootloader binary.
+
+Boot entries (rendered from `iso/boot/entries`):
 
 | Entry | What you get |
 |---|---|
-| Copper Linux | Wizard if needed, then a shell |
+| Copper Linux | Wizard if needed, then a shell (init comes from `/etc/copper-init`) |
+| Copper Linux (systemd init) | Boots the systemd payload via `copper.init=systemd` |
 | Copper Linux (verbose) | As above, with kernel messages |
 | Copper Linux (debug) | Everything logged, panic-on-hang so a wedge reboots and shows its face |
 | Copper Linux (initramfs shell) | A shell inside the initramfs, skipping the overlay — splits "kernel/initrd broken" from "our /init broke" in half |

@@ -14,7 +14,7 @@
 # localhost, startniri's compositor is a stub under a private home,
 # starthyprland's compositor is a stub too and it points the launcher at a
 # private runtime directory and seatd socket,
-# plymouth-gate.sh only reads grub.cfg, copper-init.c and the Plymouth
+# plymouth-gate.sh only reads iso/boot/entries, copper-init.c and the Plymouth
 # units/helpers, polkit-gate.sh only reads the init source, the
 # overlay and build.sh, network-gate.sh runs the real lease script against
 # a stub ip(8), and console-gate.sh reads the startup files and runs their
@@ -181,8 +181,22 @@ fi
 
 # ---------------------------------------------------------------------------
 echo
+echo "--- tests/bootloader-gate.sh: shared entries and the provider hooks ---"
+# Unprivileged and buildless: it renders the shipped GRUB provider into a
+# scratch tree and reads the build wiring, so a rename on either side of the
+# provider contract fails here instead of at ISO time.
+if out=$(sh tests/bootloader-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^ok' || true)
+    record bootloader-gate.sh ok "$n checks"
+else
+    record bootloader-gate.sh bad "a bootloader provider check failed"
+    printf '%s\n' "$out" | grep -E '^FAIL' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
 echo "--- tests/plymouth-gate.sh: the splash switches and the daemon's argv ---"
-# Unprivileged and self-contained: it reads grub.cfg and copper-init.c, and
+# Unprivileged and self-contained: it reads iso/boot/entries and copper-init.c, and
 # only checks options against a real plymouthd when the host happens to have
 # one (a skip, not a failure, when it does not).
 if out=$(sh tests/plymouth-gate.sh 2>&1); then

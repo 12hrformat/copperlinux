@@ -14,7 +14,7 @@
 #   sudo bash iso/build.sh               # everything, in order
 #   sudo bash iso/build.sh <stage>       # one stage only
 #
-# Stages: kernel | base | tools | copper | rootfs | gui | niri | hyprland |
+# Stages: kernel | base | tools | copper | rootfs | gui | niri |
 #         plymouth | sudo | systemd | unified | initramfs | iso
 #
 # systemd is opt-in and deliberately NOT part of `all`: see build_systemd. A
@@ -71,14 +71,29 @@ NIRI_CFG_SHA256=5834dc358e8f0df9691b2c33dd3b2808d172aac771c07a249e5549bd6f0e76ce
 NIRI_PPA_URL="https://ppa.launchpadcontent.net/praksharma/ubuntu-niri/ubuntu"
 NIRI_PPA_FPR="B2AA0C43F73505B5A65A53D26EE0350540BB4F59"
 
-# The community Hyprland PPA for noble, with a verified fingerprint. Ubuntu
-# 24.04 carries no hyprland of its own (the package only appears from 25.10),
-# and the Hypr* team maintains no packages -- this archive is the one the
-# Hyprland wiki points Ubuntu users at. The key is fetched by fingerprint and
-# checked before it is trusted; a wrong fingerprint stops the build instead of
-# shipping an unsigned compositor.
-HYPRELLMAN_PPA_URL="https://ppa.launchpadcontent.net/cppiber/hyprland/ubuntu"
-HYPRELLMAN_PPA_FPR="A54D23B62FF3FCC76EFF71E8FDBAAA1CF0CCF48E"
+# Boot media is pluggable. build.sh asks the selected provider to render the
+# shared iso/boot/entries list and to package the staged tree; GRUB is the
+# provider that ships, but setting COPPER_BOOTLOADER=<name> selects any
+# directory under iso/bootloaders/ that exports the two hooks documented in
+# iso/bootloaders/README.md.
+BOOTLOADER=${COPPER_BOOTLOADER:-grub}
+BOOTLOADER_DIR="$ROOT/bootloaders/$BOOTLOADER"
+if [ ! -f "$BOOTLOADER_DIR/provider.sh" ]; then
+  echo "build.sh: no bootloader provider at iso/bootloaders/$BOOTLOADER/provider.sh" >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$BOOTLOADER_DIR/provider.sh"
+for hook in bootloader_configure bootloader_make_iso; do
+  if ! declare -F "$hook" >/dev/null; then
+    echo "build.sh: bootloader provider '$BOOTLOADER' does not define $hook" >&2
+    exit 2
+  fi
+done
+# Optional: the GRUB provider reads its own menu back off the disc. A provider
+# with a different layout may check something else, or nothing.
+BOOTLOADER_HAS_CHECK=0
+if declare -F bootloader_check >/dev/null; then BOOTLOADER_HAS_CHECK=1; fi
 
 STAGE=${1:-all}
 
@@ -96,10 +111,11 @@ lint_scripts() {
   for s in "$ROOT/live/init" "$ROOT/rootfs-overlay/usr/share/udhcpc/default.script" \
            "$ROOT/rootfs-overlay/usr/bin/ingot" \
            "$ROOT/rootfs-overlay/usr/bin/copper-audio" \
-           "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/starthyprland.sh"; do
+           "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/starthyprland.sh" \
+           "$ROOT/bootloaders/grub/provider.sh"; do
     sh -n "$s" || { echo "build.sh: syntax error in $s"; exit 1; }
   done
-  echo "scripts: live/init, the udhcpc lease script, ingot, copper-audio, startxfce, startniri and starthyprland parse clean"
+  echo "scripts: live/init, the udhcpc lease script, ingot, copper-audio, startxfce, startniri, starthyprland and the GRUB provider parse clean"
 }
 lint_scripts
 
@@ -215,8 +231,8 @@ apt_update_for() {
     apt-get "$@" update -qq >>"$log" 2>&1 || :
     # Capture before grepping. Piping apt-cache straight into `grep -q` can
     # kill apt-cache with SIGPIPE when grep leaves on the first hit, and under
-    # pipefail that reports failure even on a match -- the hyprland stage
-    # hit exactly that. A here-string has no writer to interrupt.
+    # pipefail that reports failure even on a match -- a PPA stage hit
+    # exactly that. A here-string has no writer to interrupt.
     # The candidate check itself is build_gui's: a name apt only recognizes
     # through Provides/Replaces prints "(none)" and must not count.
     policy=$(apt-cache "$@" policy "$pkg" 2>/dev/null) || policy=
@@ -258,6 +274,7 @@ require_kernel_config() {
   local cfg="$1" sym missing=""
   for sym in \
       DEVTMPFS DEVTMPFS_MOUNT TMPFS OVERLAY_FS ISO9660_FS BLK_DEV_SR \
+      FUSE_FS \
       VT VGA_CONSOLE UNIX98_PTYS \
       EXT4_FS BLK_DEV_SD ATA ATA_PIIX SATA_AHCI BLK_DEV_NVME \
       VIRTIO_PCI VIRTIO_BLK \
@@ -269,6 +286,13 @@ require_kernel_config() {
     echo "kernel: these options did not survive olddefconfig:$missing" >&2
     exit 1
   fi
+
+  # FUSE_FS is in the base list for AppImages. They are self-mounting squashfs
+  # files: the runtime calls fusermount, which needs /dev/fuse and a kernel that
+  # speaks the FUSE protocol. This image builds with MODULES disabled, so a
+  # defconfig that carries FUSE as a module (or not at all) gives a machine where
+  # double-clicking an .AppImage only says "Fuse not installed". Built in, and
+  # devtmpfs publishes /dev/fuse at boot with no udev to ask.
 
   # Every display driver, asserted rather than merely requested.
   #
@@ -428,6 +452,7 @@ build_kernel() {
     make "${kcc[@]}" defconfig
     scripts/config --disable MODULES \
       --enable ISO9660_FS --enable OVERLAY_FS --enable TMPFS \
+      --enable FUSE_FS \
       --enable DEVTMPFS --enable DEVTMPFS_MOUNT \
       --enable UNIX98_PTYS --enable LEGACY_PTYS \
       --enable VIRTIO_PCI --enable VIRTIO_BLK --enable VIRTIO_NET \
@@ -967,7 +992,7 @@ local SRC="$ROOT/../src"
      && [ -x "$TGT/usr/bin/xprobe" ] && [ -x "$TGT/sbin/shutdown" ] \
      && stamped_skip "$WORK/copper.stamp" "$SELF" "$SRC"/*.c "$SRC"/*.h \
         "$ROOT/src-init/copper-init.c" "$ROOT/firstboot/copper-firstboot.c" \
-        "$ROOT/startxfce.sh" "$ROOT/startniri.sh" "$ROOT/starthyprland.sh" \
+        "$ROOT/startxfce.sh" "$ROOT/startniri.sh" \
         "$ROOT/x11/probe/xprobe.c" "$ROOT/shutdown.sh" \
         "$ROOT/copper.sh"
   then
@@ -1002,10 +1027,10 @@ local SRC="$ROOT/../src"
   # discipline as startxfce.
   install -m 0755 "$ROOT/startniri.sh" "$TGT/usr/bin/startniri"
 
-  # The Hyprland launcher: same contract again -- seed the session config,
-  # start the session bus, decide the renderer, then hand over to the
-  # compositor with a distinct exit code per way it can fail to start.
-  install -m 0755 "$ROOT/starthyprland.sh" "$TGT/usr/bin/starthyprland"
+  # Hyprland is no longer baked into the image. Its launcher, compositor,
+  # config tree and runtime libraries all arrive with `ingot install hyprland`;
+  # keeping the source here is what builds that payload. A fresh ISO therefore
+  # has no starthyprland until the payload is installed.
 
   # shutdown: busybox has no such applet, so `sudo shutdown now` had nothing
   # to run. The wrapper maps its flags onto the busybox halt/poweroff/reboot
@@ -1025,7 +1050,7 @@ local SRC="$ROOT/../src"
   # in build_rootfs instead — this stage runs before the overlay is copied.)
   local f
   for f in usr/bin/copper-init usr/bin/copper-sh usr/bin/copper-firstboot \
-           usr/bin/startxfce usr/bin/startniri usr/bin/starthyprland \
+           usr/bin/startxfce usr/bin/startniri \
            usr/bin/xprobe sbin/shutdown \
            usr/bin/copper; do
     if [ ! -x "$TGT/$f" ]; then
@@ -1673,6 +1698,42 @@ build_gui() {
     echo "gui: /etc/copper.conf offers them as a one-line switch" >&2
     exit 1
   fi
+  # pulseaudio-utils: pactl. Both launchers start a server and both call
+  # copper-audio init, but a server with a muted sink is a silent machine whose
+  # every log says it is healthy -- cava still draws bars because it reads the
+  # monitor of that very sink. copper-audio uses pactl to unmute the default
+  # sink (and to point it at a real device when it landed on the null output).
+  # pactl speaks to pipewire-pulse as well as to the PulseAudio daemon, so one
+  # binary covers both /etc/copper.conf choices.
+  local pulseutils="" p
+  for p in pulseaudio-utils; do
+    if gui_carries "$p"; then pulseutils=$p; break; fi
+  done
+  if [ -z "$pulseutils" ]; then
+    echo "gui: no installable pulseaudio-utils; copper-audio could not unmute" >&2
+    echo "gui: the server's sink, and a fresh boot would be silent" >&2
+    exit 1
+  fi
+  # FUSE for AppImages. The file is a squashfs image with its own runtime; that
+  # runtime dlopens libfuse.so.2 and execs fusermount to hand the mount to the
+  # kernel. noble renamed libfuse2 to libfuse2t64 for the time_t transition, so
+  # probe both. `fuse` owns fusermount and is setuid in the package itself --
+  # dpkg-deb -x keeps that mode, which matters because the user running an
+  # AppImage is not root. Without either half the file only reports "Fuse not
+  # installed", and without FUSE_FS in the kernel there is no /dev/fuse to use.
+  local fuselib="" fusetools="" p
+  for p in libfuse2t64 libfuse2; do
+    if gui_carries "$p"; then fuselib=$p; break; fi
+  done
+  for p in fuse; do
+    if gui_carries "$p"; then fusetools=$p; break; fi
+  done
+  if [ -z "$fuselib" ] || [ -z "$fusetools" ]; then
+    echo "gui: AppImage support needs libfuse.so.2 and fusermount; missing:" >&2
+    [ -n "$fuselib" ]   || echo "  libfuse2t64 / libfuse2" >&2
+    [ -n "$fusetools" ] || echo "  fuse" >&2
+    exit 1
+  fi
   # firefox, under whichever name the host's distro carries -- with
   # "carries" settled by the candidate check, because the first cut of
   # this probe accepted recognition and the runner died for it:
@@ -1745,9 +1806,10 @@ build_gui() {
   # pulse audio" -- which is where cava sat, and where the desktop's playback
   # sat too. The daemon is the missing half of the audio stack.
   [ -n "$pulseaudio" ] && set -- "$@" "$pulseaudio"
-  set -- "$@" "$alsa_utils"
+  set -- "$@" "$alsa_utils" "$pulseutils"
   [ -n "$vmtools" ] && set -- "$@" "$vmtools"
   set -- "$@" "$zsh" "$pipewire" "$pipewire_pulse" "$wireplumber"
+  set -- "$@" "$fuselib" "$fusetools"
   apt-get \
     -o Dir::State::status="$status" \
     -o Dir::Cache::archives="$DG" \
@@ -2016,6 +2078,7 @@ build_gui() {
            usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse \
            usr/bin/wireplumber \
            usr/bin/amixer usr/sbin/alsactl usr/bin/speaker-test \
+           usr/bin/pactl bin/fusermount \
            usr/share/dbus-1/system.conf \
            lib64/ld-linux-x86-64.so.2 \
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do
@@ -2024,6 +2087,22 @@ build_gui() {
       exit 1
     fi
   done
+  # AppImages call fusermount as the logged-in (non-root) user. The kernel only
+  # permits that when the helper is root-owned and setuid. The fuse package
+  # ships it at /bin/fusermount (Copper's tree is deliberately not merged-usr),
+  # and its deb ships mode 0755 -- a normal install sets the bit in postinst,
+  # which never runs here. Set it ourselves. Link the /usr/bin spelling too:
+  # AppImage runtimes differ on which path they try, and both must reach the
+  # same setuid helper.
+  if [ -e "$TGT/bin/fusermount" ]; then
+    chown 0:0 "$TGT/bin/fusermount"
+    chmod 4755 "$TGT/bin/fusermount"
+    if [ ! -e "$TGT/usr/bin/fusermount" ] && [ ! -L "$TGT/usr/bin/fusermount" ]; then
+      ln -s ../../bin/fusermount "$TGT/usr/bin/fusermount"
+    fi
+    echo "  AppImage: /bin/fusermount is root:root 4755"
+  fi
+
   for f in usr/share/themes/Blacklight/index.theme \
            usr/share/themes/Blacklight/gtk-3.0/gtk.css \
            usr/share/themes/Blacklight/xfwm4/themerc \
@@ -2651,377 +2730,6 @@ build_niri() {
 # control client, the four libply libraries, the script and text plugins and
 # the two renderers. The systemd units, the SysV init script and the
 # initramfs-tools hooks the package also ships are left behind on purpose.
-build_hyprland() {
-  # Copper's Hyprland session config is vendored in this tree under
-  # iso/rootfs-overlay/usr/share/copper/hyprland-skel and reaches the staged
-  # rootfs through build_rootfs -- unlike niri's config, which is fetched from
-  # its own repository. The compositor and its session tools are staged here
-  # from the community Hyprland PPA for noble. The component manifest
-  # /etc/copper/hyprland-apps drives the launcher's offer-to-install step
-  # (starthyprland.sh).
-  #
-  # seatd and the _seatd group arrive with build_niri on the full chain, but
-  # the guard asks about them anyway: the standalone stage must fail honestly
-  # when they are absent rather than stage a compositor that cannot take the
-  # DRM master.
-  if [ -e "$TGT/usr/bin/Hyprland" ] \
-     && [ -x "$TGT/usr/bin/waybar" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" ] \
-     && [ -e "$TGT/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" ] \
-     && [ -n "$(find "$TGT/usr" -name 'libseat.so*' -print -quit 2>/dev/null)" ] \
-     && grep -q '^_seatd:' "$TGT/etc/group" \
-     && stamped_skip "$WORK/hyprland.stamp" "$SELF" \
-        "$ROOT/rootfs-overlay/etc/copper/hyprland-apps" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprland.lua" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hyprpaper.conf" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/hypridle.conf" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/hypr/wallpapers/copper-hyprland.png" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/config.jsonc" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/style.css" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/workspaces.sh" \
-        "$ROOT/rootfs-overlay/usr/share/copper/hyprland-skel/.config/waybar/scripts/window.sh"; then
-    echo "hyprland: already staged, skipping"; return
-  fi
-  echo "==> Hyprland session"
-  local DH="$DL/hyprland" STAGE="$WORK/hyprland-root" deb n
-  local HA="$WORK/hyprland-apt" status="$WORK/hyprland-status"
-  local KEYRING="$HA/etc/apt/keyrings/cppiber-ubuntu-hyprland.gpg"
-  mkdir -p "$DH/partial"
-  # The download cache lives in the cached work tree, so debs from an earlier
-  # run survive into this one. They get extracted alongside the freshly
-  # resolved ones, and whichever extracts last wins for a shared path -- so an
-  # older library can land in the image without apt ever resolving it this time.
-  # Start from an empty cache.
-  rm -f "$DH"/*.deb
-  : > "$status"
-
-  # ---- the archive key, by fingerprint -----------------------------------------
-  # Fetched, not trusted blind: the key the keyserver returns must carry the
-  # fingerprint launchpad publishes for the Hyprland archive, or the build
-  # stops. gpg is expected on the build host and if it is not there, say so
-  # rather than fall back to something unsigned. The fingerprint below is the
-  # value pinned for the Hyprland PPA and MUST be re-verified against the
-  # Hyprland release channel before the build is run (see the final report).
-  command -v gpg >/dev/null 2>&1 \
-    || { echo "hyprland: gpg is needed to verify the PPA archive key" >&2; exit 1; }
-  rm -rf "$HA"
-  mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
-  local asc="$WORK/cppiber-ubuntu-hyprland.asc" fpr
-  local try=0
-  until wget -q -t 3 -T 15 -O "$asc" \
-         "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$HYPRELLMAN_PPA_FPR"; do
-    try=$((try + 1))
-    [ "$try" -ge 6 ] \
-      && { echo "hyprland: could not fetch the PPA archive key from the keyserver" >&2; exit 1; }
-    echo "hyprland: keyserver attempt $try failed; retrying in 20s" >&2
-    sleep 20
-  done
-  fpr=$(gpg --show-keys --with-colons "$asc" 2>/dev/null \
-        | awk -F: '/^fpr:/{print $10; exit}')
-  if [ "$fpr" != "$HYPRELLMAN_PPA_FPR" ]; then
-    echo "hyprland: the PPA key's fingerprint is '$fpr', expected '$HYPRELLMAN_PPA_FPR'" >&2
-    exit 1
-  fi
-  gpg --dearmor < "$asc" > "$KEYRING"
-  [ -s "$KEYRING" ] || { echo "hyprland: the PPA keyring came out empty" >&2; exit 1; }
-  echo "  archive key verified ($HYPRELLMAN_PPA_FPR)"
-
-  # ---- sources, isolated -------------------------------------------------------
-  # A private sourceparts directory: a copy of whatever the host already uses,
-  # plus the PPA. apt then reads the host's sources.list (untouched) and this
-  # directory instead of /etc/apt/sources.list.d, so the PPA is visible to this
-  # stage and to nothing else. The copy is what keeps noble's own mirrors in
-  # the mix: waybar, fuzzel, kitty and the rest are ordinary noble packages.
-  if [ -d /etc/apt/sources.list.d ]; then
-    cp -a /etc/apt/sources.list.d/. "$HA/etc/apt/sources.list.d/" 2>/dev/null || :
-  fi
-  if [ -z "$(ls -A "$HA/etc/apt/sources.list.d" 2>/dev/null)" ]; then
-    echo "deb http://archive.ubuntu.com/ubuntu noble main universe" \
-      > "$HA/etc/apt/sources.list.d/noble.list"
-  fi
-  echo "deb [signed-by=$KEYRING] $HYPRELLMAN_PPA_URL noble main" \
-    > "$HA/etc/apt/sources.list.d/cppiber-ubuntu-hyprland.list"
-
-  local -a AOPT=(
-    -o Dir::Etc::sourceparts="$HA/etc/apt/sources.list.d"
-    -o Dir::State::status="$status"
-    -o Dir::Cache::archives="$DH"
-    -o APT::Sandbox::User=root
-    # no translation indexes: this apt tree is a throwaway downloader and
-    # nothing reads them, while the PPA's Release file can list a
-    # Translation-en the archive then 404s -- a file nobody uses killing
-    # the stage (seen 2026-11-11).
-    -o Acquire::Languages=none
-    # Same flapping PPA as niri's: retry each fetch, then the whole update.
-    -o Acquire::Retries=5
-  )
-  apt_update_for hyprland "$WORK/hyprland-update.log" "${AOPT[@]}" \
-    || { echo "hyprland: the PPA never became reachable; cannot stage the session" >&2
-         exit 1; }
-
-  # ---- the closure -------------------------------------------------------------
-  # Dir::State::status empty: every dependency counts as missing, the same
-  # guarantee build_gui relies on. The default lists directory is kept, so a
-  # warm runner re-reads its cached indexes instead of refetching them; the
-  # PPA is simply one more source for apt-get update to fetch once.
-  #
-  # The list is what has to be in the image for the Hyprland session to come
-  # up with no network at all: the compositor and the pieces its own config
-  # names, plus the ordinary noble pieces the session leans on. Everything
-  # heavier is an ingot package and is named in the manifest, not here.
-  #
-  # Every name and version below was read out of the archive's own index for
-  # noble; a pin that does not resolve is a build failure, never a silent
-  # substitution. Two packages exist only here and not in noble's own repos,
-  # which is why the PPA is not optional: hyprland itself (noble carries none)
-  # and the matching waybar.
-  #
-  #   hyprland=0.57.2-1ppa1  the compositor, pinned to the version this stage
-  #                          was written against; a silent PPA bump is how a
-  #                          config stops parsing on a machine nobody can type on
-  #   aquamarine0            the backend abstraction Hyprland is built on
-  #   hyprlock               the screen locker
-  #   hyprpaper              the wallpaper
-  #   hypridle               idle management
-  #   hyprpicker             colour picker
-  #   hyprpolkitagent        the polkit agent (Provides polkit-1-auth-agent)
-  #   waybar=0.9.24-1build3    the bar, pinned to noble's build for the same
-  #                          reason the niri stage pins it: the PPA's newer
-  #                          bar needs a newer gtk-layer-shell than noble's,
-  #                          and both desktops must share one bar binary
-  #   fuzzel=1.9.2-1build2    the launcher, noble's build (same reason)
-  #   xdg-desktop-portal-hyprland=1.5.0-1ppa1
-  #                          the portal backend for this compositor; file
-  #                          choosers, notifications and screen capture need it
-  #   seatd libseat1         the seat, since there is no logind; libseat1 is
-  #                          what aquamarine links against
-  #   polkitd pkexec         the polkit daemon and the tool the agent uses
-  #   dunst                  notifications (sway-notification-center is not in
-  #                          noble; dunst is what the compositor recommends)
-  #   kitty                  the terminal
-  #   wl-clipboard cliphist  clipboard and its history
-  #   jq                     the bar's IPC helpers parse JSON with it
-  #   brightnessctl          brightness keys
-  #   playerctl              media keys
-  #   libnotify-bin          notify-send for scripts and dunst's client tests
-  #   dbus-x11               dbus-launch, which is not part of the dbus package
-  #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
-  #                          the GL/GBM stack the renderer needs; the gui
-  #                          closure may not have brought the DRI drivers
-  #   libxkbcommon0 libinput10 libgtk-layer-shell0
-  #                          the input stack and the library waybar links
-  #                          against; no udev daemon in this image, so libinput
-  #                          reads kernel capabilities directly
-  set -- hyprland=0.57.2-1ppa1 aquamarine0 hyprlock hyprpaper hypridle \
-         hyprpicker hyprpolkitagent \
-         waybar=0.9.24-1build3 fuzzel=1.9.2-1build2 \
-         xdg-desktop-portal-hyprland=1.5.0-1ppa1 \
-         seatd libseat1 polkitd pkexec dunst kitty \
-         wl-clipboard cliphist jq brightnessctl playerctl libnotify-bin \
-         dbus-x11 \
-         libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0 \
-         libxkbcommon0=1.12.3-1 libinput10=1.31.1-1 libgtk-layer-shell0
-  # No pre-flight check on every pinned name, deliberately. Two ways of
-  # writing one were tried and both reported packages that resolve perfectly
-  # well:
-  #   - `apt-cache policy "pkg=ver"` prints nothing at all for a versioned spec
-  #     on the apt in noble (2.7), not even an error;
-  #   - `apt-cache ... | grep -q PATTERN` under `set -o pipefail` fails even on
-  #     a match, because grep -q exits at the first hit and apt-cache dies of
-  #     SIGPIPE before the pipeline can report success.
-  # apt_update_for above checks only the one package that comes from the PPA,
-  # by unversioned name and with its output captured first, so it hits neither
-  # trap. For the rest, apt-get below names the package it cannot resolve and
-  # its log is what this stage reports, exactly as build_niri does.
-  # The compositor's .deb is served by the same flapping PPA, so a failed
-  # fetch gets the same three lives as in build_niri.
-  local dltry ok=0
-  for dltry in 1 2 3; do
-    if apt-get "${AOPT[@]}" --download-only --no-install-recommends -y install "$@" \
-       >"$WORK/hyprland-apt.log" 2>&1; then ok=1; break; fi
-    [ "$dltry" -ge 3 ] && break
-    echo "hyprland: download attempt $dltry failed; retrying in 15s" >&2
-    sleep 15
-  done
-  [ "$ok" -eq 1 ] \
-    || { echo "hyprland: apt could not resolve the session closure:" >&2
-         tail -n 30 "$WORK/hyprland-apt.log" >&2 2>/dev/null || :; exit 1; }
-
-  rm -rf "$STAGE"; mkdir -p "$STAGE"
-  for deb in "$DH"/*.deb; do
-    dpkg-deb -x "$deb" "$STAGE"
-  done
-  n=$(ls "$DH"/*.deb 2>/dev/null | wc -l)
-  echo "  $n packages unpacked ($(du -sh "$STAGE" | cut -f1))"
-  echo "  resolved this run:"
-  ls "$DH"/libinput10_*.deb "$DH"/libxkbcommon0_*.deb 2>/dev/null |
-    xargs -r -n1 basename | sed 's/^/    /'
-
-  # A cached build tree keeps the files an earlier run staged, and this stage's
-  # copy does not overwrite what is already there, so a bar or compositor that a
-  # later run re-resolved would keep the previous run's bytes. Drop this stage's
-  # own files before copying, so the pinned ones land.
-  rm -f "$TGT/usr/bin/Hyprland" "$TGT/usr/bin/hyprlock" "$TGT/usr/bin/hyprpaper" \
-        "$TGT/usr/bin/hypridle" "$TGT/usr/bin/hyprpicker" \
-        "$TGT/usr/bin/hyprpolkitagent" "$TGT/usr/bin/waybar" \
-        "$TGT/usr/bin/fuzzel" "$TGT/usr/bin/kitty" "$TGT/usr/bin/dunst"
-  copy_stage_in "$STAGE" "$TGT"
-
-  # Shared libraries from this stage must win over whatever an earlier stage
-  # left under the same path. copy_stage_in does not overwrite, and build_niri
-  # runs first and installs libinput10 and libxkbcommon0 from noble -- versions
-  # too old for this compositor (noble has libinput 1.25 with symbols only up to
-  # LIBINPUT_1.25, and libxkbcommon 1.6 with V_1.6.0). The Hyprland binary wants
-  # LIBINPUT_1.28..1.31 and V_1.11.0, so the image silently shipped a new
-  # compositor next to old libraries and died at launch with
-  # "version `LIBINPUT_1.28' not found". Same fix build_niri already carries.
-  while IFS= read -r so; do
-    rel=${so#"$STAGE"/}
-    mkdir -p "$TGT/$(dirname "$rel")"
-    cp -a -f "$so" "$TGT/$rel"
-  done < <(find "$STAGE" \( -type f -o -type l \) \( -name '*.so' -o -name '*.so.*' \))
-  echo "  shared libraries from the hyprland stage take precedence over earlier packages"
-
-  # Check the bytes that will actually ship, not the intent. This compositor
-  # needs LIBINPUT_1.30 and V_1.11.0; if an older library reached the tree by
-  # any route, the session dies at launch with "version ... not found" on a
-  # machine nobody can type on, long after CI has gone green. Fail here.
-  for need in "libinput.so.10:LIBINPUT_1.30" "libxkbcommon.so.0:V_1.11.0"; do
-    nf=${need%%:*}; sym=${need##*:}
-    np="$TGT/usr/lib/x86_64-linux-gnu/$nf"
-    if [ ! -e "$np" ] || ! grep -qa -e "$sym" "$np"; then
-      echo "hyprland: $np does not provide $sym; the pinned library never reached the image" >&2
-      exit 1
-    fi
-  done
-
-  # Keep a private copy of the libraries this compositor was linked against.
-  # ingot payloads are self-contained and unpack with a plain tar -xzf, so any
-  # package that bundles a library -- xarchiver ships noble's libxkbcommon --
-  # replaces the newer one in /usr/lib, and the session then dies at launch with
-  # "version `V_1.11.0' not found". starthyprland restores these after it has
-  # installed components. Resolved by readlink so the real file name survives a
-  # version bump of either library.
-  rm -rf "$TGT/usr/share/copper/hyprland-runtime"
-  mkdir -p "$TGT/usr/share/copper/hyprland-runtime"
-  for copylibs in libinput.so.10 libxkbcommon.so.0; do
-    copysrc="$TGT/usr/lib/x86_64-linux-gnu/$copylibs"
-    [ -e "$copysrc" ] || continue
-    cp -a "$copysrc" "$TGT/usr/share/copper/hyprland-runtime/"
-    copytgt=$(readlink -f "$copysrc") || continue
-    cp -a "$copytgt" "$TGT/usr/share/copper/hyprland-runtime/$(basename "$copytgt")"
-  done
-
-  # polkitd's package postinst makes its authentication helper setuid root and
-  # hands two state directories to the polkitd group. No postinst runs in this
-  # build, so what arrived from the .deb is a plain 0755 root:root helper. The
-  # session agent collects the password and then runs that helper to verify it;
-  # without the setuid bit the verification cannot read the shadow database,
-  # and every prompt answers "wrong password" no matter what was typed. Mirror
-  # the postinst here, and again in the iso stage after the ownership sweep.
-  if [ -e "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" ]; then
-    chown 0:0 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
-    chmod 4755 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
-  fi
-  local polkit_gid d
-  polkit_gid=$(awk -F: '$1 == "polkitd" { print $3 }' "$TGT/etc/group" 2>/dev/null | head -n1)
-  if [ -n "$polkit_gid" ]; then
-    for d in etc/polkit-1/rules.d var/lib/polkit-1; do
-      [ -d "$TGT/$d" ] || continue
-      chown "0:$polkit_gid" "$TGT/$d"
-      chmod 0750 "$TGT/$d"
-    done
-  fi
-
-  # This used to fetch the shared libraries a second time with plain host apt
-  # (--download-only, no version pin, no PPA source) and force-copy them over
-  # the tree after the pinned closure above. That silently reverted the tree
-  # to noble's libinput/libxkbcommon -- the compositor then dies at launch with
-  # "version `LIBINPUT_1.30' not found". Every library the block fetched is
-  # already in the pinned list and arrives through copy_stage_in and the
-  # precedence pass above, so the block is duplication, not coverage.
-
-  # The loader, defensively: the gui stage creates it, and every glibc ELF
-  # needs it at exactly /lib64/ld-linux-x86-64.so.2 before a single instruction
-  # runs. build_hyprland always runs after build_gui, so this only fires on a
-  # tree someone assembled by hand -- and then it makes the chroot gate below
-  # fail for the right reason instead of a bare ENOENT.
-  if [ ! -e "$TGT/lib64/ld-linux-x86-64.so.2" ]; then
-    mkdir -p "$TGT/lib64"
-    cp -L "$TGT/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
-         "$TGT/lib64/ld-linux-x86-64.so.2"
-  fi
-
-  # Packages ship some files that are empty by nature, and the rootfs stage
-  # asserts on every later build over this tree that no file is zero bytes.
-  # Prune exactly the empties the packages brought, matched against the
-  # staging tree so an empty file the base image has a name for is left alone.
-  find "$STAGE" -type f -size 0 -printf '%P\n' > "$WORK/hyprland-empties"
-  while IFS= read -r rel; do
-    rm -f "$TGT/$rel"
-  done < "$WORK/hyprland-empties"
-  echo "  $(wc -l < "$WORK/hyprland-empties") empty package files pruned"
-
-  # The generated caches the package postinsts would have made and this image
-  # never runs. Best-effort: a stale cache costs a scan, not a session, so a
-  # missing tool is reported and stepped over rather than failing the build.
-  if [ -x "$TGT/usr/bin/update-mime-database" ]; then
-    chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
-      >"$WORK/hyprland-mime.log" 2>&1 \
-      || echo "  (update-mime-database failed; new mime types will not resolve)"
-    if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
-      rm -f "$TGT/usr/share/mime/icons"
-      echo "  pruned empty mime icons map (no icon mappings in the database)"
-    fi
-  fi
-  if [ -x "$TGT/usr/bin/gtk-update-icon-cache" ]; then
-    for tdir in "$TGT"/usr/share/icons/*/index.theme; do
-      [ -f "$tdir" ] || continue
-      "$TGT/usr/bin/gtk-update-icon-cache" -f "$tdir" >/dev/null 2>&1 || :
-    done
-  fi
-
-  # git does not carry the exec bit across platforms, so the tree can arrive
-  # with every script mode 0644. The bar runs its helpers by path and a bare
-  # path is execve: without +x they fail with "permission denied" and the bar
-  # comes up with no workspace chips and no window title. Anything that starts
-  # with a shebang is meant to run, so restore exactly that set -- the same
-  # thing build_niri does for the niri skeleton.
-  n=0
-  while IFS= read -r -d '' f; do
-    if [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ]; then
-      chmod 0755 "$f"; n=$((n + 1))
-    fi
-  done < <(find "$TGT/usr/share/copper/hyprland-skel" -type f -print0)
-  echo "  $n scripts in the config tree marked executable"
-
-  # A CR in any of those files fails on the target, and the target has no
-  # editor to fix it with.
-  if crfiles=$(grep -rIl $'\r' "$TGT/usr/share/copper/hyprland-skel" 2>/dev/null); then
-    echo "hyprland: the session config tree has CRLF line endings:" >&2
-    printf '%s\n' "$crfiles" >&2
-    exit 1
-  fi
-
-  # The component manifest has to agree with the tree. Every "image" probe is a
-  # file starthyprland expects to be present; if the package that supplies it
-  # renames a binary, the launcher reports a broken image on every start instead
-  # of a boot failure here. "ingot" probes are absent on purpose, so skip those.
-  while read -r cname cprobe corigin; do
-    case "$cname" in ''|\#*) continue ;; esac
-    [ -n "$cprobe" ] || continue
-    [ "$corigin" = image ] || continue
-    if [ ! -e "$TGT/$cprobe" ]; then
-      echo "hyprland: manifest lists '$cname' as image but $cprobe is missing" >&2
-      exit 1
-    fi
-  done < "$TGT/etc/copper/hyprland-apps"
-}
-
 build_plymouth() {
   if [ -e "$TGT/usr/sbin/plymouthd" ] \
      && stamped_skip "$WORK/plymouth.stamp" "$SELF" \
@@ -4065,11 +3773,12 @@ build_unified() {
       exit 1
     fi
   done
-  # The menu entry is the interface a user sees. It is copied to the ISO by
-  # build_iso, so a missing switch here is a missing switch on the disc.
-  if ! grep -q 'copper\.init=systemd' "$ROOT/boot/grub.cfg"; then
-    echo "unified: grub.cfg has no entry passing copper.init=systemd" >&2
-    echo "          the image would carry systemd but offer no way to boot it" >&2
+  # The menu entry is the interface a user sees. Every provider renders it from
+  # the shared entry list, so a missing switch here is a missing switch on the
+  # disc whatever bootloader packaged it.
+  if ! grep -q 'copper\.init=systemd' "$ROOT/boot/entries"; then
+    echo "unified: the boot entry list has no entry passing copper.init=systemd" >&2
+    echo "         the image would carry systemd but offer no way to boot it" >&2
     exit 1
   fi
   echo "  unified: copper-init is the default, systemd is the GRUB entry"
@@ -4104,15 +3813,18 @@ build_initramfs() {
 }
 
 # ---------------------------------------------------------------
-# 8. boot media (grub makes a BIOS+UEFI bootable ISO)
+# 8. boot media (a pluggable provider turns the staged tree into an ISO)
 # ---------------------------------------------------------------
 build_iso() {
-  # Stamped on the whole staged tree, not on grub.cfg alone: the ISO is a
-  # copy of all of it, so a change to the overlay, the initrd or the kernel
-  # all have to be able to invalidate it. The config goes in first so it is
+  # Stamped on the whole staged tree, not on the menu alone: the ISO is a copy
+  # of all of it, so a change to the overlay, the initrd or the kernel all have
+  # to be able to invalidate it. The provider writes the menu first so it is
   # part of the tree that gets hashed, which is the tree that gets packaged.
-  mkdir -p "$TGT/boot/grub"
-  cp "$ROOT/boot/grub.cfg" "$TGT/boot/grub/grub.cfg"
+  bootloader_configure "$TGT"
+  # The live init identifies its own medium by this marker, not by the name of
+  # one particular bootloader's config. A provider that replaces GRUB still
+  # gets a disc that mounts.
+  printf 'copper live media\n' > "$TGT/boot/copper-media"
   # The unified tree carries the systemd payload under usr/lib/systemd with
   # /sbin/init pointing at copper-init. The /lib bridge is what makes
   # /lib/systemd/systemd reachable inside the merged root, and a stage that
@@ -4310,62 +4022,21 @@ build_iso() {
     fi
   done
 
-  # Fold this script into the stamp as well as the tree. The ISO is produced
-  # by grub-mkrescue plus the xorriso filter below; without $SELF here, a
-  # change to either of those against an unchanged tree would skip the rebuild
-  # and ship the previous ISO. Every other stage folds $SELF in for this
-  # reason.
-  local want; want=$( { cat "$SELF"; tree_hash "$TGT"; } | sha256sum | cut -d' ' -f1 )
+  # Fold this script, the shared entry list and the selected provider into the
+  # stamp as well as the tree. Without them a change to any of the three
+  # against an unchanged tree would skip the rebuild and ship the previous ISO.
+  local want
+  want=$( { cat "$SELF" "$ROOT/boot/entries" "$BOOTLOADER_DIR/provider.sh"; tree_hash "$TGT"; } \
+          | sha256sum | cut -d' ' -f1 )
   if [ -s "$OUT/copper.iso" ] && [ -s "$WORK/iso.stamp" ] \
      && [ "$(cat "$WORK/iso.stamp")" = "$want" ]; then
     echo "iso: already built, skipping"; return
   fi
 
-  # grub-mkrescue hardcodes xorriso's -r, "rationalised" Rock Ridge: every
-  # mode is flattened to 444 (files) or 555 (executables), uid/gid forced to
-  # 0, and setuid/setgid stripped. That is how the live image lost
-  # /usr/bin/sudo's setuid bit -- sudo then refused every elevation with
-  # "must be owned by uid 0 and have the setuid bit set", so a normal user
-  # could not install anything. -R is the same Rock Ridge without the
-  # rationalisation, so it keeps the modes and the ownership the staging tree
-  # has (corrected just above, and validated by build_sudo).
-  #
-  # grub-mkrescue offers no option to change this and reaches xorriso through
-  # PATH, so a one-job filter sits in front of it and rewrites exactly -r.
-  local REAL_XORRISO XW
-  REAL_XORRISO=$(command -v xorriso) || { echo "iso: xorriso not found" >&2; exit 1; }
-  XW="$WORK/iso-xorriso"
-  rm -rf "$XW"; mkdir -p "$XW"
-  cat > "$XW/xorriso" <<'WRAP'
-#!/bin/sh
-# Exec the real xorriso with grub-mkrescue's -r turned into -R. COPPER_REAL_XORRISO
-# is set by the caller so this does not recursively find itself on PATH.
-real=${COPPER_REAL_XORRISO:?}
-n=$#
-i=0
-while [ "$i" -lt "$n" ]; do
-    i=$((i + 1))
-    a=$1; shift
-    [ "$a" = "-r" ] && a="-R"
-    set -- "$@" "$a"
-done
-exec "$real" "$@"
-WRAP
-  chmod 0755 "$XW/xorriso"
-  echo "==> grub-mkrescue"
-  # Diagnosis for the library-version failure: report what the staging tree
-  # holds for the input libraries, immediately before they are packaged. The
-  # tree-side guard passed and the disc-side guard failed, so one of them is
-  # looking at a different file; comparing their hashes names which.
-  local diag_li diag_x
-  diag_li=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libinput.so.10" 2>/dev/null)
-  diag_x=$(readlink -f "$TGT/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0" 2>/dev/null)
-  echo "  iso: tree libinput.so.10 -> ${diag_li:-MISSING} hash=$(sha256sum "$diag_li" 2>/dev/null | cut -c1-16)"
-  echo "  iso: tree libxkbcommon.so.0 -> ${diag_x:-MISSING} hash=$(sha256sum "$diag_x" 2>/dev/null | cut -c1-16)"
-
-  PATH="$XW:$PATH" COPPER_REAL_XORRISO="$REAL_XORRISO" \
-    grub-mkrescue -o "$OUT/copper.iso" "$TGT"
-  [ -s "$OUT/copper.iso" ] || { echo "grub-mkrescue failed"; exit 1; }
+  # How the image is made is the provider's business, not this stage's. The
+  # read-back gates below inspect the artifact, so a different provider cannot
+  # quietly ship a disc that lost sudo's setuid bit or the shadow mode.
+  bootloader_make_iso "$TGT" "$OUT/copper.iso" "$WORK"
 
   # Check the mode in the artifact, not in the tree it came from: the tree was
   # already verified by build_sudo, and the whole point here is that the ISO
@@ -4400,29 +4071,6 @@ WRAP
   # packaging drops a mode, a link resolves elsewhere), and the only witness
   # that cannot be wrong about what ships is the thing that ships.
   echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
-
-  # The compositor needs symbol versions its input libraries must define
-  # (LIBINPUT_1.30, V_1.11.0). A tree can carry them and the disc not -- a
-  # symlink retargeted after staging, a cache-restored file -- and the failure
-  # then only appears on a machine nobody can type on, as
-  #   Hyprland: libinput.so.10: version `LIBINPUT_1.30' not found
-  # So read the libraries off the disc, resolve the symlinks there, and check
-  # what boots rather than what was staged.
-  local lchk="$WORK/iso-libcheck"
-  rm -rf "$lchk"; mkdir -p "$lchk"
-  xorriso -osirrox on -indev "$OUT/copper.iso" \
-      -extract "/usr/lib/x86_64-linux-gnu" "$lchk/x" >/dev/null 2>&1 || true
-  for need in "libinput.so.10:LIBINPUT_1.30" "libxkbcommon.so.0:V_1.11.0"; do
-    nf=${need%%:*}; sym=${need##*:}
-    lt=$(readlink -f "$lchk/x/$nf" 2>/dev/null)
-    if [ ! -e "$lt" ] || ! grep -qa -e "$sym" "$lt"; then
-      echo "iso: /usr/lib/x86_64-linux-gnu/$nf on the DISC does not provide $sym" >&2
-      echo "iso:   $nf -> $(readlink "$lchk/x/$nf" 2>/dev/null || echo '(regular file)') hash=$(sha256sum "$lt" 2>/dev/null | cut -c1-16)" >&2
-      echo "iso: the booted compositor would die with \"version '$sym' not found\"" >&2
-      exit 1
-    fi
-  done
-  echo "  iso: the compositor's input libraries carry the symbols it needs, on the disc"
 
   # su, read back off the disc for the same reason: it needs 4755 root:root to
   # change uid, and the common-* includes its PAM config names have to be there
@@ -4615,58 +4263,12 @@ WRAP
     echo "  iso: power commands point at the Copper wrapper in sbin and usr/sbin, on the disc"
   fi
 
-  # The boot command line, read back off the disc (bug 25, and bug 7 with it).
-  # grub.cfg is copied from the tree, so what is really being checked is that
-  # the file the build ships is the one that carries the splash: with a serial
-  # console beside the screen, plymouthd refuses to create a renderer at all
-  # and the animation never paints a frame. The entry also has to carry the
-  # quiet switches: quiet loglevel=3 keeps kernel chatter off the screen, and
-  # systemd.show_status=1 keeps the [ OK ] status block from being suppressed
-  # while a splash is up, so the screen is handed from the animation to the
-  # status lines instead of going blank. And tty0 has to be the LAST
-  # console= or /dev/console is the serial port and the screen goes quiet.
-  xorriso -osirrox on -indev "$OUT/copper.iso" \
-      -extract /boot/grub/grub.cfg "$ex/grub.cfg" >/dev/null 2>&1 || true
-  if [ ! -f "$ex/grub.cfg" ]; then
-    echo "iso: no /boot/grub/grub.cfg in the ISO -- nothing would boot" >&2
-    exit 1
+  # The provider gets the last word on its own menu, read back off the disc.
+  # GRUB checks the splash flags and console order; another provider may check
+  # a different file or nothing at all.
+  if [ "$BOOTLOADER_HAS_CHECK" = 1 ]; then
+    bootloader_check "$OUT/copper.iso" "$ex"
   fi
-  local cl badsw=""
-  cl=$(sed -n '/^[[:space:]]*linux .*splash/p' "$ex/grub.cfg" | head -n1)
-  for sw in splash plymouth.ignore-udev plymouth.ignore-serial-consoles; do
-    case " $cl " in
-      *" $sw "*) ;;
-      *) badsw="$badsw $sw" ;;
-    esac
-  done
-  if [ -z "$cl" ] || [ -n "$badsw" ]; then
-    echo "iso: the splash entry's kernel command line is wrong (missing:$badsw):" >&2
-    echo "iso:   $cl" >&2
-    exit 1
-  fi
-  # The splash entry is expected to carry the quiet switches the design now
-  # ships: quiet loglevel=3 silences the kernel chatter the animation would
-  # otherwise cover, and systemd.show_status=1 puts the [ OK ] status block back
-  # on screen once the animation is gone. A splash entry missing one of them
-  # puts kernel text or a blank screen back over the boot, so each is checked.
-  for sw in quiet loglevel=3 systemd.show_status=1; do
-    case " $cl " in
-      *" $sw "*) ;;
-      *) badsw="$badsw $sw" ;;
-    esac
-  done
-  if [ -n "$badsw" ]; then
-    echo "iso: the splash entry's kernel command line is wrong (missing:$badsw):" >&2
-    echo "iso:   $cl" >&2
-    exit 1
-  fi
-  if [ "$(printf '%s\n' "$cl" | grep -o 'console=[^ ]*' | tail -n1)" != "console=tty0" ]; then
-    echo "iso: the last console= on the splash entry is not tty0:" >&2
-    echo "iso:   $cl" >&2
-    echo "iso: /dev/console is the LAST one; the screen would go quiet (bug 7)" >&2
-    exit 1
-  fi
-  echo "  iso: splash switches, quiet, and tty0-last console order on the disc's grub.cfg"
 
   # The niri skeleton, read back off the disc. Same readback discipline as
   # sudo's mode above -- check the artifact that actually shipped, not the tree
@@ -4711,7 +4313,6 @@ full() {
   build_rootfs
   build_gui
   build_niri
-  build_hyprland
   build_plymouth
   build_sudo
   build_initramfs
@@ -4754,7 +4355,6 @@ case "$STAGE" in
   rootfs)     build_rootfs ;;
   gui)        build_rootfs; build_gui ;;
   niri)       build_rootfs; build_gui; build_niri ;;
-  hyprland)   build_rootfs; build_gui; build_niri; build_hyprland ;;
   plymouth)   build_rootfs; build_gui; build_niri; build_plymouth ;;
   sudo)       build_rootfs; build_gui; build_niri; build_plymouth; build_sudo ;;
   # build_musl and build_busybox lead every stage that compiles or links
@@ -4765,15 +4365,15 @@ case "$STAGE" in
   # default `all`/`full` path never showed it because full() runs build_musl
   # first; the opt-in stage has to say so itself. It is why this stage is
   # spelled like initramfs/iso and not like sudo.
-  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_copper; build_systemd ;;
+  systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_copper; build_systemd ;;
   # One image, both inits. build_systemd stages the systemd payload and makes
   # it PID 1; build_unified then takes the DEFAULT back to copper-init and
-  # keeps the bridge, so the disc boots busybox unless the GRUB entry asks for
+  # keeps the bridge, so the disc boots busybox unless a boot entry asks for
   # systemd. Everything the old systemd chain ran is still needed here.
-  unified)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_copper; build_systemd; build_unified ;;
-  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_initramfs ;;
-  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_hyprland; build_plymouth; build_sudo; build_initramfs; build_iso ;;
+  unified)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_copper; build_systemd; build_unified ;;
+  initramfs)  build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_initramfs ;;
+  iso)        build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_initramfs; build_iso ;;
   all|"")     full ;;
-  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|hyprland|plymouth|sudo|systemd|unified|initramfs|iso|all)"; exit 2 ;;
+  *)          echo "unknown stage: $STAGE (kernel|base|tools|copper|rootfs|gui|niri|plymouth|sudo|systemd|unified|initramfs|iso|all)"; exit 2 ;;
 esac
 echo "==> done"

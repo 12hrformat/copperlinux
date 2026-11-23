@@ -11,15 +11,25 @@
 # So:
 #
 #   copper-audio           same as status
-#   copper-audio init      unmute and raise the usual playback controls on
-#                          every card, then store the state (root)
-#   copper-audio status    cards, mixer levels, which server is running
+#   copper-audio init      unmute and raise the ALSA controls on every card,
+#                          then unmute the server's default sink and store the
+#                          mixer state (root)
+#   copper-audio status    cards, mixer levels, sinks, which server is running
 #   copper-audio test      1 second of 440 Hz on the default device
 #   copper-audio server    print the backend and whether it is up
 #
 # Both launchers call `copper-audio init` after the server starts, so a fresh
 # boot is audible without anyone opening a mixer. Nothing here is fatal: a
 # machine with no card still boots, it is just quiet.
+#
+# Raising ALSA alone is not enough. PulseAudio and PipeWire keep their OWN mute
+# and volume on the sink they hand to clients, and a fresh server can come up
+# with that sink muted or pointed at the null output. That is the machine where
+# cava draws bars from the monitor source while Firefox plays a video and
+# nothing reaches the speakers: the graph sees the stream, the sink swallows
+# it. So init also talks to the server over the Pulse protocol -- pactl works
+# against both the PulseAudio daemon and pipewire-pulse -- picks a real sink if
+# the default is the null one, and unmutes it.
 
 set -u
 
@@ -48,6 +58,57 @@ cards() {
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# The server may still be bringing the sink up when init runs. pactl needs the
+# Pulse-protocol socket specifically -- pipewire's own graph socket can be up a
+# moment before pipewire-pulse publishes its -- so wait for that one, whatever
+# backend the config chose. That is what keeps this from unmuting a sink that
+# does not exist yet.
+pulse_ready() {
+    [ -S "$RT/pulse/native" ] || [ -n "${PULSE_SERVER:-}" ]
+}
+
+# Server-side mute/volume and the default device. pactl is in pulseaudio-utils
+# and speaks to both daemons, so the same commands cover either /etc/copper.conf
+# choice. A null sink is a real sink as far as the server is concerned -- cava's
+# monitor follows it, which is why the bars move with no sound -- so prefer a
+# listed hardware sink whenever one shows up.
+server_unmute() {
+    have pactl || return 0
+    _i=0
+    while [ "$_i" -lt 8 ] && ! pulse_ready; do
+        sleep 1
+        _i=$((_i + 1))
+    done
+    pulse_ready || return 0
+
+    _def=$(pactl get-default-sink 2>/dev/null) || _def=
+    case "$_def" in
+        ''|*null*)
+            _real=$(pactl list short sinks 2>/dev/null \
+                    | while read -r _idx _name _rest; do
+                          case "$_name" in *null*) ;; *) printf '%s\n' "$_name"; break ;; esac
+                      done)
+            if [ -n "$_real" ]; then
+                pactl set-default-sink "$_real" >/dev/null 2>&1 && _def=$_real
+                say "server: default sink is $_real"
+            fi
+            ;;
+    esac
+
+    # Unmute every listed sink, then make certain the default one is at a
+    # usable level. Setting each by name also covers a machine with both an
+    # analogue and an HDMI output where only one is the default.
+    pactl list short sinks 2>/dev/null | while read -r _idx _name _rest; do
+        pactl set-sink-mute "$_name" 0 >/dev/null 2>&1 || :
+        pactl set-sink-volume "$_name" 100% >/dev/null 2>&1 || :
+    done
+    if [ -n "$_def" ]; then
+        pactl set-sink-mute "$_def" 0 >/dev/null 2>&1 || :
+        pactl set-sink-volume "$_def" 100% >/dev/null 2>&1 || :
+    fi
+    say "server: sinks unmuted"
+}
 
 # Playback control names by codec: Master/PCM on most HDA, Speaker/Headphone on
 # laptops, Front/Surround/Center/LFE on 5.1, HDMI on the digital outputs. A name
@@ -103,6 +164,10 @@ cmd_init() {
     if [ -n "$_alsactl" ] && [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
         "$_alsactl" store >/dev/null 2>&1 || :
     fi
+    # The hardware is up; now make the graph above it deliver sound. This is
+    # deliberately after the ALSA work so a muted codec and a muted sink are
+    # both cleared on the same boot, whatever backend the config selected.
+    server_unmute
     return 0
 }
 
@@ -144,6 +209,10 @@ cmd_status() {
                 || printf '  (no Master control on this card)\n'
         fi
     done
+    if have pactl && pulse_ready; then
+        printf '\ndefault sink: %s\n' "$(pactl get-default-sink 2>/dev/null)"
+        pactl list short sinks 2>/dev/null | sed 's/^/  /'
+    fi
 }
 
 cmd_test() {

@@ -4,7 +4,8 @@
 # One ISO ships both inits, both shells and both audio servers. What picks one
 # is a string agreed on by two files that are never compiled together:
 #
-#   init    the GRUB entry writes copper.init=systemd; iso/live/init reads it
+#   init    a boot entry in iso/boot/entries writes copper.init=systemd; the
+#           selected bootloader provider renders it, and iso/live/init reads it
 #           and execs /lib/systemd/systemd (else /sbin/init). With nothing on
 #           the command line, /etc/copper-init -- the wizard's answer -- decides.
 #   shell   /etc/copper.conf's shell=bash|zsh; copper-init exports it as SHELL,
@@ -74,18 +75,32 @@ else
 fi
 
 echo
-echo "config: the GRUB menu is the init switch"
-has iso/boot/grub.cfg 'menuentry "Copper Linux (systemd init)"' \
-    "GRUB offers a systemd-init entry"
-hasre iso/boot/grub.cfg 'linux .*copper\.init=systemd' \
+echo "config: the shared boot list is the init switch"
+has iso/boot/entries 'Copper Linux (systemd init)' \
+    "the boot list offers a systemd-init entry"
+hasre iso/boot/entries 'copper\.init=systemd' \
     "the systemd entry passes copper.init=systemd"
 # The default entry must not name either init: "no switch" is what makes
-# /etc/copper-init, and then copper-init itself, the default.
-if sed -n '12,44p' "$REPO/iso/boot/grub.cfg" | grep -qE 'copper\.init='; then
-    bad "the default GRUB entry names an init (it must leave the choice to /etc/copper-init)"
+# /etc/copper-init, and then copper-init itself, the default. Read the entry by
+# id, not by line number -- the provider is free to add header lines.
+if grep '^default|' "$REPO/iso/boot/entries" | grep -qE 'copper\.init='; then
+    bad "the default boot entry names an init (it must leave the choice to /etc/copper-init)"
 else
-    ok "the default GRUB entry names no init"
+    ok "the default boot entry names no init"
 fi
+
+echo
+echo "config: bootloader is a provider, not a hardcoded menu"
+has iso/build.sh 'BOOTLOADER=${COPPER_BOOTLOADER:-grub}' \
+    "the build selects its bootloader provider with an override"
+has iso/build.sh 'bootloader_configure "$TGT"' \
+    "the provider renders the menu into the staged tree"
+has iso/build.sh 'bootloader_make_iso "$TGT" "$OUT/copper.iso" "$WORK"' \
+    "the provider packages the boot media"
+has iso/live/init '/boot/copper-media' \
+    "the live init finds its medium without naming a bootloader"
+has iso/bootloaders/grub/provider.sh 'bootloader_check()' \
+    "the GRUB provider reads its own menu back off the disc"
 
 echo
 echo "config: /init agrees with GRUB"
@@ -168,6 +183,48 @@ for f in iso/startniri.sh iso/startxfce.sh; do
 done
 
 echo
+echo "config: the server's own sink is unmuted, not just the ALSA card"
+# cava reads the monitor of the default sink, so bars moving with no sound means
+# the graph saw the stream but the sink was muted or pointed at the null output.
+# Raising the codec alone cannot fix that; copper-audio has to speak to the
+# server over the Pulse protocol, which both backends serve.
+has iso/rootfs-overlay/usr/bin/copper-audio 'server_unmute' \
+    "copper-audio has a server-side unmute step"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl get-default-sink' \
+    "it reads the server's default sink"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl set-default-sink' \
+    "it repoints the default when it landed on the null output"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl set-sink-mute' \
+    "it unmutes the sink the clients actually use"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl set-sink-volume' \
+    "it raises the sink volume, not just the codec's"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pulse_ready' \
+    "it waits for the Pulse socket before talking to the server"
+has iso/build.sh 'for p in pulseaudio-utils; do' \
+    "the gui stage requires pactl, so the unmute can run"
+has iso/build.sh 'usr/bin/pactl' \
+    "the gui stage asserts pactl landed in the tree"
+
+echo
+echo "config: AppImages can mount themselves"
+# An .AppImage is a squashfs with its own runtime that calls fusermount. Without
+# the kernel side there is no /dev/fuse, and without the user side there is no
+# libfuse.so.2 or setuid helper -- either one is the "Fuse not installed" error.
+has iso/build.sh 'FUSE_FS' "the kernel config enables FUSE_FS"
+has iso/live/init 'mknod /dev/fuse c 10 229' \
+    "the live init makes /dev/fuse even if devtmpfs came up late"
+has iso/build.sh 'for p in libfuse2t64 libfuse2; do' \
+    "the gui stage probes both names of libfuse.so.2"
+has iso/build.sh 'for p in fuse; do' \
+    "the gui stage requires fusermount from the fuse package"
+has iso/build.sh 'chmod 4755 "$TGT/bin/fusermount"' \
+    "fusermount is setuid so a non-root user can mount an AppImage"
+has iso/build.sh 'bin/fusermount' \
+    "the gui stage asserts fusermount landed in the tree"
+has iso/build.sh 'ln -s ../../bin/fusermount' \
+    "the /usr/bin spelling reaches the same helper"
+
+echo
 echo "config: the build ships both sides of every switch"
 has iso/build.sh 'for p in zsh; do' "the gui stage requires an installable zsh"
 has iso/build.sh 'for p in pipewire; do' "the gui stage requires pipewire"
@@ -208,11 +265,8 @@ has iso/build.sh 'Acquire::Retries=5' \
     "each index fetch gets its own retries too"
 has iso/build.sh 'download attempt $dltry failed' \
     "a failed .deb fetch is retried, not fatal on the first 503"
-for line in \
-    'apt_update_for niri' \
-    'apt_update_for hyprland'; do
-    has iso/build.sh "$line" "$line is used by its stage"
-done
+has iso/build.sh 'apt_update_for niri' \
+    "apt_update_for niri is used by its stage"
 hasnt iso/build.sh 'apt-get "\$\{AOPT\[@\]\}" update -qq' \
     "no PPA stage trusts a bare apt-get update"
 

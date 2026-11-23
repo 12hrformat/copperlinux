@@ -64,7 +64,8 @@ jobs:
                    tests/kernel-gate.sh tests/kernel-gate-sabotage.sh \
                    tests/font-gate.sh tests/boot-gate.sh \
                    tests/shell-gate.sh tests/firstboot-eof-gate.sh \
-                   tests/starthyprland-gate.sh tests/config-gate.sh; do
+                   tests/starthyprland-gate.sh tests/config-gate.sh \
+                    tests/bootloader-gate.sh; do
             if [ ! -e "$s" ]; then
               echo "::error::missing:$s -- the workflow runs it but it is not in the tree"
               bad=1
@@ -153,7 +154,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/entries','iso/bootloaders/**','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
           restore-keys: |
             copper-work-
 
@@ -189,14 +190,9 @@ jobs:
       - name: Stage the niri session
         run: sudo bash iso/build.sh niri
 
-      # The optional third desktop: Hyprland from the noble Hyprland PPA,
-      # plus Copper's branded Hyprland session config (build_hyprland).
-      # Its own step for the same reason as gui and niri -- it downloads at
-      # build time and a failure should name the line that asked for it. The
-      # PPA fingerprint at the top of build.sh must be confirmed before this
-      # runs (see the integration report).
-      - name: Stage the Hyprland session
-        run: sudo bash iso/build.sh hyprland
+      # Hyprland is no longer baked into the image. Its compositor, config and
+      # launcher ship as an ingot payload (`sudo ingot install hyprland`), so
+      # there is no build-time stage to run here.
 
       # The boot splash: the prebuilt Plymouth packages plus the owner's frames,
       # unpacked into the rootfs. Its own step for the same reason as gui --
@@ -263,7 +259,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: iso/work
-          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/grub.cfg','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
+          key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/entries','iso/bootloaders/**','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
 
       # ---- one image, both inits -------------------------------------------
       # build_unified puts the systemd/udev payload into the rootfs that already

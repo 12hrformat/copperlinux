@@ -77,7 +77,8 @@ The helpers are guarded rather than optimistic:
 
 ## The kernel command line
 
-`iso/boot/grub.cfg`'s main entry carries:
+The default entry in the shared `iso/boot/entries` list carries (and every
+bootloader provider renders this list into its own menu):
 
 ```
 splash plymouth.ignore-udev plymouth.ignore-serial-consoles quiet loglevel=3 systemd.show_status=1 console=ttyS0,115200 console=tty0
