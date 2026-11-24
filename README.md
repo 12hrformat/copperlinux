@@ -10,6 +10,12 @@
   <a href="https://12hrformat.github.io/copperlinux-site/">Copper Linux website</a>
 </p>
 
+<p align="center">
+  <img width="480" alt="Copper Linux desktop screenshot 1" src="screenshots/ss1.png" />
+  <img width="480" alt="Copper Linux desktop screenshot 2" src="screenshots/ss2.png" />
+  <img width="480" alt="Copper Linux desktop screenshot 3" src="screenshots/ss3.png" />
+</p>
+
 ---
 
 Copper is our distro. Built from source, with a small, curated set of packages. It's designed to be a daily driver for Linux nerds, coders, and students who want something that feels like theirs. It's small, fast, and has a minimal base so you can add what you want. It has a GUI: three desktops, XFCE, Niri and Hyprland, never the default at
