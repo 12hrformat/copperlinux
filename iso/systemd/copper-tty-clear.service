@@ -1,77 +1,35 @@
 # Copper Linux — clear the console once, before the boot messages start.
-#
-# The kernel prints its own text on the way up and it stays on tty1. systemd
-# then paints [ OK ] / [ FAILED ] at the cursor's current row, so the screen
-# shows the kernel's scrollback above the status lines instead of one clean
-# boot. A user watching a boot of this image sees exactly that: "Decompressing
-# Linux... Parsing ELF..." and then the [ OK ] block arriving underneath it.
-#
-# This unit's only job is to erase the screen in the window between "the kernel
-# has finished" and "the first thing prints". It is ordered Before= the units
-# that draw, and it is a oneshot with no RemainAfterExit: it does its work and
-# is gone, so nothing depends on its state and a later boot does it again.
-#
-# Ordered before the things that paint on tty1 here, and before the first
-# status line of all:
-#
-#   sysinit.target           the boundary the erase has to land in front of:
-#                            everything systemd reports happens after it;
-#   systemd-udevd.service    the first unit sysinit.target pulls in, and the
-#                            first one systemd reports on;
-#   copper-firstboot.service the wizard, which draws the form.
-#
-# Before= is deliberately not Requires= or Wants= anywhere: this is cosmetic,
-# and a console that failed to clear is still a working console. It must never
-# be able to hold a real unit back or take one down with it.
-#
-# HOW it is ordered is the whole trick, and getting it wrong is not a degraded
-# boot but no boot at all -- see the cycle written out under [Unit] below.
+# The kernel's text stays on tty1 and systemd paints [ OK ] / [ FAILED ] at the
+# current row, so the screen shows scrollback above the status lines. This oneshot
+# erases in the window between "kernel finished" and "first thing prints".
+# Before= sysinit.target, udevd, firstboot and console; no Requires/Wants, since
+# this is cosmetic and must never hold a real unit back. oneshot with no
+# RemainAfterExit: it does its work, is gone, and a later boot does it again.
 #
 [Unit]
 Description=Copper console clear (erase the kernel's boot text)
 DefaultDependencies=no
-# BEFORE sysinit.target, not after it. The erase has to land in the window
-# between "the kernel has finished" and "the first thing prints", and the first
-# thing that prints is a sysinit unit's status line.
+# BEFORE sysinit.target, not after: the first status line is a sysinit unit's.
 #
-# After=sysinit.target here is an ORDERING CYCLE, and the boot does not survive
-# it. systemd's own systemd-udevd.service carries `Before=sysinit.target` --
-# read out of Copper's udev package this image unpacks, not guessed --
-# so these three lines close a loop:
-#
-#     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
-#                    -> sysinit.target
-#
-# systemd says so on the console, and the part that matters is the last one:
-#
-#     Found ordering cycle: systemd-udevd.service/start after
-#       copper-tty-clear.service/start after sysinit.target/start
-#     Unable to break cycle starting with sysinit.target/start
-#     Requested transaction contains an unfixable cyclic ordering dependency
-#
-# The cycle is on sysinit.target, so the INITIAL TRANSACTION fails: not a
-# degraded boot, no boot. DefaultDependencies=no is what keeps this unit out
-# of the loop -- it gives up the automatic Requires=/After= on sysinit.target,
-# so the only ordering that applies is the one written here.
+# After=sysinit.target is an ORDERING CYCLE and the boot does not survive it:
+# udevd's own unit carries Before=sysinit.target, so these close a loop:
+#   sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
+#                  -> sysinit.target
+# systemd's "Found ordering cycle ... unfixable cyclic ordering dependency"
+# fails the INITIAL TRANSACTION -- no boot, not a degraded one.
+# DefaultDependencies=no drops the implicit Requires/After on sysinit.target,
+# so only the ordering written here applies.
 Before=sysinit.target systemd-udevd.service copper-firstboot.service copper-console.service
-# Never a reason for anything to fail or wait:
-#   - no Requires= and no Wants= of its own, so it cannot hold a real unit back
-#     or take one down with it. It IS in copper.target.wants, so it does run.
-#   - the burst limit is off so a restart (there will not be one) cannot trip it.
+# No Requires/Wants of its own (it is in copper.target.wants, so it does run) and
+# the burst limit is off, so it cannot hold a real unit back or take one down.
 StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/copper-tty-clear
-# No TTYPath=. The erase is written to /dev/tty1 by the script itself, because
-# that is the device being looked at and the journal is not, so systemd owning
-# the tty buys nothing here. What it would buy is a second way to fail: systemd
-# opens the tty before it execs the script, and a unit that cannot open
-# /dev/tty1 FAILS -- a [ FAILED ] line on the very screen this unit exists to
-# clean, and one more entry in `systemctl --failed`. The script already treats
-# an unopenable tty as "nothing to clear" and exits 0.
-# Nothing here is allowed to be fatal: a machine with no tty1 (serial-only) has
-# nothing to clear and must still boot.
+# No TTYPath=: systemd opening the tty before the script adds a way to FAIL with a
+# [ FAILED ] line on the very screen this unit cleans. The script treats an
+# unopenable tty as "nothing to clear" and exits 0; serial-only must still boot.
 SuccessExitStatus=0 1
 
 [Install]

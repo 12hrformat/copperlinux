@@ -1,24 +1,9 @@
 #!/bin/sh
 # config-gate.sh -- the image-wide choices are real switches, not prose.
-#
-# One ISO ships both inits, both shells and both audio servers. What picks one
-# is a string agreed on by two files that are never compiled together:
-#
-#   init    a boot entry in iso/boot/entries writes copper.init=systemd; the
-#           selected bootloader provider renders it, and iso/live/init reads it
-#           and execs /lib/systemd/systemd (else /sbin/init). With nothing on
-#           the command line, /etc/copper-init -- the wizard's answer -- decides.
-#   shell   /etc/copper.conf's shell=bash|zsh; copper-init exports it as SHELL,
-#           the wizard records it in passwd, and kitty execs $SHELL.
-#   audio   /etc/copper.conf's audio=pulseaudio|pipewire; both launchers read it
-#           and start that server.
-#
-# A rename on one side of any of those is silent: the image still boots, it just
-# ignores the user's answer and starts the default. Nothing else in the suite
-# reads both ends of every switch, so this gate does.
-#
-# Rootless and buildless: it asserts the shipped text on both sides.
-#
+# One ISO ships both inits, shells and audio servers. What picks one is a string
+# agreed on by two files that are never compiled together.
+# A rename on one side is silent: the image boots but ignores the user's answer,
+# so this gate reads both ends of every switch. Rootless and buildless.
 # Run: tests/config-gate.sh
 
 set -u
@@ -80,9 +65,8 @@ has iso/boot/entries 'Copper Linux (systemd init)' \
     "the boot list offers a systemd-init entry"
 hasre iso/boot/entries 'copper\.init=systemd' \
     "the systemd entry passes copper.init=systemd"
-# The default entry must not name either init: "no switch" is what makes
-# /etc/copper-init, and then copper-init itself, the default. Read the entry by
-# id, not by line number -- the provider is free to add header lines.
+# The default entry must name no init: that leaves /etc/copper-init in charge.
+# Read by id, not line number; providers may add header lines.
 if grep '^default|' "$REPO/iso/boot/entries" | grep -qE 'copper\.init='; then
     bad "the default boot entry names an init (it must leave the choice to /etc/copper-init)"
 else
@@ -109,10 +93,8 @@ has iso/live/init 'copper.init=busybox' "/init reads copper.init=busybox"
 has iso/live/init '/etc/copper-init' "/init falls back to the wizard's saved init"
 has iso/live/init '/lib/systemd/systemd' "/init execs systemd at the merged-usr path"
 has iso/live/init 'switch_root /mnt/merged /sbin/init' "/init execs /sbin/init for the default"
-# The initramfs is not a rootfs: build_initramfs packs busybox and /init and
-# nothing else, so there is no cat, grep or sed in it. A bare external command
-# fails silently under `2>/dev/null`, which is how `$(cat /proc/cmdline)`
-# made copper.init=systemd look like no arguments at all.
+# The initramfs has no cat/grep/sed: a bare external command fails under
+# 2>/dev/null, making the cmdline look empty. Use the read builtin.
 has iso/live/init 'read -r cmdline < /proc/cmdline' \
     "the initramfs reads the command line with the read builtin"
 has iso/live/init 'for arg in $cmdline; do' \
@@ -121,25 +103,35 @@ hasnt iso/live/init 'cat /proc/cmdline' \
     "the initramfs does not call cat, which is not in it"
 
 echo
-echo "config: the wizard asks for all three and writes both files"
-has iso/firstboot/copper-firstboot.c 'Which shell, bash or zsh?' \
-    "the wizard asks the shell question"
-has iso/firstboot/copper-firstboot.c 'Which audio, pulseaudio or pipewire?' \
-    "the wizard asks the audio question"
-has iso/firstboot/copper-firstboot.c 'Which init, busybox or systemd?' \
-    "the wizard asks the init question"
+echo "config: the wizard asks about the person, not the plumbing"
+# First-boot users cannot choose plumbing before seeing the machine; defaults are still written.
+for q in 'Which desktop, xfce, niri or hyprland?' 'Desktop [xfce]:' \
+         'Which shell, bash or zsh?' 'Shell [bash]:' \
+         'Which audio, pulseaudio or pipewire?' 'Audio [pulseaudio]:' \
+         'Which init, busybox or systemd?' 'Init [busybox]:'; do
+    hasnt iso/firstboot/copper-firstboot.c "$q" \
+        "the wizard no longer asks: $q"
+done
+has iso/firstboot/copper-firstboot.c 'const char *shell_word = "bash";' \
+    "the default shell is bash"
+has iso/firstboot/copper-firstboot.c 'const char *audio_word = "pulseaudio";' \
+    "the default audio server is PulseAudio"
+has iso/firstboot/copper-firstboot.c 'const char *init_word = "busybox";' \
+    "the default init is copper-init"
+has iso/firstboot/copper-firstboot.c 'fprintf(d, "xfce\n");' \
+    "the default desktop marker is xfce"
 has iso/firstboot/copper-firstboot.c 'fprintf(c, "shell=%s\n", shell_word)' \
-    "the wizard writes shell= to /etc/copper.conf"
+    "the wizard still writes shell= to /etc/copper.conf"
 has iso/firstboot/copper-firstboot.c 'fprintf(c, "audio=%s\n", audio_word)' \
-    "the wizard writes audio= to /etc/copper.conf"
+    "the wizard still writes audio= to /etc/copper.conf"
 has iso/firstboot/copper-firstboot.c 'fprintf(i, "%s\n", init_word)' \
-    "the wizard writes /etc/copper-init"
+    "the wizard still writes /etc/copper-init"
 has iso/firstboot/copper-firstboot.c '-s %s %s' \
-    "adduser gets the chosen login shell"
+    "adduser gets the default login shell"
 has iso/firstboot/copper-firstboot.c 'create_user_direct(user, shell_path)' \
-    "the direct passwd writer gets the chosen login shell"
+    "the direct passwd writer gets the default login shell"
 has iso/firstboot/copper-firstboot.c 'cp -a /etc/skel/.zshrc' \
-    "the new home gets .zshrc as well as .bashrc"
+    "the new home still gets .zshrc for later"
 has iso/firstboot/copper-firstboot.c '"/etc/copper.conf /etc/copper-init %s/etc/"' \
     "persistence carries both config files to the next boot"
 
@@ -184,10 +176,8 @@ done
 
 echo
 echo "config: the server's own sink is unmuted, not just the ALSA card"
-# cava reads the monitor of the default sink, so bars moving with no sound means
-# the graph saw the stream but the sink was muted or pointed at the null output.
-# Raising the codec alone cannot fix that; copper-audio has to speak to the
-# server over the Pulse protocol, which both backends serve.
+# cava reads the default sink's monitor: a muted or null sink means bars move
+# with no sound, so copper-audio must talk to the server, not just the codec.
 has iso/rootfs-overlay/usr/bin/copper-audio 'server_unmute' \
     "copper-audio has a server-side unmute step"
 has iso/rootfs-overlay/usr/bin/copper-audio 'pactl get-default-sink' \
@@ -206,10 +196,39 @@ has iso/build.sh 'usr/bin/pactl' \
     "the gui stage asserts pactl landed in the tree"
 
 echo
+echo "config: the pulse graph finds hardware without udev"
+# No udev daemon runs by default, so the stock detector hands every client the
+# null sink; module-detect reads /proc/asound/devices and creates a real sink/source.
+has iso/rootfs-overlay/etc/pulse/default.pa 'load-module module-detect' \
+    "Copper's pulse config uses the detector that works with no udev"
+hasnt iso/rootfs-overlay/etc/pulse/default.pa 'load-module module-udev-detect' \
+    "the stock udev-only detector is not used"
+has iso/build.sh 'etc/pulse/default.pa' \
+    "the gui stage restores Copper's pulse config after the package lands"
+has iso/build.sh 'for p in pavucontrol; do' \
+    "the gui stage requires pavucontrol"
+has iso/build.sh 'usr/bin/pavucontrol' \
+    "the mixer shortcut's program is asserted in the image"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl set-default-source' \
+    "it repoints the default source off a monitor/null device"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl set-source-mute' \
+    "it unmutes the microphone"
+has iso/rootfs-overlay/usr/bin/copper-audio 'pactl set-source-volume' \
+    "it raises the microphone level"
+
+echo
+echo "config: VMware keeps its 3D renderer"
+# niri refuses software EGL renderers. Forcing llvmpipe on a VMware machine that
+# already has a render node leaves a live Wayland socket with nothing drawn.
+has iso/startniri.sh 'niri ignores llvmpipe' \
+    "the launcher says why the VMware render node is kept"
+hasnt iso/startniri.sh 'if [ "$vmware" = 1 ] ||' \
+    "VMware detection no longer switches on software rendering"
+
+echo
 echo "config: AppImages can mount themselves"
-# An .AppImage is a squashfs with its own runtime that calls fusermount. Without
-# the kernel side there is no /dev/fuse, and without the user side there is no
-# libfuse.so.2 or setuid helper -- either one is the "Fuse not installed" error.
+# AppImage runtimes need /dev/fuse and libfuse.so.2 plus a setuid helper;
+# without either side the error is "Fuse not installed".
 has iso/build.sh 'FUSE_FS' "the kernel config enables FUSE_FS"
 has iso/live/init 'mknod /dev/fuse c 10 229' \
     "the live init makes /dev/fuse even if devtmpfs came up late"
@@ -252,10 +271,8 @@ hasre iso/build.sh 'unified.*all' "default_flavour normalises a cached unified t
 
 echo
 echo "config: the PPA stages survive a flapping Launchpad"
-# Launchpad answers 503 to some requests and 200 to the next. apt-get update
-# exits 0 when one source fails, so testing its status is not enough: the
-# stage must ask whether the pinned package has a candidate and retry until
-# it does, or CI goes red with nothing in the image changed.
+# Launchpad answers 503 intermittently and apt-get update can still exit 0,
+# so retry until the pinned package has a real candidate or CI goes red.
 hasre iso/build.sh '^apt_update_for\(\)' "there is a shared PPA-ready retry helper"
 has iso/build.sh "apt-cache \"\$@\" policy \"\$pkg\"" \
     "the helper checks for a real candidate, not just apt's exit status"
@@ -285,21 +302,23 @@ else
 fi
 
 echo
-echo "config: the tests drive the new questions"
-has tests/firstboot-drive.py 'Which shell, bash or zsh?' \
-    "the wizard driver answers the shell question"
-has tests/firstboot-drive.py 'Which audio, pulseaudio or pipewire?' \
-    "the wizard driver answers the audio question"
-has tests/firstboot-drive.py 'Which init, busybox or systemd?' \
-    "the wizard driver answers the init question"
-has tests/account.sh 'records shell=zsh' "the account test checks the written shell"
-has tests/account.sh 'records audio=pipewire' "the account test checks the written audio"
+echo "config: the test driver stops where the wizard does"
+for q in 'Which desktop, xfce, niri or hyprland?' \
+         'Which shell, bash or zsh?' \
+         'Which audio, pulseaudio or pipewire?' \
+         'Which init, busybox or systemd?'; do
+    hasnt tests/firstboot-drive.py "$q" \
+        "the driver does not wait for: $q"
+done
+has tests/firstboot-drive.py 'Timezone, e.g. Europe/London' \
+    "the driver ends at the last question the wizard asks"
+has tests/account.sh 'records shell=bash' "the account test checks the default shell"
+has tests/account.sh 'records audio=pulseaudio' "the account test checks the default audio"
+has tests/account.sh 'records xfce (the default)' "the account test checks the default desktop"
 has tests/shutdown-gate.sh 'COPPER_INIT' "the shutdown gate forces the running init"
 has tests/boot-gate.sh 'copper.init=systemd' "the boot gate boots the systemd branch"
-# noble's systemd logs "Starting copper-firstboot.service - Copper first-boot
-# wizard..." (with colour escapes around the unit name), not "Starting Copper
-# ...". The gate has to wait for the names and descriptions the shipped
-# .service files actually carry, or a working systemd boot fails on log shape.
+# noble prints "Starting <unit> - <Description>..." with colour escapes, not
+# "Starting Copper ..."; wait for the shipped unit names/descriptions.
 has tests/boot-gate.sh 'copper-(firstboot|console)\.service' \
     "the boot gate waits for the shipped systemd unit names"
 has iso/systemd/copper-firstboot.service 'Description=Copper first-boot wizard' \
@@ -307,10 +326,8 @@ has iso/systemd/copper-firstboot.service 'Description=Copper first-boot wizard' 
 
 echo
 echo "config: the ISO read-back agrees with the unified power wrapper"
-# power_links points every power name at /sbin/shutdown on BOTH flavours and
-# the wrapper dispatches at runtime, so the disc checkout must expect the
-# wrapper on the busybox half too. It used to expect /bin/busybox there, and
-# the first build that got past the gui stage failed on the disc as a result.
+# power_links points every power name at the wrapper on both flavours, so the
+# disc check must expect the wrapper, not an applet link, on busybox too.
 hasnt iso/build.sh '[ "$pt" = "/bin/busybox" ]' \
     "the busybox half of the ISO check expects the wrapper, not an applet link"
 has iso/build.sh 'exec /bin/busybox "$mode"' \

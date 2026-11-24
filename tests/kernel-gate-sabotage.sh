@@ -1,21 +1,11 @@
 #!/usr/bin/env bash
 # Sabotage suite for tests/kernel-gate.sh — prove the gate can FAIL.
-#
-# A gate that only ever goes green is not a gate. tests/kernel-gate.sh asserts
-# that every symbol Copper needs is =y in the generated kernel config, and its
-# whole value is that it goes red when the build stops asserting something or
-# asserts the wrong name; that claim is what this file tests.
-#
-# Each case copies the repo, plants one defect in iso/build.sh with an
-# exact-string edit (a planting that does not match the file is reported as a
-# broken test, not a passing one), runs the gate in the copy, and asserts both
-# that it exits non-zero and that it names the right thing.
-#
-# The defects are the realistic ones: a symbol dropped from a loop by a refactor,
-# a misspelling that scripts/config would accept and olddefconfig would drop in
-# silence (the DRM_VMWARE mistake, again), and a whole block removed. This suite
-# is the reason tests/kernel-gate.sh is not just a second copy of the list.
-#
+# A gate that only ever goes green is not a gate; this one must go red when
+# the build stops asserting something or asserts the wrong name.
+# Each case copies the repo, plants one exact-string defect in iso/build.sh,
+# runs the gate in the copy, and requires a non-zero exit naming the right thing.
+# Defects: a dropped symbol, a misspelling olddefconfig would silently drop,
+# an emptied loop and a removed block. Flags-only changes are a control.
 # No root needed. Run: bash tests/kernel-gate-sabotage.sh
 #
 
@@ -62,9 +52,8 @@ run_case() {
 
 echo "sabotaging the kernel config gate, one defect at a time:"
 
-# 1. A storage symbol is dropped from the assert loop by a refactor. This is the
-#    shape of bug 46 itself: the flag list is right, the assert list forgot a
-#    controller, and a machine with that controller gets no disk.
+# 1. a storage symbol drops out of the assert loop by refactor: the flag list
+# is right but the assert list forgot a controller, so that machine has no disk.
 run_case "SCSI_MPT3SAS dropped from the assert loop" \
     '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
              SCSI_SYM53C8XX_2 MEGARAID_SAS ; do' \
@@ -72,14 +61,9 @@ run_case "SCSI_MPT3SAS dropped from the assert loop" \
              SCSI_SYM53C8XX_2 MEGARAID_SAS ; do' \
     "SCSI_MPT3SAS|not in the asserted symbol list"
 
-# 2. The controller is asked for under a name kconfig does not have. This is the
-#    DRM_VMWARE mistake the display comment was written about: scripts/config
-#    accepts any name, olddefconfig drops it silently, and the build goes green
-#    with a kernel that cannot see the disk. The realistic form is that somebody
-#    typed VMW_PVSCSI in BOTH the flag list and the assert loop -- so both are
-#    planted, and the gate's completeness check has to notice that the symbol it
-#    expects (VMWARE_PVSCSI) is no longer asserted. (A flags-only change is a
-#    different case and is the negative control below.)
+# 2. a misspelling that scripts/config accepts and olddefconfig silently drops
+# (the DRM_VMWARE mistake). Both the flag and the assert loop are misspelled;
+# a flags-only change is the negative control below.
 T=$(mktemp -d /tmp/kernel-sabotage.XXXXXX) || exit 1
 cp -a "$REPO" "$T/repo"
 python3 - "$T/repo/iso/build.sh" <<'PY'
@@ -116,9 +100,7 @@ else
 fi
 rm -rf "$T"
 
-# 3. The whole storage block is deleted from require_kernel_config -- the
-#    "somebody tidied up" case. Nothing asks, nothing asserts, and the gate has
-#    to notice SCSI is no longer claimed.
+# 3. the whole storage block is removed: nothing asserts SCSI any more.
 run_case "the whole storage assert block is removed" \
     '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
              SCSI_SYM53C8XX_2 MEGARAID_SAS ; do
@@ -127,20 +109,15 @@ run_case "the whole storage assert block is removed" \
     '  true' \
     "SCSI|not in the asserted symbol list"
 
-# 4. The assert loop is emptied but left in place, so it *looks* present and
-#    checks nothing. A gate that only greps for the loop's text passes this; a
-#    gate that enumerates the symbols it expects does not.
+# 4. the loop is emptied but still present: a text grep would pass this.
 run_case "the storage assert loop is emptied (looks present, checks nothing)" \
     '  for sym in SCSI SCSI_LOWLEVEL SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
              SCSI_SYM53C8XX_2 MEGARAID_SAS ; do' \
     '  for sym in ; do' \
     "SCSI|asserted symbol list|empty"
 
-# 5. The enable flags are removed but the asserts kept. The gate still passes
-#    THIS file (the assert list is intact), which is correct -- the flags are
-#    build_kernel's business and the gate tests require_kernel_config. Kept as a
-#    NEGATIVE control: it proves the gate is testing the assertion contract it
-#    claims to, and not accidentally grepping the flag list next to it.
+# 5. negative control: enable flags removed, asserts kept. The gate still
+# passes because flags are build_kernel's business, not this contract.
 T=$(mktemp -d /tmp/kernel-sabotage.XXXXXX) || exit 1
 cp -a "$REPO" "$T/repo"
 if edit "$T/repo/iso/build.sh" \

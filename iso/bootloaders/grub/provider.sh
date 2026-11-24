@@ -1,19 +1,11 @@
 # GRUB bootloader provider for the Copper live ISO.
-#
-# build.sh sources the provider chosen by COPPER_BOOTLOADER (default: grub) and
-# calls exactly two hooks:
-#
-#   bootloader_configure <staged-root>       write this bootloader's menu into
-#                                            the staged tree before it is hashed
-#   bootloader_make_iso <staged-root> <iso> <work-dir>
-#                                            turn the staged tree into boot media
-#
-# A replacement provider only has to supply those two functions in its own
-# provider.sh. The menu itself comes from iso/boot/entries, not from here, so
-# adding an init or session entry does not mean editing bootloader syntax.
+# build.sh sources the provider named by COPPER_BOOTLOADER (default: grub) and
+# calls two hooks: bootloader_configure <staged-root> writes this bootloader's
+# menu before hashing, and bootloader_make_iso <tgt> <iso> <work> packages the media.
+# A replacement provider only supplies those two functions; the menu comes from
+# iso/boot/entries, so adding an init or session entry is not a bootloader edit.
 
-# Render the shared entry list into GRUB's menu. Comments in entries are
-# documentation for the person editing the list, not menu text.
+# Render the shared entries into GRUB's menu; comments there are docs, not menu text.
 bootloader_configure() { # bootloader_configure <tgt>
   local tgt=$1
   mkdir -p "$tgt/boot/grub"
@@ -40,13 +32,9 @@ bootloader_configure() { # bootloader_configure <tgt>
   ' "$ROOT/boot/entries" > "$tgt/boot/grub/grub.cfg"
 }
 
-# grub-mkrescue hardcodes xorriso's -r, "rationalised" Rock Ridge: every mode
-# is flattened to 444/555, uid/gid forced to 0, and setuid/setgid stripped.
-# That is how the live image lost /usr/bin/sudo's setuid bit -- sudo then
-# refused every elevation with "must be owned by uid 0 and have the setuid bit
-# set". -R keeps the modes and ownership build_iso pinned on the staged tree.
-# grub-mkrescue offers no switch and reaches xorriso through PATH, so put a
-# one-job filter in front of it that rewrites exactly -r.
+# grub-mkrescue reaches xorriso through PATH and hardcodes -r ("rationalised" Rock
+# Ridge): modes flatten to 444/555, uid/gid to 0, setuid stripped -- that is how
+# sudo lost its setuid bit. Put a one-job -r -> -R filter first; no switch exists.
 bootloader_make_iso() { # bootloader_make_iso <tgt> <iso> <work>
   local tgt=$1 iso=$2 wrk=$3
   local real xw
@@ -75,11 +63,8 @@ WRAP
   [ -s "$iso" ] || { echo "grub-mkrescue failed"; exit 1; }
 }
 
-# Read the menu back off the finished disc (bug 25, and bug 7 with it). The
-# splash entry must carry the plymouth switches, the quiet switches, and tty0
-# as the LAST console= -- with ttyS0 last, /dev/console is a serial port the VM
-# may not have and the screen goes quiet. build.sh calls this hook only when a
-# provider defines it, so a non-GRUB provider is free to check its own layout.
+# Read the menu back off the disc (bug 25/7): the splash entry needs the plymouth
+# switches, quiet, and tty0 LAST so /dev/console is not a serial port the VM lacks.
 bootloader_check() { # bootloader_check <iso> <extract-dir>
   local iso=$1 ex=$2
   xorriso -osirrox on -indev "$iso" \

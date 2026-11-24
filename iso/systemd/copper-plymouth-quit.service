@@ -1,25 +1,14 @@
 # Copper Linux — hand the boot splash back to the console.
-#
-# Ordered after copper-plymouth.service (and after the network, because the
-# no-systemd init used the DHCP beat to hold the splash up and wait for a lease;
-# here the ordering takes over that job) and before anything that draws on tty1
-# for real: the first-boot wizard, the login shell, the boot-text clear.
-#
-# ExecStart is a helper, not `plymouth --quit` directly. Quitting the instant
-# the network came up cut the 150-frame animation off around frame 20; the
-# helper reads frame_count and the refresh rate out of the theme, waits out the
-# remainder against the stamp copper-splash-show left, and only then quits and
-# waits for the daemon to release the VT. The wizard draws on the far side of
-# that hand-back, so it appears after the last frame rather than over the
-# middle of it.
-#
-# The clear helper is deliberately NOT in this unit's Before= -- it erases the
-# kernel's boot text ahead of sysinit, before the splash is even up, and adding
-# the edge here closes an ordering cycle the boot would refuse to start.
-#
-# Without this unit the splash under systemd would run until shutdown: the
-# daemon has no one to tell it to quit and no owner that will, and the console
-# the wizard draws on stays hidden behind a plymouthd that is still attached.
+# After the splash and network (the no-systemd init used the DHCP beat to hold the
+# splash up) and before anything that draws on tty1 for real: wizard, shell, clear.
+# ExecStart is a helper, not `plymouth --quit`: quitting when the network came up
+# cut the 150-frame animation at frame 20. The helper reads frame_count and the
+# refresh rate from the theme, waits against copper-splash-show's stamp, then
+# quits and waits for the daemon to release the VT -- so the wizard draws after the
+# last frame, not over the middle.
+# The clear helper is NOT in Before=: it erases boot text ahead of sysinit, before
+# the splash is even up, and adding that edge closes an unbootable cycle.
+# Without this unit plymouthd would run until shutdown, hiding the wizard's tty.
 [Unit]
 Description=Copper Linux boot splash -- hand the console back
 DefaultDependencies=no

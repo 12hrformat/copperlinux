@@ -1,26 +1,15 @@
 # Copper Linux
 # Build Copper Linux as a bootable live ISO on GitHub Actions.
 # Produces iso/out/copper.iso as an artifact.
-#
-# The build is split into per-stage steps on purpose: if a stage fails,
-# the job API shows exactly which one, and the cached iso/work/ tree means
-# re-runs skip everything that already built.
+# Per-stage steps name the failing stage; the cached iso/work/ tree skips what already built.
 
 name: build-iso
 
 on:
   push:
     branches: ['**']
-  # A pull request is how work reaches this repo from a fork, and without this
-  # line a PR gets no build at all: the workflow only ever ran on pushes to
-  # branches in the repo itself, so a contributor with push rights got a green
-  # tick on their fork and a redacted "no checks" on the PR. Half the bugs
-  # fixed in this round were invisible to the build, so an unbuilt PR is not
-  # obviously safe to merge.
-  #
-  # Cost: every PR now runs the full pipeline. From a warm cache that is a
-  # couple of minutes; cold it is about fifteen, and the kernel is the bulk of
-  # it. Worth it to know the thing builds before anyone reviews the diff.
+  # Without a pull_request trigger, fork PRs get no build and bugs reach review unbuilt.
+  # Cost: full pipeline per PR (warm ~2 min, cold ~15, mostly kernel); worth it.
   pull_request:
   workflow_dispatch:
 
@@ -35,19 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The last CI failure on this branch was `exit 126: Permission denied` on
-      # the very first test, which meant the two tests after it never ran and
-      # nobody knew they were missing from the tree entirely. That is thirteen
-      # minutes of kernel build wasted, and it hid a second, worse problem: the
-      # workflow invoked tests/charge.sh, which this branch does not have.
-      # So every script the workflow is about to run is checked for existence
-      # and for the executable bit FIRST, and the whole check is one step. A
-      # missing test or a lost mode is now a failure in seconds, with a message
-      # that names the file, instead of a 126 thirteen minutes in.
-      #
-      # The executable bit does not survive a checkout on its own here: this
-      # tree is maintained on Windows, where core.fileMode is off. That is why
-      # tests/smoke.sh and tests/account.sh arrived non-executable.
+      # Check existence and the executable bit before anything else: a missing test
+      # or mode lost to a Windows checkout (core.fileMode off) fails in seconds, not after a ~13-min build.
       - name: every test is present and executable
         run: |
           set -eu
@@ -122,34 +100,14 @@ jobs:
             python3 perl gawk file xorriso mtools grub-pc-bin grub-efi-amd64-bin \
             libglib2.0-dev-bin
 
-      # libglib2.0-dev-bin is glib-compile-schemas, and nothing else on the
-      # runner provides it. build.sh's iso stage compiles the staged
-      # *.gschema.xml files into gschemas.compiled -- the trigger dpkg would
-      # run at install time, which dpkg-deb -x never does -- and without this
-      # package the iso stage dies on its own "glib-compile-schemas is not on
-      # the build host" check rather than shipping an ISO whose Firefox
-      # aborts with "No GSettings schemas are installed on the system".
+      # libglib2.0-dev-bin provides glib-compile-schemas, which dpkg-deb -x never runs;
+      # without it the ISO stage fails instead of shipping Firefox with no GSettings schemas.
 
-      # build.sh pins the kernel compiler itself, and says why: gcc 15 rejects
-      # this kernel's ACPI signature table under -Werror, so an unpinned runner
-      # fails in ACPI code thousands of lines from anything that changed. The pin
-      # lives in build.sh so local builds get it too -- this line only makes sure
-      # the pinned compiler is actually installed, rather than assuming the
-      # runner's default happens to be the right version. The job is pinned to
-      # the 24.04 runner image, whose default gcc is 13; the latest image moves
-      # to a newer base on 2026-10-19, and a from-source kernel build that fails
-      # the base image moved is a failure with nothing to do with the change
-      # under test.
+      # build.sh pins gcc (gcc 15 breaks this kernel's ACPI under -Werror); install it
+      # so a 24.04 image base move cannot fail a build for reasons unrelated to the change.
 
-      # The fallback prefix is deliberate: a warm iso/work/ saves a ~7 min
-      # kernel build when something unrelated changed. What makes that safe
-      # is in build.sh — every stage stamps its output with a hash of its
-      # own inputs, so a restored tree still rebuilds any stage whose
-      # sources moved. A cache hit now buys speed and cannot ship a stale
-      # artifact, which is not something the key alone can promise: the key
-      # changes on a source edit, but the fallback restores the previous
-      # tree regardless, and plain existence checks in the stages would then
-      # skip straight past the work that needed redoing.
+      # The fallback prefix saves ~7 min of kernel build; build.sh's input hashes
+      # still rebuild changed stages, so a restored tree cannot ship a stale artifact.
       - name: Cache build tree (restore)
         uses: actions/cache/restore@v4
         with:
@@ -212,39 +170,11 @@ jobs:
         run: sudo bash iso/build.sh initramfs
 
       # ---- the cache is saved HERE, before the unified merge ----------------
-      # The staged tree outlives this run: the next run restores it and keeps
-      # building on it. What goes in the cache therefore has to be the tree the
-      # NEXT run's stages expect -- and that is the plain, pre-merge tree, not
-      # the one the unified stage rewrites.
-      #
-      # The cache used to be saved at the very end, after the systemd stage had
-      # swapped PID 1 in the same tree, so what it saved was a systemd-flavoured
-      # tree: lib/systemd a symlink to ../usr/lib/systemd (the merged-usr
-      # bridge). The next run restored that tree and died in the second-desktop
-      # stage:
-      #
-      #     cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
-      #         directory '.../desktop-root/./lib/systemd'
-      #
-      # because cp cannot merge a directory into a symlink, and the desktop
-      # closure ships a real lib/systemd. Two CI runs in a row failed on exactly
-      # that line, on a tree that had been perfectly good a moment before.
-      #
-      # Saving before the merge keeps the cached tree in the shape every stage
-      # above expects. The cost is that the unified stage is not cached: it
-      # re-unpacks its systemd packages on every run, roughly a minute of CI.
-      # That is cheaper than a cache that carries a tree the next run cannot
-      # build on.
+      # Save the plain pre-merge tree: the unified stage rewrites lib/systemd into a
+      # symlink that breaks the next run's desktop cp; re-unpacking is cheaper than a broken cache.
 
-      # The stages run under sudo, so iso/work is root-owned, and the cache
-      # action tars it as the unprivileged runner: tar exits 2 on the first
-      # file it cannot read (etc/shadow, the apt lock dirs, ssl/private), which
-      # left the tree uncached and made every run cold. Hand the tree to the
-      # runner first. A chown also clears the setuid/setgid bits, so this saves
-      # the tree as uid 1000 with /usr/bin/sudo stripped of its bit. The stages
-      # that ship those permissions re-assert them rather than trust the
-      # restore: build_sudo pins sudo's owner and bit, and build_iso pins the
-      # whole tree before it is packaged.
+      # chown before caching: sudo-owned files make tar fail and leave every run cold.
+      # The setuid bits this clears are re-pinned by build_sudo and build_iso, not trusted to the cache.
       - name: Make the build tree readable by the cache
         if: always()
         run: |
@@ -262,15 +192,8 @@ jobs:
           key: copper-work-${{ hashFiles('iso/build.sh','iso/live/init','iso/boot/entries','iso/bootloaders/**','iso/rootfs-overlay/**','iso/src-init/**','iso/firstboot/**','iso/plymouth/**','src/**','iso/sudo/**') }}
 
       # ---- one image, both inits -------------------------------------------
-      # build_unified puts the systemd/udev payload into the rootfs that already
-      # boots copper-init, takes only the DEFAULT /sbin/init back to
-      # copper-init, and keeps /lib/systemd reachable. The GRUB menu then offers
-      # both: the default entry boots busybox while "Copper Linux (systemd init)"
-      # passes copper.init=systemd. One ISO, chosen at boot, instead of two
-      # separately-swapped artifacts.
-      #
-      # This must run AFTER the cache save: the stage rewrites the tree, and a
-      # cached post-merge tree is the shape that broke the next run (above).
+      # One ISO boots either init via copper.init=systemd, not two separately-swapped artifacts;
+      # run AFTER the cache save so the rewritten tree is never cached.
       - name: Merge both inits into one image
         run: sudo bash iso/build.sh unified
 

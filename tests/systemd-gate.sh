@@ -1,41 +1,7 @@
 #!/usr/bin/env bash
-# Gate for the systemd migration (SYSTEMD-MIGRATION.md, phase 1).
-#
-# Copper boots its own PID 1 today: iso/src-init/copper-init.c, musl-static,
-# symlinked at /sbin/init. The migration swaps that for systemd, opt-in via
-# `bash iso/build.sh systemd`. This gate proves the pieces of that swap that
-# can be proved WITHOUT booting a machine, and it is honest about which ones
-# those are.
-#
-# What it checks, and why each one is here:
-#
-#   1. The units parse. systemd's own parser is the authority, so ask it
-#      (systemd-analyze verify), skipping cleanly if the host has no systemd.
-#      It is not the image's systemd -- a newer host accepts directives the
-#      image's 255 does not -- so the real defence is the second half of this:
-#      a key that does not belong in the section it is in is REJECTED by the
-#      check, and that is exactly how this gate found StartLimitIntervalSec in
-#      [Service] (it belongs in [Unit]) and SocketMode=, which does not exist.
-#
-#   2. build_systemd actually runs, and produces the tree the boot needs. The
-#      package tools are stubbed -- apt-get hands back fake .debs, dpkg-deb
-#      unpacks them -- so this is the REAL function out of iso/build.sh, not a
-#      copy of its logic. The first version of the stage died here: a bare
-#      `install ... *.network` glob with no matching file is "cannot stat
-#      '*.network'" and killed the whole build. That is the class of bug this
-#      catches.
-#
-#   3. The swap is coherent: /sbin/init is systemd, udevd is wanted by
-#      sysinit.target, the Copper units are all wired, the power commands point
-#      at systemctl and not at busybox, and -- the bit that is easy to get
-#      wrong and impossible to see later -- nothing from the build host's
-#      systemd-analyze is left behind in the tree.
-#
-# It does NOT boot anything, and it does not pretend a green run here means a
-# bootable image. SYSTEMD-MIGRATION.md carries the honest status line; this
-# gate is the part that can be mechanised.
-#
+# Gate for the systemd migration (SYSTEMD-MIGRATION.md, phase 1): unit parse, the real build_systemd stage on stubs, staged-tree assertions -- but no boot.
 # Root only (it chroots). Run: sudo tests/systemd-gate.sh
+# It proves what can be proved without a machine; SYSTEMD-MIGRATION.md carries the honest status line.
 #
 
 set -u
@@ -56,66 +22,33 @@ fails=0
 ok()  { printf '  ok    %s\n' "$1"; }
 bad() { printf '  FAIL  %s\n        %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
 
-# The wording systemd uses for an ordering cycle, in every form it has used.
-# It is here, once, because three places need the same answer: the gate's own
-# transaction check, the gate's test of the stage's check, and the stage's
-# check itself. The stage's copy is asserted to be this one (section 7), so
-# the three cannot drift apart.
-#
-# 255: "Found ordering cycle: ...", "Unable to break cycle ...", and
-#      "Transaction order is cyclic."  256+ keeps the first and the third.
+# One cycle wording shared by gate and stage (section 7): three copies of this answer drift.
+# 255: "Found ordering cycle", "Unable to break cycle", "Transaction order is cyclic"; 256+ keeps first and third.
+# Section 7 asserts the stage's copy matches, so the gate, the test and the stage cannot drift apart.
 CYC_RE='ordering cycle|cyclic ordering|order is cyclic|break cycle'
 
 TMP=$(mktemp -d /tmp/systemd-gate.XXXXXX) || exit 1
 trap 'rm -rf "$TMP"' EXIT INT TERM HUP
 
 # ---------------------------------------------------------------- 1. parse --
-# A unit's keys must be in the right section. systemd-analyze is the only thing
-# that knows; if it is absent, say so rather than claim a pass.
-#
-# The modes are fixed FIRST, in a private copy: the source tree is 777 on a
-# Windows checkout, and systemd-analyze pairs each "marked world-writable"
-# warning with the filename on the line BEFORE the message, so a name-based
-# filter would keep them whatever order it ran in. Copying to 0644 removes the
-# question. (build_systemd installs 0644; gate 3 checks that installed mode.)
+# systemd-analyze is the authority on keys/sections; copy units to 0644 first so a Windows 777 tree's world-writable warnings cannot skew the filter, and skip cleanly if absent.
+# Modes are fixed FIRST in a private copy: systemd-analyze pairs its world-writable warning with the filename on the previous line.
 if command -v systemd-analyze >/dev/null 2>&1; then
     UD="$TMP/units"; mkdir -p "$UD"
     install -m 0644 "$REPO"/iso/systemd/*.service "$UD/" 2>/dev/null || true
     install -m 0644 "$REPO"/iso/systemd/*.target  "$UD/" 2>/dev/null || true
 
-    # The unit SEARCH PATH has to include $UD, or a Wants=/After= that names
-    # another Copper unit cannot be resolved and the graph systemd checks is
-    # not the graph the boot will build. Without this the gate was verifying
-    # each unit in isolation with half its dependencies missing -- which is
-    # exactly why it could not see an ordering cycle (see the transaction check
-    # below). The rest of the path is the host's own, which is where the base
-    # units live: sysinit.target, systemd-udevd.service and the rest.
+# $UD must be on the unit search path or cross-unit Wants=/After= stay unresolved; the host path supplies sysinit.target, udevd and friends.
+# Without it each unit was verified in isolation with half its dependencies missing, which is how a real cycle went unseen.
+# The rest of the path is the host's, where sysinit.target and udevd live.
     UPATH="$UD:/etc/systemd/system:/run/systemd/system:/usr/local/lib/systemd/system:/usr/lib/systemd/system:/lib/systemd/system"
 
     for u in "$UD"/*.service "$UD"/*.target; do
         [ -e "$u" ] || continue
         out=$(SYSTEMD_UNIT_PATH="$UPATH" systemd-analyze verify "$u" 2>&1 || true)
-        # Which of systemd-analyze's lines are a complaint about THIS unit?
-        #
-        # The filter used to be a deny-list (drop "Command X is not
-        # executable", a missing man page, and the host's own noise) and keep
-        # "about this unit" via grep -F "$base". That is host-version
-        # dependent, and CI proved it: on the runner's systemd 255 the same
-        # units produce lines that do NOT match the deny-list, so two units
-        # reported FAIL for messages that were really about the HOST -- units
-        # this image does not ship (systemd-udev-settle.service ships with the
-        # host's systemd, and the seatd/udhcpc ExecStart paths only exist
-        # inside the image).
-        # A gate whose verdict changes with the runner's systemd version is a
-        # gate that goes red for green code, so it is an allow-list now.
-        #
-        # What is allowed to fail a unit, and only this: a key systemd does not
-        # know, a key in the wrong section, or a missing/empty ExecStart. Those
-        # are answered by the unit's own text and cannot be an artifact of what
-        # the host happens to have installed. Everything else -- "not
-        # executable", "not found", a missing man page, a dependency unit the
-        # host does not carry -- is the build host talking about itself, and
-        # the stage's own chrooted check (section 2/3) is what tests those.
+# Allow-list, not a deny-list: one tuned on the dev box's 255 let host-only units (udev-settle, seatd/udhcpc paths) fail this unit on CI.
+# Only unknown keys/sections, parse failures and empty ExecStart are unit defects; "not executable" and missing deps are the build host talking about itself.
+# The old deny-list produced host-version-dependent verdicts: on 255 unrelated host units reported FAIL for green code.
         base=${u##*/}
         left=$(printf '%s\n' "$out" \
             | grep -E "Unknown (key|lvalue|section)|Failed to parse|Empty (ExecStart|section)|not a valid" \
@@ -128,39 +61,9 @@ if command -v systemd-analyze >/dev/null 2>&1; then
         fi
     done
 
-    # ---- ONE transaction, not one unit at a time ---------------------------
-    #
-    # An ORDERING CYCLE only exists in a transaction: it is a loop BETWEEN
-    # units, so systemd-analyze has to be given all of them at once to see it.
-    # Verified one unit at a time, every unit in the loop looks perfect on its
-    # own -- and that is not a theoretical gap.
-    #
-    # copper-tty-clear.service shipped with `After=sysinit.target` AND
-    # `Before=systemd-udevd.service`, while systemd's own udevd unit carries
-    # `Before=sysinit.target` (read out of the noble 255.4 udev package this
-    # image unpacks). That closes a loop:
-    #
-    #     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
-    #                    -> sysinit.target
-    #
-    # and the cycle is on sysinit.target, so the boot's initial transaction
-    # fails outright: not a degraded boot, no boot. The per-unit loop above
-    # reported every unit as parsing perfectly.
-    #
-    # The check is deliberately NOT scoped to a unit name: systemd decides
-    # which job it drops when it breaks a cycle, so the message can name any
-    # unit in the loop.
-    #
-    # The transaction also carries the units that are REAL participants in the
-    # boot graph and are not Copper's: getty@tty1.service (spawned by
-    # systemd's getty generator, claiming /dev/tty1 with TTYPath=/dev/%I --
-    # the same tty the wizard and the console draw on), getty.target, and
-    # multi-user.target (which wants copper.target, which wants the Copper
-    # units). Leaving them out means the graph this check walks is not the
-    # graph the boot builds, and that is exactly how an ordering cycle shipped
-    # once already: the udevd unit was missing from the fixture, and the
-    # fixture was what the cycle had to be found in. They come from the host's
-    # own unit path, which is the real noble 255 set on the CI runner.
+# ---- ONE transaction, not one unit at a time ---------------------------
+# A cycle exists only between units: one-at-a-time verify saw copper-tty-clear.service as perfect while it was After=sysinit.target and Before=systemd-udevd.service, and udevd is Before=sysinit.target -- no boot.
+# Include host getty@tty1/getty.target/multi-user.target: leaving udevd out once hid that same cycle. Don't scope the check to a unit; systemd may name any unit in the loop.
     out=$(SYSTEMD_UNIT_PATH="$UPATH" systemd-analyze verify \
               "$UD"/*.service "$UD"/*.target \
               getty@tty1.service getty.target multi-user.target 2>&1 || true)
@@ -175,8 +78,8 @@ else
 fi
 
 # ------------------------------------------------- 2. run the real stage ----
-# A mock staged rootfs shaped like the one gui+niri+copper would leave, then
-# the real build_systemd() out of iso/build.sh, with apt-get/dpkg-deb stubbed.
+# Mock rootfs and stub apt-get/dpkg-deb, then run the REAL build_systemd() out of iso/build.sh.
+# The package tools are stubbed, but the function under test is the shipped one, not a paraphrase of it.
 TGT="$TMP/work/rootfs"; WORK="$TMP/work"; DL="$TMP/work/downloads"
 ROOT="$REPO/iso"; REPO_V="$REPO"; SELF="$BUILD"; JOBS=2
 export WORK DL ROOT SELF JOBS TGT
@@ -195,10 +98,8 @@ done
 for b in usr/sbin/plymouthd usr/bin/plymouth; do
     printf '#!/bin/sh\nexit 0\n' > "$TGT/$b"; chmod 0755 "$TGT/$b"
 done
-# The getty units exec /sbin/agetty. Copper is not merged-usr and Debian's
-# util-linux puts the binary at usr/sbin, so the stage has to bridge the name.
-# Without a real agetty the stage fails, which is the point: a tree with no
-# agetty is a machine with no login prompt on any VT or serial console.
+# Units exec /sbin/agetty but Debian ships usr/sbin on this non-merged tree; without the bridge there is no login prompt on any VT or serial console.
+# Without a real agetty the stage fails, which is the point: no agetty means no login prompt anywhere.
 printf '#!/bin/sh\nexit 0\n' > "$TGT/usr/sbin/agetty"; chmod 0755 "$TGT/usr/sbin/agetty"
 printf '#!/bin/sh\nexit 0\n' > "$TGT/sbin/shutdown"; chmod 0755 "$TGT/sbin/shutdown"
 # the loader PID 1 will name as its interpreter
@@ -213,22 +114,13 @@ for c in reboot poweroff halt; do
 done
 ln -sf /sbin/shutdown "$TGT/usr/sbin/shutdown"
 
-# The GUI closure runs BEFORE this stage and leaves a real, populated
-# usr/lib/systemd behind -- 454 paths, all under usr/lib, none under lib (verified
-# by unpacking the closure; the packages never write a literal lib/systemd). So by
-# the time the bridge runs, usr/lib/systemd already exists as a directory, and the
-# stage has to expose it at /lib anyway. The fixture models that, and also leaves a
-# real empty lib/systemd that SQUATS on the name, because that is the state the
-# guard has to survive: a guard that only asked "is lib/systemd absent?" declined
-# to bridge and the stage then died claiming the packages never arrived. Left
-# empty on purpose -- the trap is `[ -d lib/systemd ]` being true.
+# The GUI closure leaves usr/lib/systemd populated and a real empty lib/systemd squats on the bridge name; the guard must normalise it or the stage dies claiming no packages.
+# The fixture models that with a real empty lib/systemd squatter, the trap being `[ -d lib/systemd ]` reading true.
+# A guard that only asked 'is lib/systemd absent?' declined to bridge and the stage died claiming no packages.
 mkdir -p "$TGT/usr/lib/systemd/user" "$TGT/lib/systemd"
 printf '[Unit]\nDescription=placeholder\n' > "$TGT/usr/lib/systemd/user/dconf.service"
 
-# /etc/group, with the _seatd line build_gui appends. The stage now ASSERTS this
-# group exists (a boot proved the group can be lost -- build_rootfs overwrites
-# /etc/group from the overlay on the second pass and the appending stage skips),
-# so the fixture has to carry it or the good run fails for the wrong reason.
+# build_rootfs overwrites /etc/group and the appending stage skips, so the fixture must carry _seatd or the good run fails; sabotage deletes it.
 # The sabotage suite deletes the line to prove the assertion fires.
 printf 'root:x:0:\nnobody:x:65534:\nusers:x:100:\nwheel:x:10:\n_seatd:x:999:\n' \
     > "$TGT/etc/group"
@@ -255,49 +147,32 @@ STUBEOF
 chmod 0755 "$STUB/apt-get" "$STUB/dpkg-deb"
 
 PD="$TMP/payload"; mkdir -p "$PD/usr/lib/systemd/system" "$PD/usr/bin"
-# merged-usr, the way a real noble deb is: PID 1 ships at usr/lib/systemd/systemd
-# and usr/bin/systemd is a symlink THROUGH /lib to it. The fixture used to put
-# the fake PID 1 at payload/lib/systemd/systemd -- a layout no merged-usr deb
-# has produced since merged-usr -- so the stage's `[ -x $TGT/lib/systemd/systemd ]`
-# gate passed against the fixture while a real build died with "39 packages
-# unpacked (58M)" and "/lib/systemd/systemd did not arrive". A fixture that
-# models the input wrongly certifies the wrong code; this one now models the deb.
+# Model a real noble deb: PID 1 at usr/lib/systemd/systemd with usr/bin/systemd linking through /lib. A fixture putting it at payload/lib passed while real builds died.
+# The old fixture used payload/lib/systemd/systemd, which no merged-usr deb has produced since merged-usr.
+# That let the stage's -x gate pass while a real build died with '/lib/systemd/systemd did not arrive'.
 printf '#!/bin/sh\nexit 0\n' > "$PD/usr/lib/systemd/systemd"; chmod 0755 "$PD/usr/lib/systemd/systemd"
 ln -sf ../lib/systemd/systemd "$PD/usr/bin/systemd"
 printf '#!/bin/sh\nexit 0\n' > "$PD/usr/bin/systemctl";  chmod 0755 "$PD/usr/bin/systemctl"
 for u in sysinit.target multi-user.target getty.target; do
     printf '[Unit]\nDescription=%s\n' "$u" > "$PD/usr/lib/systemd/system/$u"
 done
-# systemd's OWN udevd unit, modelled on the real noble 255.4 udev package
-# (the udev deb the image unpacks, read straight out of it). Two lines matter:
-#
-#   DefaultDependencies=no   without it systemd adds an automatic
-#                            After=sysinit.target, which would contradict the
-#                            Before= below and fake a cycle of its own;
-#   Before=sysinit.target    this is the edge that closes the loop with
-#                            copper-tty-clear.service's After=sysinit.target.
-#
-# The fixture used to say "Description=udev" and nothing else, so the ordering
-# graph the stage's chrooted verify walked was not the graph the boot builds --
-# the same "a fixture that models its input wrongly certifies the wrong code"
-# trap, once more.
+# Model noble's udev unit: DefaultDependencies=no stops systemd adding After=sysinit.target (which would fake a cycle with the Before= below), and Before=sysinit.target is the real cycle edge.
+# The old fixture said only 'Description=udev', so the chrooted verify walked a graph the boot never builds.
+# That is the same input-model trap as the PID 1 fixture, once more.
 printf '[Unit]\nDescription=Rule-based Manager for Device Events and Files\nDefaultDependencies=no\nBefore=sysinit.target\n\n[Service]\nType=notify\nExecStart=/usr/lib/systemd/systemd-udevd\n' \
     > "$PD/usr/lib/systemd/system/systemd-udevd.service"
-# The settle unit, which copper-firstboot.service and copper-seatd.service both
-# order themselves after. Real noble ships it; without it those two After= lines
-# point at nothing.
+# Noble ships the settle unit; two Copper units order after it and would point at nothing without it.
+# copper-firstboot.service and copper-seatd.service both order after it.
 printf '[Unit]\nDescription=Wait for udev To Complete Device Initialization\nDefaultDependencies=no\nBefore=sysinit.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=udevadm settle\n' \
     > "$PD/usr/lib/systemd/system/systemd-udev-settle.service"
 printf '[Unit]\nDescription=Trigger udev uevent handling\nDefaultDependencies=no\nBefore=sysinit.target\n\n[Service]\nType=oneshot\nExecStart=/usr/lib/systemd/systemd-udev-trigger\n' \
     > "$PD/usr/lib/systemd/system/systemd-udev-trigger.service"
-# the real udev package ships udevadm at /usr/bin; the settle unit execs it by
-# bare name, so it has to be in the tree for the ExecStart to resolve
+# Settle execs udevadm by bare name, so it must be in the tree.
+# The real udev package puts udevadm at /usr/bin; the unit execs it by bare name.
 printf '#!/bin/sh\nexit 0\n' > "$PD/usr/bin/udevadm"; chmod 0755 "$PD/usr/bin/udevadm"
-# systemd's own ldconfig.service, exactly as the deb ships it: ExecStart=/sbin/
-# ldconfig -X. This image has no ldconfig, so the unit failed on the first boot
-# and showed up in `systemctl --failed`. build_systemd masks it now; the payload
-# carries the vendor unit so the mask has a real name to shadow and a sabotage
-# case can prove the assertion reads it back.
+# The vendor ldconfig unit fails here (no ldconfig); the payload gives the mask a real name to shadow and sabotage something to read back.
+# ExecStart=/sbin/ldconfig -X, exactly as the deb ships it.
+# The payload carries the vendor unit so the mask has a real name to shadow.
 printf '[Unit]\nDescription=Rebuild Dynamic Linker Cache\nConditionNeedsUpdate=/etc\n\n[Service]\nType=oneshot\nExecStart=/sbin/ldconfig -X\n' \
     > "$PD/usr/lib/systemd/system/ldconfig.service"
 DEBDIR="$TMP/debs"; mkdir -p "$DEBDIR"
@@ -306,13 +181,9 @@ tar -C "$PD" -cf "$DEBDIR/udev.deb" .
 tar -C "$PD" -cf "$DEBDIR/systemd-sysv.deb" .
 export COPPER_TEST_DEB_DIR="$DEBDIR"
 
-# Bring in the real helpers and the real function. eval of the extracted
-# definition is the point: this gate must fail when build_systemd changes, so
-# it runs the shipped code, not a paraphrase of it.
-#
-# It runs in a SEPARATE bash process, though, and that is not incidental -- see
-# the runner below. The extraction still happens here so the code under test is
-# literally this repo's build.sh.
+# Eval the repo's own functions so the gate fails when build_systemd changes; the separate bash process below is needed because errexit is captured where a function is defined.
+# The extraction happens here so the code under test is literally this repo's build.sh.
+# A fresh bash process below is needed because errexit is captured where a function is defined.
 extract() { sed -n "/^$1()/,/^}/p" "$BUILD"; }
 eval "$(extract init_flavour)"
 eval "$(extract power_links)"
@@ -324,34 +195,9 @@ eval "$(extract build_systemd)"
 PATH="$STUB:$PATH"
 export PATH
 
-# Run build_systemd the way build.sh runs it: `set -euo pipefail`.
-#
-# Three things here are load-bearing and each one was a false green first:
-#
-# 1. build_systemd reports a bad stage the way every stage in build.sh does --
-#    `exit 1`. That is correct in build.sh (it ends the script) and fatal in
-#    this gate (it would end THIS script before anything is printed, while the
-#    trap is about to delete the log holding the reason). So the call must not
-#    be able to end the gate.
-#
-# 2. `set -e` is how the real build behaves, and without it the gate calls a
-#    stage green that the real build cannot get through. The bare
-#    `install ... *.network` bug is exactly that: with no matching file install
-#    exits 1, and without errexit the next command succeeds and the stage
-#    "passes". That was a real false green in this gate, caught by sabotage.
-#
-# 3. The flags have to be set in the process that DEFINES the function, not in
-#    a subshell that calls it. `set -e` inside a subshell does not reach a
-#    function defined in the parent -- bash captures the errexit state where
-#    the function was defined -- so `( set -e; build_systemd )` runs the stage
-#    with errexit off, reproducing false green 2 while looking correct. The
-#    same trap applies to putting the call in an `if` condition, where bash
-#    suppresses errexit for the whole condition. A fresh bash process with the
-#    function defined inside it is the only form that is actually faithful.
-#
-# The runner is written to a file and its exit status read from that file's
-# child, so a crash (a syntax error in the extracted function) is a failure and
-# not a stale read.
+# Run under `set -euo pipefail` in a fresh bash that DEFINES the functions there: a subshell or an `if` condition suppresses errexit and passed the bare-*.network bug, while the stage's `exit 1` must not end this gate.
+# Write the runner to a file and read its status from a child, so a syntax error is a failure and not a stale read.
+# Section 2's false-green history is why all three details matter: stage exit, errexit, and where the function is defined.
 RUN="$TMP/run-stage.sh"
 {
     echo '#!/usr/bin/env bash'
@@ -375,9 +221,8 @@ if [ ! -s "$STAGE_RC" ]; then
 elif [ "$(cat "$STAGE_RC")" = 0 ]; then
     ok "build_systemd ran (under set -euo pipefail, as build.sh does)"
 else
-    # Show WHY. The status alone is useless here: the stage's own error text is
-    # in the log, and a gate that reports only "it failed" makes the next reader
-    # re-run it by hand.
+# Show the stage's log: the status alone makes the next reader re-run it by hand.
+# Otherwise a reader must re-run the stage by hand to learn anything.
     bad "build_systemd ran" "$(tr '\n' '|' < "$TMP/stage.log")"
 fi
 
@@ -394,20 +239,16 @@ eq_link() {   # eq_link <label> <path> <want>
 }
 
 eq_link "sbin/init -> /lib/systemd/systemd" "$TGT/sbin/init" /lib/systemd/systemd
-# reboot/poweroff/halt are the wrapper on the systemd tree, not systemctl. A
-# direct systemctl link blocks until the transaction finishes, and the
-# transaction stops the very unit the caller's shell belongs to: systemd
-# SIGTERMs the client, it cancels its own job, and the machine hands back a
-# half-stopped prompt. The wrapper runs `systemctl --no-block`.
+# Power commands link the wrapper, not systemctl: a direct link SIGTERMs its own client and leaves a half-stopped prompt.
+# A direct systemctl link blocks until the transaction finishes and stops the unit the caller's shell belongs to.
+# systemd SIGTERMs the client, the job cancels, and the machine hands back a half-stopped prompt.
 for cmd in reboot poweroff halt; do
     eq_link "sbin/$cmd -> the wrapper"     "$TGT/sbin/$cmd"     /sbin/shutdown
     eq_link "usr/sbin/$cmd -> the wrapper" "$TGT/usr/sbin/$cmd" /sbin/shutdown
 done
-# shutdown is Copper's wrapper on the systemd tree too. systemd-sysv's
-# compatibility `shutdown` waits a minute on a bare invocation -- the defect a
-# user reports as "sudo shutdown does not work" -- and the wrapper's eventual
-# /sbin/poweroff execs this same systemctl. So it must be the real file here,
-# not a link to systemctl.
+# shutdown is Copper's wrapper too: systemd-sysv's waits a minute on a bare call, so it must be a real file here, not a systemctl link.
+# systemd-sysv's shutdown waits a minute on a bare invocation -- the 'sudo shutdown does not work' report.
+# Its eventual /sbin/poweroff execs this same systemctl, so sbin/shutdown must be the real wrapper file.
 if [ -f "$TGT/sbin/shutdown" ] && [ ! -L "$TGT/sbin/shutdown" ]; then
     ok "sbin/shutdown is the Copper wrapper (a real file)"
 else
@@ -417,28 +258,13 @@ fi
 eq_link "usr/sbin/shutdown -> the wrapper" \
         "$TGT/usr/sbin/shutdown" /sbin/shutdown
 
-# agetty: getty@.service and serial-getty@.service exec /sbin/agetty, and
-# Copper's /sbin is a real directory, not a merge of /usr/sbin. Debian ships
-# the binary at usr/sbin, so the stage must link the name the units use or
-# every getty restarts forever (the blank-VT report).
+# /sbin is a real directory here, so the units' /sbin/agetty name needs a link to usr/sbin or every getty restarts forever (the blank-VT report).
+# getty@.service and serial-getty@.service exec /sbin/agetty, and Copper's /sbin is a real directory.
 eq_link "sbin/agetty -> the tree's agetty" "$TGT/sbin/agetty" /usr/sbin/agetty
 
 # ---- 3a. power_links asks the tree which init it carries ---------------------
-# This is the bug CI shipped and every gate here missed. The `iso` chain re-runs
-# the desktop stages over the tree -- build_rootfs clobbers /etc/group, and the
-# _seatd group is part of what those stages' skip guards ask about, so they
-# re-run -- and each of them calls power_links. A power_links that always wrote
-# busybox quietly undid the systemd flavour's links on the way to the disc, and
-# the systemd ISO failed its own read-back gate:
-#
-#     iso: the ISO boots systemd but its power commands are wrong:
-#          sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
-#
-# The gate runs the systemd stage over a mocked tree, so it never sees the
-# desktop stages re-run -- and a gate that cannot see the path cannot guard it.
-# But the function that was wrong is power_links, and it can be exercised
-# directly against a tree of each flavour: the question it has to answer is
-# "which init does this tree carry", and both answers are checked here.
+# Desktop stages re-run over the tree and each calls power_links; one that always wrote busybox undid the systemd links on the way to the disc (CI's read-back failure).
+# Exercise the function directly against both flavours: the question is which init the tree carries, and both answers are checked here.
 ptree() {   # ptree <dir> <what sbin/init points at>
     rm -rf "$1"; mkdir -p "$1/sbin" "$1/usr/sbin"
     ln -sf "$2" "$1/sbin/init"
@@ -461,9 +287,8 @@ eq_link "power_links on a systemd tree: usr/sbin/shutdown -> the wrapper" \
         "$PS/usr/sbin/shutdown" /sbin/shutdown
 PB="$TMP/power-busybox"; ptree "$PB" /usr/bin/copper-init
 power_links "$PB"
-# The unified image boots either init, so the links cannot be flavour-specific:
-# every power name is the wrapper on a busybox tree too, and the wrapper picks
-# the busybox applet at runtime.
+# One image boots either init, so both flavours get the same wrapper links and it picks the applet at runtime.
+# The wrapper picks the busybox applet at runtime, so the links cannot be flavour-specific.
 for cmd in reboot poweroff halt; do
     eq_link "power_links on a busybox tree: sbin/$cmd -> the wrapper" \
             "$PB/sbin/$cmd" /sbin/shutdown
@@ -480,15 +305,8 @@ eq_link "power_links on a busybox tree: usr/sbin/shutdown -> the wrapper" \
         "$PB/usr/sbin/shutdown" /sbin/shutdown
 
 # ---- 3b. PID 1 resolves at the path /sbin/init names -----------------------
-# The stage's own gate is `[ -x $TGT/lib/systemd/systemd ]`, and this is the
-# check that would have gone red on the runner's second run. Copper's tree is
-# not merged-usr, so a noble deb's usr/lib/systemd/systemd has to be reachable
-# at /lib/systemd/systemd by the time the kernel execs it -- and usr/bin/systemd,
-# which the deb ships as a symlink `../lib/systemd/systemd`, has to resolve too.
-# A fixture that put PID 1 at payload/lib/systemd/systemd hid both. These read
-# the tree, not the fixture: assert /lib/systemd/systemd exists as a regular
-# executable file THROUGH whatever /lib/systemd is, and that the deb's own
-# usr/bin/systemd link lands on it.
+# Noble ships PID 1 under usr/lib; assert /lib/systemd/systemd resolves through the bridge and the deb's usr/bin/systemd link lands on it.
+# The stage's own gate is `[ -x $TGT/lib/systemd/systemd ]`; these read the tree, not the fixture.
 if [ -x "$TGT/lib/systemd/systemd" ] && [ -f "$TGT/lib/systemd/systemd" ]; then
     ok "lib/systemd/systemd resolves to a real executable (PID 1 is reachable)"
 else
@@ -503,11 +321,9 @@ else
         "usr/bin/systemd -> $(readlink -f "$TGT/usr/bin/systemd" 2>/dev/null)"
 fi
 
-# The fixture deliberately starts with a REAL empty lib/systemd directory (see
-# the mkdir in the mock rootfs above). After the stage it must be a symlink to
-# usr/lib/systemd: the bridge has to normalise a squatter, not skip past it. The
-# executable check above would also catch a skip, but this names the mechanism,
-# so a regression points at the guard rather than at the packages.
+# The fixture starts with a real lib/systemd; it must end a symlink, so a skipped guard is named rather than a generic package failure.
+# The mkdir in the mock rootfs leaves that squatter in place deliberately.
+# The executable check above would also catch a skip, but this names the mechanism.
 if [ -L "$TGT/lib/systemd" ] && [ "$(readlink "$TGT/lib/systemd")" = ../usr/lib/systemd ]; then
     ok "lib/systemd squatter normalised to a symlink at usr/lib/systemd"
 else
@@ -541,10 +357,9 @@ do
     fi
 done
 
-# The splash needs an owner under systemd: the daemon runs during sysinit (so
-# the first status line can't scroll the splash away), and the quit hand-back
-# runs before the console actually draws for real. Both wired, and the ordering
-# between them and the console units has to be the hand-off direction.
+# The splash needs an owner at sysinit and a quit ordered before wizard/console, so the hand-off direction is checked too.
+# The daemon runs during sysinit so the first status line cannot scroll the splash away.
+# Both units are wired, and the ordering to the console is the hand-off direction.
 if [ -L "$TGT/etc/systemd/system/sysinit.target.wants/copper-plymouth.service" ]; then
     ok "wired sysinit.target.wants/copper-plymouth.service (splash starts at sysinit)"
 else
@@ -570,10 +385,9 @@ else
         "$(grep Before "$TGT/etc/systemd/system/copper-plymouth-quit.service" 2>&1 | tr '\n' '|')"
 fi
 
-# Show and quit are helpers now, not bare plymouth calls. The quit helper is
-# what makes the splash play all 150 frames instead of quitting on the first
-# network beat, and the show helper is what leaves it the clock to wait
-# against. Both exec'd at the exact path the units name, and both installed.
+# Helpers make the splash play all frames and leave the clock to wait; assert both are installed at the exact paths the units name.
+# The quit helper makes the splash play all 150 frames instead of stopping on the first network beat.
+# The show helper leaves the clock it can wait against; both are exec'd where the units name them.
 for h in copper-splash-show copper-splash-quit; do
     if [ -x "$TGT/usr/bin/$h" ]; then
         ok "splash helper installed executable at /usr/bin/$h"
@@ -605,8 +419,8 @@ else
         "$(grep Condition "$TGT/etc/systemd/system/copper-plymouth.service" 2>&1 | tr '\n' '|')"
 fi
 
-# The units must be present as real files at mode 644 -- a unit installed 0777
-# is one systemd reads with a warning, and the source tree is 777 on Windows.
+# Units must be 0644: the source tree is 777 on Windows and systemd warns on world-writable units.
+# A 0777 unit is one systemd reads with a warning.
 for u in copper.target copper-tty-clear.service copper-firstboot.service \
          copper-console.service copper-seatd.service copper-network.service \
          copper-zram.service copper-plymouth.service copper-plymouth-quit.service \
@@ -628,11 +442,8 @@ else
 fi
 
 # ---- the seat: the binary and the group -----------------------------------
-# Both were wrong on the first real boot. The unit named /usr/bin/seatd while
-# noble installs /usr/sbin/seatd, so its ExecStart resolved to nothing; and the
-# _seatd group was gone because a later build_rootfs overwrote /etc/group and
-# the stage that appends the group skipped. These assert the two things the
-# boot needed, in the tree the stage produced.
+# First boot found the unit naming /usr/bin/seatd (noble installs /usr/sbin) and the _seatd group clobbered by build_rootfs.
+# These assert the two things the boot needed, in the tree the stage produced.
 if [ -x "$TGT/usr/bin/seatd" ] || [ -x "$TGT/usr/sbin/seatd" ]; then
     ok "a seatd binary is present where copper-seatd.service searches"
 else
@@ -644,9 +455,8 @@ if grep -q '^_seatd:' "$TGT/etc/group"; then
 else
     bad "/etc/group carries the _seatd group" "$(cat "$TGT/etc/group" 2>&1 | tr '\n' '|')"
 fi
-# The unit must actually search both directories, the way copper-init.c does --
-# a unit that hard-codes one is the bug this is guarding against, and reading
-# the installed unit is the only way to see it.
+# The installed unit must search both paths like copper-init.c; a hard-coded path is the bug this guards.
+# Reading the installed unit is the only way to see it.
 if grep -q '/usr/bin/seatd' "$TGT/etc/systemd/system/copper-seatd.service" \
    && grep -q '/usr/sbin/seatd' "$TGT/etc/systemd/system/copper-seatd.service"; then
     ok "copper-seatd.service searches both /usr/bin and /usr/sbin"
@@ -656,14 +466,8 @@ else
 fi
 
 # ---- the display follows the VMware window --------------------------------
-# vmwgfx on its own keeps whatever mode the firmware picked; open-vm-tools'
-# resolutionKMS plugin is what programs the connector again when the host
-# window is maximised. That is the difference between a sharp desktop and a
-# smaller framebuffer stretched over the screen. Two halves have to be in the
-# image: the daemon, and a tools.conf that enables the plugin, because upstream
-# leaves it off when it finds no Xorg vmware driver and this image has none.
-# A host that carries no open-vm-tools builds an image without the daemon; that
-# is allowed, and saying so is better than a silent skip.
+# resolutionKMS, not vmwgfx alone, refits the display to the host window; upstream disables it without Xorg, so tools.conf must enable it. A host without open-vm-tools is reported, not silently skipped.
+# A host that carries no open-vm-tools builds an image without the daemon; saying so beats a silent skip.
 if [ -x "$TGT/usr/bin/vmtoolsd" ] || [ -x "$TGT/usr/sbin/vmtoolsd" ]; then
     ok "vmtoolsd is present where copper-vmtools.service searches"
     if grep -qE '^[[:space:]]*enable[[:space:]]*=[[:space:]]*true' \
@@ -678,9 +482,8 @@ else
 fi
 
 # ---- ldconfig is masked ----------------------------------------------------
-# The image has no ldconfig and no /etc/ld.so.cache; systemd's shipped unit
-# fails every boot. It is masked (/dev/null), and that is asserted because a
-# mask that silently failed to install is exactly the failure being fixed.
+# No ldconfig/ld.so.cache here, so the vendor unit fails every boot; assert the mask installed.
+# A mask that silently failed to install is exactly the failure being fixed.
 if [ "$(readlink "$TGT/etc/systemd/system/ldconfig.service" 2>/dev/null)" = /dev/null ]; then
     ok "ldconfig.service is masked (the image has no ldconfig)"
 else
@@ -689,11 +492,8 @@ else
 fi
 
 # ---- the console clear -----------------------------------------------------
-# The first thing a user sees after the kernel text is this unit's erase, and
-# the whole value is the ORDER: clear before the units that print, or the status
-# lines land on top of the kernel's scrollback and the boot reads as two screens.
-# So both halves are asserted -- the helper is exec'd where the unit names it,
-# and the ordering names the two things that paint on tty1.
+# Clear must run before anything that paints tty1 or status lines land on kernel scrollback; read the installed helper and its ordering.
+# Both halves are asserted: the helper path and the ordering naming the two things that paint tty1.
 if [ -x "$TGT/usr/bin/copper-tty-clear" ]; then
     ok "console-clear helper installed executable at /usr/bin/copper-tty-clear"
 else
@@ -707,8 +507,8 @@ else
     bad "copper-tty-clear.service execs the helper" \
         "$(grep ExecStart "$TGT/etc/systemd/system/copper-tty-clear.service" 2>&1 | tr '\n' '|')"
 fi
-# Before= must name at least the wizard: it is the thing that draws the form, and
-# a clear that runs after it would erase the form a user is filling in.
+# Before= must name the wizard: a clear after it erases the form a user is filling in.
+# Before= must name at least the wizard, the thing that draws the form.
 if grep -qE '^Before=.*copper-firstboot\.service' \
         "$TGT/etc/systemd/system/copper-tty-clear.service"; then
     ok "copper-tty-clear.service is ordered before the wizard"
@@ -716,22 +516,17 @@ else
     bad "copper-tty-clear.service is ordered before the wizard" \
         "$(grep Before "$TGT/etc/systemd/system/copper-tty-clear.service" 2>&1 | tr '\n' '|')"
 fi
-# And it must NOT be ordered after the target it is also ordered before.
-# `After=sysinit.target` together with `Before=systemd-udevd.service` is an
-# ordering cycle, because systemd's own udevd unit is ordered before
-# sysinit.target -- and a cycle on sysinit.target fails the boot's initial
-# transaction outright. This line is worth having on its own: the transaction
-# check above needs systemd-analyze, and a host without it skips the parse
-# checks entirely (the dev box is Windows). This one reads the installed unit
-# and needs nothing.
+# After=sysinit.target with Before=systemd-udevd.service is a cycle on sysinit.target that fails the initial transaction; this text-only check covers hosts without systemd-analyze.
+# systemd's udevd unit is ordered before sysinit.target, so the loop closes and the initial transaction fails outright.
+# The transaction check needs systemd-analyze, which a Windows dev box lacks; this one reads the installed unit and needs nothing.
 if grep -qE '^After=sysinit\.target' "$TGT/etc/systemd/system/copper-tty-clear.service"; then
     bad "copper-tty-clear.service is not ordered after sysinit.target" \
         "After=sysinit.target with Before=systemd-udevd.service is a cycle on sysinit.target"
 else
     ok "copper-tty-clear.service is not ordered after sysinit.target (no cycle)"
 fi
-# And the script must actually emit the erase, not merely exist: read the
-# sequence out of the installed file so a helper gutted to `exit 0` goes red.
+# Read the installed helper so a copy gutted to `exit 0` goes red.
+# The sequence is read out of the installed file, so a helper gutted to exit 0 goes red.
 if grep -q '033\[r' "$TGT/usr/bin/copper-tty-clear" \
    && grep -q '033\[2J' "$TGT/usr/bin/copper-tty-clear" \
    && grep -q '/dev/tty1' "$TGT/usr/bin/copper-tty-clear"; then
@@ -742,22 +537,8 @@ else
 fi
 
 # ---- the console owns tty1 -------------------------------------------------
-# Two Copper units claim /dev/tty1: the wizard and the console. systemd's own
-# getty@tty1.service claims it too -- the real noble getty@.service sets
-# TTYPath=/dev/%I -- and nothing orders it against the Copper units, so
-# without a conflict getty starts alongside them and draws a login banner
-# over the wizard's form.
-#
-# Measured, not assumed: with Conflicts= and no ordering between the two
-# units, systemd drops the conflicting unit's start job outright, so the
-# banner is never printed at all. Without the conflict, both start and both
-# write to the tty. (That was checked against a live systemd, with a stand-in
-# victim unit, precisely because the other answer -- "getty starts and is
-# stopped afterwards" -- is the one people believe and the one that is wrong.)
-#
-# The console unit had the conflict and the wizard unit did not, and the
-# wizard runs FIRST (Before=copper-console.service), so the console's own
-# conflict never covered the window the wizard is on screen.
+# Wizard, console and getty@tty1 all claim the same tty; without Conflicts= getty draws over them. Both Copper units need it: measured with live systemd, dropping the job is not the same as stopping it after, and the wizard runs first.
+# Without the conflict getty starts alongside them and draws a login banner over the wizard's form.
 for u in copper-firstboot.service copper-console.service; do
     if grep -qE '^Conflicts=.*getty@tty1\.service' \
             "$TGT/etc/systemd/system/$u"; then
@@ -769,17 +550,8 @@ for u in copper-firstboot.service copper-console.service; do
 done
 
 # ---- the DHCP interface is discovered, not assumed -------------------------
-# The unit used to name eth0 literally. eth0 is a NAME, not a fact: it holds
-# only while eth0 is the first NIC the kernel enumerates. A box with no wired
-# NIC has no eth0, udhcpc exits non-zero on the missing device, and with no
-# Restart= that is the end of it -- the machine boots with no network and an
-# unexplained [FAILED] on the tty the wizard is drawing on.
-#
-# The busybox image never had that problem, because copper-init asks sysfs
-# which interface is real (first_nonloop_iface: ARPHRD_ETHER, skipping the
-# tunnel interfaces some built-in drivers invent). The systemd flavour has to
-# ask the same question, and the
-# helper that asks it has to be in the tree and be the thing the unit execs.
+# eth0 is a name, not a fact: no wired NIC means udhcpc exits and, without Restart=, no network. copper-init asks sysfs via first_nonloop_iface; the unit must exec the discovery helper.
+# The busybox image never had this: copper-init asks sysfs with first_nonloop_iface, skipping tunnels.
 if [ -x "$TGT/usr/bin/copper-dhcp" ]; then
     ok "dhcp helper installed executable at /usr/bin/copper-dhcp"
 else
@@ -793,8 +565,8 @@ else
     bad "copper-network.service execs the discovery helper" \
         "$(grep ExecStart "$TGT/etc/systemd/system/copper-network.service" 2>&1 | tr '\n' '|')"
 fi
-# And the unit must not name an interface itself. A literal interface in the
-# ExecStart is the bug, wherever it sits.
+# A literal -i in ExecStart is the bug, wherever it sits.
+# A literal interface in ExecStart is the bug wherever it sits.
 if grep -qE '^ExecStart=.*[[:space:]]-i[[:space:]]' \
         "$TGT/etc/systemd/system/copper-network.service"; then
     bad "copper-network.service does not name an interface itself" \
@@ -802,11 +574,9 @@ if grep -qE '^ExecStart=.*[[:space:]]-i[[:space:]]' \
 else
     ok "copper-network.service does not name an interface itself"
 fi
-# The helper has to actually ask sysfs: a helper that names eth0 inside itself
-# has moved the bug rather than fixed it. ARPHRD_ETHER is the point -- that is
-# what copper-init's first_nonloop_iface() asks for, and a helper that looked
-# for some other type would find nothing. The image is wired-only, so a radio
-# type here would only hand DHCP an interface with no supplicant behind it.
+# The helper itself must ask sysfs for ARPHRD_ETHER like first_nonloop_iface; the image is wired-only.
+# A helper that names eth0 inside itself has moved the bug rather than fixed it.
+# ARPHRD_ETHER is the point; a radio type would hand DHCP an interface with no supplicant.
 if grep -q 'iface_type()' "$TGT/usr/bin/copper-dhcp" \
    && grep -q 'ether_type=1' "$TGT/usr/bin/copper-dhcp" \
    && ! grep -q 'radiotap' "$TGT/usr/bin/copper-dhcp"; then
@@ -815,18 +585,16 @@ else
     bad "the dhcp helper discovers the interface from sysfs" \
         "$(grep -E 'iface_type|ether_type|radiotap' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
 fi
-# ... and never asks for a /dev node. Network interfaces are not devices;
-# devtmpfs never creates /dev/eth0, so the old `[ -e /dev/$ifname ]` gate was
-# always false and silently skipped DHCP on every systemd boot.
+# Interfaces are not /dev nodes; the old gate was always false and silently skipped DHCP.
+# devtmpfs never creates /dev/eth0, so the old `[ -e /dev/$ifname ]` gate was always false.
 if grep -q -- '-e "/dev/\$ifname"' "$TGT/usr/bin/copper-dhcp"; then
     bad "the dhcp helper does not gate on a /dev node" \
         "$(grep '/dev/\$ifname' "$TGT/usr/bin/copper-dhcp" 2>&1 | tr '\n' '|')"
 else
     ok "the dhcp helper does not gate on a /dev node"
 fi
-# ... and runs udhcpc in the foreground. With -b the parent exits after the
-# lease and systemd's control-group kills the daemonised child that was meant
-# to keep renewing it.
+# -b lets the parent exit and cgroup cleanup kill the renewing child.
+# With -b the parent exits after the lease and systemd's cgroup kills the daemonised child meant to renew it.
 if grep -A2 '^exec /sbin/udhcpc' "$TGT/usr/bin/copper-dhcp" | grep -q -- ' -f '; then
     ok "the dhcp helper keeps udhcpc in the foreground (-f)"
 else
@@ -856,10 +624,8 @@ else
 fi
 
 # ---- the shutdown is bounded (the ~10 minute `sudo reboot`) ----------------
-# systemd-shutdown's swapoff_all() has no timeout: it reads /proc/swaps and
-# calls swapoff(2) on everything it finds, once the unit phase is over. So the
-# swap has to be gone BEFORE that, in copper-zram.service's own ExecStop where
-# TimeoutStopSec is a real bound.
+# systemd-shutdown's swapoff_all() has no timeout, so zram must be gone in the unit's bounded ExecStop before it runs.
+# swapoff_all() reads /proc/swaps after the unit phase, so the swap must be gone before that in a bounded ExecStop.
 if [ -x "$TGT/usr/bin/copper-zram-stop" ]; then
     ok "zram stop helper installed executable at /usr/bin/copper-zram-stop"
 else
@@ -885,9 +651,9 @@ else
     bad "copper-zram.service drains swap in its own stop job" \
         "$(grep ExecStop "$TGT/etc/systemd/system/copper-zram.service" 2>&1 | tr '\n' '|')"
 fi
-# DefaultDependencies=no also means OUT of shutdown.target's implicit edges:
-# without the explicit pair these units have no stop job at all, and the
-# helper above is never reached.
+# DefaultDependencies=no removes shutdown.target's implicit edges; the explicit pair is what gives these units a stop job.
+# Without the explicit Conflicts= and Before= pair these units have no stop job at all.
+# The helper above is then never reached.
 for u in copper-zram.service copper-plymouth.service; do
     if grep -qx 'Conflicts=shutdown.target' "$TGT/etc/systemd/system/$u" \
        && grep -qx 'Before=shutdown.target' "$TGT/etc/systemd/system/$u"; then
@@ -912,8 +678,8 @@ else
     bad "the system.conf.d drop-in is mode 644" \
         "$(ls -l "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" 2>&1)"
 fi
-# The desktop lives in the console unit's cgroup, so the per-unit bound is
-# what stops a wedged compositor from holding shutdown.target.
+# The console cgroup's own bound stops a wedged compositor from holding shutdown.target.
+# The desktop lives in the console unit's cgroup, so a per-unit bound is what releases shutdown.target.
 if grep -qx 'KillMode=mixed' "$TGT/etc/systemd/system/copper-console.service" \
    && grep -qx 'TimeoutStopSec=5s' "$TGT/etc/systemd/system/copper-console.service"; then
     ok "copper-console.service stops its cgroup in 5 s"
@@ -931,11 +697,8 @@ else
 fi
 
 # ---- no Documentation= the image cannot open --------------------------------
-# The image ships no man and no man pages: the gui closure pulls in no man-db
-# and nothing else installs one. So a Documentation=man:... points at a page
-# nothing on this machine can open -- the same dead reference the migration
-# document removed when it dropped the Documentation=file: lines, and
-# systemd-analyze says so out loud on every build.
+# No man pages ship, so Documentation=man:... is a dead reference systemd-analyze reports on every build.
+# The migration document already dropped the Documentation=file: lines for the same reason.
 if grep -qE '^Documentation=' "$TGT/etc/systemd/system/copper-"*.service 2>/dev/null; then
     bad "the Copper units carry no Documentation= the image cannot open" \
         "$(grep -H '^Documentation=' "$TGT/etc/systemd/system/copper-"*.service 2>&1 | tr '\n' '|')"
@@ -943,9 +706,8 @@ else
     ok "the Copper units carry no Documentation= the image cannot open"
 fi
 
-# The build-time verifier must not be left in the image. It is copied into the
-# tree to be run chrooted and removed again; a leftover is the build host's
-# libc riding into the ISO.
+# The chrooted verifier is copied in and removed; a leftover carries the build host's libc into the ISO.
+# It is copied into the tree to be run chrooted, then removed again.
 if [ -e "$TGT/usr/bin/systemd-analyze" ]; then
     bad "build-time systemd-analyze not left in the tree" "it is still there"
 else
@@ -953,10 +715,8 @@ else
 fi
 
 # ----------------------------------------------------------- 4. the C half --
-# --console is the migration's entry point into copper-init. If it stopped
-# being recognised, copper-console.service would start PID-1 copper-init under
-# systemd: it would install the power handlers, mount, and try to start a
-# second seatd and dhcp client.
+# --console is the entry point: if unrecognised, copper-console.service starts PID-1 copper-init under systemd, which mounts and starts a second seatd/DHCP.
+# It would install power handlers, mount, and try to start a second seatd and dhcp client.
 if grep -q -- '"--console"' "$ROOT/src-init/copper-init.c"; then
     ok "copper-init recognises --console"
 else
@@ -969,14 +729,8 @@ else
 fi
 
 # ------------------------------------------- 5. the swap is VISIBLE to CI --
-# The CI workflow builds the default ISO first, then runs this stage, then
-# rebuilds the ISO as the systemd flavour. That last rebuild is guarded by
-# build_iso's stamp, which hashes the staged tree with tree_hash(). If
-# tree_hash could not see the swap the rebuild would be SKIPPED and CI would
-# upload the busybox ISO as "copper-iso-systemd" -- a green run advertising a
-# migration that never happened. The swap is symlinks, and the original
-# tree_hash hashed only `find -type f`, so it could not see them: this check
-# exists because that was a real hole, not a hypothetical one.
+# CI rebuilds the systemd ISO behind tree_hash's stamp; a hash blind to symlinks skipped it and uploaded the busybox ISO as "copper-iso-systemd".
+# The original tree_hash hashed only `find -type f`, so symlinks were invisible and the rebuild skipped -- a real hole.
 eval "$(extract tree_hash)"
 thT=$(mktemp -d "$TMP/th.XXXXXX")
 mkdir -p "$thT/sbin"
@@ -992,17 +746,8 @@ else
 fi
 
 # ------------------------------------- 6. the stage's dispatch line is right --
-# CI runs `bash iso/build.sh systemd` as its own invocation. build_copper needs
-# the toolchain build_musl exports ($CC/$CFLAGS), and section 2 cannot see that,
-# because it calls build_systemd alone against an already-populated tree. So the
-# dependency is checked where it actually lives: the dispatch case in build.sh.
-#
-# This is the check that would have caught the real failure this gate missed.
-# On the CI runner the systemd step died at `line 638: CC: unbound variable`
-# after "==> copper built-ins", because `systemd)` did not list build_musl and
-# the runner has no CC of its own. Every other compiling stage lists it; the
-# diff that added `systemd)` left it out. Reading the case arm here means the
-# gate fails on the same line CI fails on, without a runner.
+# Check the dispatch arm, not just build_systemd: section 2 calls it alone and cannot see build_copper's $CC need. CI's `systemd)` arm omitted build_musl and died on an unbound CC.
+# CI failed at 'line 638: CC: unbound variable' because the systemd arm omitted build_musl while every other compiling stage lists it.
 line=$(grep -E '^[[:space:]]*systemd\)' "$BUILD" || true)
 if [ -z "$line" ]; then
     bad "systemd stage is dispatched in build.sh" "no 'systemd)' case arm found"
@@ -1033,19 +778,8 @@ else
 fi
 
 # --------------------------- 7. the stage's verify filter is version-stable --
-# This is the second CI failure, and the one the gate's own green run missed:
-# build_systemd's chrooted `systemd-analyze verify` kept any line naming the
-# unit and dropped a DENY-list of known noise. That list was tuned on the dev
-# box's systemd 261 and does not match 255's wording, so on the CI
-# runner a host-artifact line survived and the STAGE exited 1 -- "build_systemd
-# ran" went red in the gate while `bash tests/systemd-gate.sh` was green here.
-#
-# Section 2 cannot catch it (it calls build_systemd, which only fails on 255),
-# so the filter's CONTRACT is tested directly instead: run the stage's own
-# filter expression over synthetic verify output and assert it accepts the two
-# wordings of a real misplaced key and rejects the host-noise shapes. Version
-# strings are inputs here, so this passes on whatever systemd the dev box has
-# and fails the moment the filter goes back to a version-specific deny-list.
+# A DENY-list tuned on systemd 261 kept host noise on 255 and failed the stage on CI while this gate was green; section 2 cannot see it. Test the filter's contract against both wordings as synthetic input.
+# Section 2 cannot catch it: it runs build_systemd, which only fails on 255, while the gate here stays green.
 vfilter() {   # vfilter <unit> <line...> -> prints lines that would fail the unit
     ul=$1; shift
     printf '%s\n' "$@" \
@@ -1053,11 +787,9 @@ vfilter() {   # vfilter <unit> <line...> -> prints lines that would fail the uni
       | grep -F "$ul" || true
 }
 
-# The expression above must BE the stage's expression, not a copy of it that
-# can drift. build_systemd's chrooted verify builds `left` with this exact
-# regex; if someone weakens it back to a deny-list, the behavioural checks
-# below would keep passing while the stage went red on CI again -- the original
-# bug, one layer up. So assert the stage still carries the allow-list.
+# Assert the stage still uses this allow-list, or the behavioural checks pass while CI goes red again.
+# build_systemd's chrooted verify builds `left` with this exact regex.
+# If it is weakened back to a deny-list, the behavioural checks keep passing while the stage goes red on CI again.
 VF_RE='Unknown \(key\|lvalue\|section\)\|Failed to parse\|Empty \(ExecStart\|section\)\|not a valid'
 if grep -q "grep -E \"$VF_RE\"" "$BUILD"; then
     ok "the stage's verify filter is the allow-list this gate tests"
@@ -1067,16 +799,8 @@ else
 fi
 
 # ---- the stage stamps on the helpers it installs ---------------------------
-# The stage skips itself when its inputs still hash the same. The scripts
-# in iso/systemd/ are inputs in exactly that sense -- a unit execs each of
-# them -- and they were not in the list. So editing a helper did not
-# invalidate the stamp: the stage said "already staged, skipping" and the ISO
-# shipped the PREVIOUS helper. A stale artifact with a green light, which is
-# the entire failure mode the stamp exists to prevent.
-#
-# Read the input list out of the source rather than guessing at it: the block
-# is read from the file, so a helper dropped from the list is a change in the
-# thing under test, not in a copy of it.
+# Helpers in iso/systemd/ are stamp inputs; omitting one let an edit ship the PREVIOUS helper with a green light. Read the list from source, not a copy.
+# Reading the input list from source means a dropped helper is a change in the thing under test, not in a copy.
 sdin_block() { sed -n '/^  local sdin=/,/^  done$/p' "$BUILD"; }
 SB=$(sdin_block)
 for h in copper-tty-clear copper-dhcp copper-zram copper-zram-stop \
@@ -1091,16 +815,8 @@ for h in copper-tty-clear copper-dhcp copper-zram copper-zram-stop \
 done
 
 # ---- the stage asserts the commands the units name are in the tree ---------
-# A unit with an ExecStart that does not exist is the seatd failure all over
-# again, one unit over, and it is silent: the unit simply never starts. The
-# stage asserts copper-init, the seatd binary and the clear helper; these are
-# the rest of what the units name.
-#
-# Read the loop out of the source rather than grepping the file for the
-# names: the names also appear in the comment above the loop, so a grep for
-# them would pass on a stage that had stopped asserting one of them. And read
-# it out of build_systemd, because build.sh has other `for cmd in` loops (the
-# power commands) that have nothing to do with this assertion.
+# A unit naming a missing ExecStart fails silently. Read build_systemd's own `for cmd in` loop (other loops exist) rather than grepping names that also appear in comments.
+# The names also appear in comments, so grepping the file would pass on a stage that had stopped asserting one.
 STAGE_EXEC_LOOPS=$(extract build_systemd | grep -oE 'for cmd in [^;]+;')
 for c in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/bin/copper-zram usr/bin/copper-zram-stop; do
     if printf '%s\n' "$STAGE_EXEC_LOOPS" | grep -qF "$c"; then
@@ -1118,12 +834,8 @@ else
 fi
 
 # ---- and inside the chroot, a missing command is a defect ------------------
-# The allow-list filter above is shared with the host-side parse check, where
-# "Command X is not executable" really is noise: the build host has none of
-# Copper's binaries, so every Copper unit would "fail" there. Inside the
-# chroot the tree IS the machine, so the same shape means the image is
-# missing a binary a unit names -- and that unit can never start. The stage
-# needs its own rule for that, or a missing ExecStart target ships.
+# In the chroot the tree IS the machine: "not executable" means a missing image binary, not host noise.
+# The build host has none of Copper's binaries, so host-side 'not executable' is noise; the chroot needs its own rule.
 if grep -qF 'notexec="is not executable"' "$BUILD"; then
     ok "the stage fails on a command the image does not have"
 else
@@ -1132,26 +844,16 @@ else
 fi
 
 # ---- and the stage checks for an ORDERING CYCLE, in one transaction -------
-#
-# The allow-list above is about a unit's own text: a key in the wrong section,
-# a parse error, an empty ExecStart. A cycle is about the RELATIONSHIP between
-# units, and it can only be seen when they are verified TOGETHER -- verified one
-# at a time, every unit in the loop is perfect on its own. That is exactly how
-# copper-tty-clear.service shipped ordered into a cycle on sysinit.target, and
-# the stage had no check that could see it.
-#
-# The stage's copy of the pattern is asserted to be the gate's, for the same
-# reason VF_RE is: three places answer this question (the gate's transaction
-# check, the gate's test of the stage's check, and the stage itself), and
-# three copies of an answer drift.
+# Cycles need the whole transaction verified at once; one-unit-at-a-time verification hid the sysinit.target cycle. Keep this pattern identical to the gate's and the stage's.
+# copper-tty-clear.service shipped in a cycle on sysinit.target because the stage had no check that could see it.
 if grep -qF "grep -qiE '$CYC_RE'" "$BUILD"; then
     ok "the stage checks the units for an ordering cycle, in one transaction"
 else
     bad "the stage checks the units for an ordering cycle, in one transaction" \
         "build_systemd has no ordering-cycle check; a cycle on sysinit.target would ship"
 fi
-# And the stage must give systemd-analyze more than one unit at a time,
-# because that is the only way a cycle exists to be found.
+# One verify call over all units is the only way a cycle is visible.
+# verify $vlist is the only form that puts the whole unit set in one transaction.
 if grep -qF 'verify $vlist' "$BUILD"; then
     ok "the stage verifies the units as one transaction (cycles are only visible there)"
 else
@@ -1190,10 +892,9 @@ check_v "ignores 'Command ... is not executable' (host)" no "$ncmd"
 check_v "ignores a dependency the host lacks"          no  "$ndep"
 check_v "ignores noise about another unit"             no  "$nmiss"
 
-# The cycle filter is a SEPARATE filter, and it is not scoped to a unit name.
-# A cycle is a property of the whole transaction, and systemd decides which
-# job it drops when it breaks one -- so the message can name any unit in the
-# loop, and a filter that looked for one unit's name would miss it.
+# Cycle messages are not unit-scoped: systemd may name any unit in the loop.
+# A cycle is a property of the whole transaction, and systemd decides which job it drops when it breaks one.
+# A filter scoped to one unit's name would miss the message.
 cycf() { printf '%s\n' "$@" | grep -iE "$CYC_RE" || true; }
 
 # The three wordings systemd has used, all of which must be caught.
@@ -1222,20 +923,8 @@ check_c "ignores 'Command ... is not executable'" no  "$ncmd"
 check_c "ignores 'not found'"                     no  "$nmiss"
 
 # ---------------- 8. the desktop stages' skip guards still ask about seatd --
-# build_gui and build_niri decide whether a CACHED tree can be skipped. A
-# guard that asks only about the desktop stack skips a tree that has LOST
-# seatd -- or the _seatd group build_gui appends and build_rootfs' second
-# pass clobbers -- and the tree that ships points copper-seatd.service at a
-# binary that is not there. That is not hypothetical: the first boot found
-# exactly that (bug 47 -- the unit named /usr/bin/seatd, and noble installs
-# /usr/sbin/seatd), and the reason it shipped is that the guard had stopped
-# asking.
-#
-# This gate runs the systemd stage over a mocked tree; it does not run
-# build_gui or build_niri, so there is no runtime path here to exercise. What
-# can be checked -- and what is checked -- is the shipped condition itself,
-# read out of build.sh rather than paraphrased. The window is the two lines
-# before the skip call: that is where the guards' own conditions live.
+# Skip guards that stop asking about seatd / _seatd ship a tree whose unit points at a missing binary (bug 47). This gate only reads the shipped conditions from build.sh.
+# The window is the two lines before the skip call, where the guards' own conditions live.
 if extract build_niri | grep -B2 'stamped_skip "\$WORK/niri.stamp"' \
      | grep -q 'name seatd -type f'; then
     ok "build_niri's skip guard still checks for seatd"

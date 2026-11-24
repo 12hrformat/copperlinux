@@ -1,71 +1,28 @@
 #!/bin/sh
 # starthyprland -- start the Hyprland session on the tty.
-# 
-# The compositor, its session tools and the config tree are an ingot payload:
-# `sudo ingot install hyprland` puts them all in place. Nothing Hyprland-specific
-# is baked into the ISO any more, so a fresh image has no starthyprland until
-# that install runs. When the launcher is present but the compositor is not, it
-# offers to run the install itself (or does it silently with --yes). The apps on
-# top -- waybar, kitty, fuzzel, dunst, wl-clipboard, ... -- follow the manifest
-# shipped beside the launcher (default /usr/share/copper/hyprland-apps). What is
-# genuinely absent still gets its own exit code and its own sentence naming the
-# piece, instead of a bare "not found" that is indistinguishable from a broken
-# PATH or a missing library.
 #
-# Hyprland is a Wayland compositor, so there is no second process to hand a
-# display to the way startxfce hands one to startxfce4: the compositor IS the
-# session. What startxfce does for X -- find a display, prove it answers, export
-# DISPLAY -- has no analogue here. What it does for the seat, the runtime
-# directory and the session bus does, and this does the same, in the same order,
-# so a reader who knows one launcher can read the other.
+# The compositor, session tools and config tree are an ingot payload:
+# `sudo ingot install hyprland`; nothing Hyprland-specific is baked in.
+# Apps on top come from the manifest beside the launcher
+# (/usr/share/copper/hyprland-apps), and each genuine absence gets its own
+# exit code and sentence, not a bare "not found" that could mean a broken
+# PATH or missing library.
 #
-# No logind and no systemd: the seat comes from seatd (started by PID 1 before
-# the session shell) and the session bus is a dbus daemon this script starts.
-# Hyprland's own startup spawns (wallpaper via waybar, the bar, notifications,
-# the polkit agent) are in config, so the session has one startup path rather
-# than a compositor plus a separate autostart daemon.
+# Hyprland IS the session: unlike XFCE there is no display to hand over,
+# but the seat, runtime dir and session bus are prepared in the same order
+# as startxfce. No logind/systemd: seatd (started by PID 1) gives the seat,
+# and this script starts the dbus daemon. Startup spawns live in config.
 #
-# POSIX sh, not bash: the image's shell is busybox ash, and build.sh checks these
-# scripts against /bin/sh. A bashism here is a script that works on the build
-# host and fails on the machine.
+# POSIX sh: the image runs busybox ash and build.sh checks these as /bin/sh;
+# a bashism works on the build host and fails on the machine.
 #
-# Exit codes, which are a contract rather than decoration:
-#
-#   0   hyprland ran and exited cleanly
-#   20  no hyprland installed (run sudo ingot install hyprland)
-#   21  no session configuration for this user
-#   22  the session runtime could not be prepared
-#   23  hyprland exited while starting up
-#   24  usage error
-#   25  a component is missing but there is no terminal to ask on, and
-#       neither --yes nor --no was given, so nothing was decided
-#   26  a library hyprland needs is still missing after restoring it
-#
-# KNOWN LIMITS, recorded rather than left to be found on a machine.
-#
-#   - The compositor runs on the console VT through the DRM backend, which needs
-#     a seat and a DRM master. Without logind that seat is seatd; if PID 1 did
-#     not start it, Hyprland's libseat backend falls back to its internal seat,
-#     which needs /dev/dri and a console VT but no daemon. The seat's presence
-#     is not something this script can guarantee -- starting a daemon needs root
-#     and this runs as the session user -- so it checks, says so, and lets
-#     Hyprland's own log carry the rest.
-#   - A machine whose framebuffer has a DRM node but no render node (a VM with
-#     no 3D) gets software rendering forced, because GL fails in a way that looks
-#     like a compositor bug. On real hardware nothing is forced.
-#   - Hyprland's IPC has no device listing, so this cannot ask the compositor
-#     whether it holds a keyboard. Input shown here is what the input path will
-#     accept (evdev, no udev daemon in this image); the udev records under
-#     /run/udev/data are the half that can be checked.
-#   - Only the instance directory under $XDG_RUNTIME_DIR is ever examined to
-#     decide "it came up". If hyprland starts but writes no directory there, the
-#     wait expires and the launch proceeds anyway -- a compositor that is alive
-#     and drawing is not something to declare dead because a probe could not see
-#     it.
-#
-#   - On a machine whose /dev/dri has a card0 but not a render node, the
-#     software path is forced (see above). A machine with no DRM node at all
-#     (some cloud/VM images) is a hard failure, not a retry.
+# Exit codes (a contract): 0 ok, 20 no compositor, 21 no session config,
+# 22 runtime not prepared, 23 Hyprland died starting, 24 usage,
+# 25 no way to ask about components, 26 library still missing after restore.
+# KNOWN LIMITS: seatd's presence cannot be guaranteed here (needs root);
+# no render node forces software, real hardware is left alone; IPC has no
+# device list, so input shown is what libinput accepts, not what Hyprland
+# claimed; "came up" means one instance dir under $XDG_RUNTIME_DIR exists.
 
 set -u
 
@@ -74,24 +31,19 @@ WAYBAR=${COPPER_WAYBAR:-/usr/bin/waybar}
 SKEL=${COPPER_HYPRLAND_SKEL:-/usr/share/copper/hyprland-skel}
 SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/hyprland.log}
 WAIT_TRIES=${WAIT_TRIES:-100}
-# Where the DRM devices and seatd's socket live. Both default to the real paths
-# and exist only so the gate can exercise the branches that read them without a
-# GPU or a running seatd; nothing here overrides them.
+# DRM nodes and seatd's socket default to the real paths; overridable so the
+# gate can exercise GPU/seatd branches without either on the test host.
 DRM_DIR=${COPPER_DRM_DIR:-/dev/dri}
 SEATD_SOCK=${COPPER_SEATD_SOCK:-/run/seatd.sock}
-# Where the input devices and the libudev records PID 1 writes live. Real paths
-# by default; overridable for the same reason as the two above -- the gate has
-# to be able to show the "a device gets dropped" branch without a machine that
-# has a keyboard it drops.
+# Input nodes and PID 1's libudev records are overridable for the same reason:
+# the gate must be able to show a dropped device without real hardware.
 INPUT_SYS=${COPPER_INPUT_SYS:-/sys/class/input}
 UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
-# Where Hyprland keeps its configuration for this user. Real default is
-# $HOME/.config/hypr; overridable for the gate.
+# The user's config tree defaults to $HOME/.config/hypr; overridable for the gate.
 USER_HYPR_CONF=${COPPER_USER_HYPR_CONF:-$HOME/.config/hypr}
 
-# The component manifest and the installer it drives. starthyprland only offers
-# components; it does not hardcode which ones. The payload ships the manifest
-# under /usr/share; /etc is the fallback for an install made by an older image.
+# Components come from the manifest, not hardcoded. /usr/share ships it;
+# /etc is the fallback for installs from an older image.
 if [ -n "${COPPER_HYPRLAND_APPS:-}" ]; then
     APPS=$COPPER_HYPRLAND_APPS
 elif [ -f /usr/share/copper/hyprland-apps ]; then
@@ -101,8 +53,7 @@ else
 fi
 INGOT=${COPPER_INGOT:-ingot}
 SUDO=${COPPER_SUDO-sudo}
-# Root needs no sudo, and the image may not even have it. "-" (not ":=") so an
-# empty COPPER_SUDO really does disable sudo instead of reviving the default.
+# "-" not ":-": an empty COPPER_SUDO must disable sudo, not revive the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
 say() { printf 'starthyprland: %s\n' "$1"; }
@@ -147,17 +98,10 @@ if ! id -nG 2>/dev/null | grep -qw _seatd; then
     say "  fix: sudo addgroup $(id -un) _seatd   (then log out and back in)"
 fi
 
-# The other half of "input works". The group above lets the compositor reach
-# seatd and open the devices; libinput then has to accept each one, and it
-# discards every device libudev calls uninitialized. Only a record under
-# /run/udev/data clears that flag, there is no udev daemon in this image, and
-# PID 1 writes those records at boot (seed_udev_input_db in copper-init.c).
-# Clearing the flag is not enough on its own: the record also has to say what
-# the device is, because libinput reads udev's ID_INPUT_* tags and drops any
-# device whose only tag is ID_INPUT. Both mistakes end in the same place -- the
-# compositor still starts, seat, config and DRM master all fine, with a pointer
-# that does not move and a keyboard that types nowhere -- so say which half is
-# missing rather than leave the user to guess.
+# seatd access alone is not enough: libinput drops devices libudev calls
+# uninitialized, and drops ones whose only tag is ID_INPUT, not ID_INPUT_*.
+# No udev daemon here, so PID 1 writes one record per input device at boot
+# (seed_udev_input_db in copper-init.c); say which half is missing.
 if [ -d "$INPUT_SYS" ] && ! ls "$UDEV_DATA"/c* >/dev/null 2>&1; then
     say "warning: no libudev records under $UDEV_DATA, so libinput will take no"
     say "  input device and the session will have a dead pointer and no keyboard."
@@ -196,13 +140,11 @@ elif [ -d "$INPUT_SYS" ]; then
     fi
 fi
 
-# What is installed. Echoed as words so --check and the launch path agree, and so
-# there is exactly one place that knows what the image contains.
+# One source of truth so --check and the launch path agree.
 have_hyprland=0
 [ -x "$HYPRLAND" ] && have_hyprland=1
 
-# Where this user's configuration lives, and whether the shipped tree is there
-# to seed it from.
+# Locate the user's config and the shipped tree that can seed it.
 user_conf="$USER_HYPR_CONF"
 user_config=0
 [ -e "$user_conf/hyprland.lua" ] && user_config=1
@@ -225,11 +167,8 @@ report() {
     fi
 }
 
-# --check: the whole report, then exit 0 without preparing or starting anything.
-# This is the dependency probe systemd units, scripts and a logged-in user all
-# run; it has to name every category that can stop a session, because a bare
-# "not found" is indistinguishable from a broken PATH or a library that arrived
-# from the wrong suite.
+# --check must name every category that can stop a session: a bare "not found"
+# is indistinguishable from a broken PATH or a library from the wrong suite.
 report_check() {
     # The compositor.
     if [ "$have_hyprland" = 1 ]; then
@@ -305,11 +244,8 @@ report_check() {
     fi
 }
 
-# Argument parsing. The launcher is a session entry point, and every flag it
-# takes changes what it does as a side effect; silently ignoring a flag that
-# changes startup would hide failures. --check reports and exits below;
-# --yes and --no decide whether missing components are installed; every other
-# argument is a usage error and is reported as such.
+# Every flag changes startup, so none may be ignored silently: --check
+# reports, --yes/--no decide installs, anything else is a usage error.
 use_install=
 check=
 while [ "$#" -gt 0 ]; do
@@ -328,23 +264,18 @@ if [ "$check" = 1 ]; then
     exit 0
 fi
 
-# The boot splash, defensively and for the same reason startniri quits it: a
-# splash still holding the console is what makes a compositor's VT takeover
-# fail, and an interactive prompt down this script would be invisible. The test
-# is a ping, not a blind quit, so a machine built without the splash says nothing
-# and does nothing; --check, which exits above, never reaches here.
+# Quit a live splash before the compositor takes the VT: it would fail the
+# takeover and hide any prompt below. Ping first, so a splashless machine
+# stays silent and does nothing; --check exits above and never gets here.
 if command -v plymouth >/dev/null 2>&1 &&
    plymouth --ping >/dev/null 2>&1; then
     say "quitting the boot splash before starting the session"
     plymouth quit >/dev/null 2>&1 || :
 fi
 
-# The compositor. Checked before anything else, and outside any branch that
-# starts a session: a machine with the config but no compositor must say so with
-# exit 20, not die on a bare exec failure. Hyprland is an ingot payload now, so
-# give the user the install before that exit when there is a way to ask (a tty
-# or --yes). --no, a scripted call and a host with no ingot all skip it, which is
-# what the gate exercises.
+# Check the compositor outside any session branch: a machine with config but
+# no Hyprland must exit 20, not die on exec. Offer ingot install when asked
+# or on a tty; --no, scripted calls and hosts without ingot skip it.
 if [ "$have_hyprland" != 1 ]; then
     want_install=0
     if command -v "$INGOT" >/dev/null 2>&1; then
@@ -361,8 +292,7 @@ if [ "$have_hyprland" != 1 ]; then
     fi
     if [ "$want_install" = 1 ]; then
         say "installing hyprland with ingot"
-        # $SUDO is intentionally unquoted: it is empty for root and for a
-        # caller that opted out, and "sudo" otherwise.
+        # $SUDO is unquoted on purpose: empty for root or opt-out, else "sudo".
         if $SUDO "$INGOT" install hyprland && [ -x "$HYPRLAND" ]; then
             have_hyprland=1
         else
@@ -377,27 +307,16 @@ if [ "$have_hyprland" != 1 ]; then
     exit 20
 fi
 
-# The configuration. The tree arrives with the payload and is copied into the
-# home on first start, but a home that was made another way -- a second user, a home
-# wiped by hand, a wizard path that skipped the copy -- should still get a
-# working session rather than an empty compositor and a black screen. So when
-# the user has no config and the image has one to give, seed it. When neither is
-# true there is nothing to start: an unconfigured hyprland is not the session
-# anyone asked for, and 21 names that.
+# Seed a shipped config into homes made another way (second user, wiped home,
+# wizard that skipped the copy), or the compositor starts with a black screen.
+# With neither user config nor shipped tree, 21 names the real failure.
 
-# Copy everything the shipped tree has and the home does not: make the missing
-# directories, then copy the files and symlinks that are absent. A file that is
-# already there is never touched, so a user's edits survive; what is missing is
-# filled in, so a home that was seeded -- or half-seeded -- by an older image can
-# be repaired in place instead of staying broken forever.
-#
-# This is not `cp -a -n`, which is the one-liner it looks like and the thing this
-# used to do. busybox's cp reads -n as "skip an existing *anything*": given a
-# ~/.config that already exists it skips the whole directory, copies nothing
-# below it, and reports success while doing so. That is invisible on a bare home
-# and permanent on a used one. Walking the tree is a few hundred stat() calls
-# and no surprises. seed_added counts what was written so the caller can say
-# whether the pass changed anything.
+# Copy only missing files and symlinks, making their directories: user edits
+# survive, and a home seeded (or half-seeded) by an older image is repaired.
+# This is not `cp -a -n`: busybox reads -n as "skip an existing *anything*",
+# so an existing ~/.config skips the whole subtree and reports success.
+# Walking the tree costs a few hundred stat() calls and no surprises;
+# seed_added counts writes so the caller can say whether anything changed.
 seed_added=0
 seed_config() {
     seed_added=0
@@ -432,9 +351,8 @@ seed_config() {
 if [ "$user_config" != 1 ]; then
     if [ "$skel_config" = 1 ]; then
         say "seeding the session config from $SKEL into $HOME"
-        # The whole shipped home, not just .config/hypr: the tree carries the
-        # waybar configuration the session starts from the same place, plus the
-        # wallpaper the session starts from.
+        # Seed the whole shipped home: it also carries the waybar config and
+        # wallpaper the session starts from, not just .config/hypr.
         if ! seed_config; then
             say "the shipped config tree at $SKEL is not readable"
         fi
@@ -452,12 +370,9 @@ if [ "$user_config" != 1 ]; then
         exit 21
     fi
 else
-    # A config is already there and it may still be incomplete: a home seeded by
-    # an older image is missing exactly the files that image's build dropped, and
-    # nothing in the session will ever ask for them back. Repair it in place on
-    # every start. The pass only writes what is absent, so it costs a few hundred
-    # stat() calls once the tree is whole and it says nothing when it changes
-    # nothing.
+    # An older image's home may lack files the config refers to; repair in
+    # place on every start. Only absent files are written, so a whole tree
+    # costs a few stat() calls and says nothing when nothing changed.
     if [ "$skel_config" = 1 ]; then
         if seed_config && [ "$seed_added" -gt 0 ]; then
             say "repaired the session config: added $seed_added missing file(s) from $SKEL"
@@ -467,12 +382,9 @@ else
     fi
 fi
 
-# Components. The session is in the image; the apps on top of it are ingot
-# packages, and only the missing ones are offered. The list lives in the
-# manifest, not here: what is offered, what marks it present, and how it is
-# installed change independently of this script. Components whose 'how' is
-# "image" are expected in the ISO already -- a missing one is a broken image, so
-# it is reported and never turned into an install attempt.
+# Only missing ingot apps are offered; the manifest owns presence and install
+# method, which change independently. 'image' components belong to the ISO:
+# report a missing one, never try to install it.
 missing=
 if [ -r "$APPS" ]; then
     while read -r cname cprobe corigin; do
@@ -487,8 +399,7 @@ if [ -r "$APPS" ]; then
 fi
 
 if [ -n "$missing" ]; then
-    # --yes and --no decide; with neither, ask when there is a terminal and stop
-    # with 25 otherwise. A missing component must be decided on purpose.
+    # --yes/--no decide; with neither, ask on a tty or stop with 25.
     if [ "$use_install" = "1" ]; then
         do_install=1
     elif [ "$use_install" = "0" ]; then
@@ -520,9 +431,8 @@ if [ -n "$missing" ]; then
                 failed=1
             fi
         done
-        # ingot unpacks .debs but no maintainer script runs, so nothing
-        # regenerates the databases the desktop reads. Rebuild them by hand or
-        # the new .desktop files never show up and launchers stay dead.
+        # ingot runs no maintainer scripts, so rebuild desktop and mime databases
+        # or new launchers never appear and stay dead.
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database /usr/share/applications >/dev/null 2>&1 || :
         fi
@@ -537,11 +447,10 @@ if [ -n "$missing" ]; then
     fi
 fi
 
-# ingot unpacks every payload with a plain tar -xzf, so a package that bundles
-# its own libraries -- xarchiver carries noble's libxkbcommon -- replaces the
-# image's newer ones and Hyprland then refuses to start with "version
-# `V_1.11.0' not found". Re-assert the libraries this compositor was linked
-# against from the copies staged beside the config, then prove they landed.
+# ingot's plain tar -xzf lets bundled libs replace the image's newer ones
+# (xarchiver carries noble's libxkbcommon), and Hyprland then dies with
+# "version `V_1.11.0' not found". Re-assert the linked libs from the staged
+# copies and prove the needed symbol versions landed.
 LIBSTASH=${COPPER_LIBSTASH:-/usr/share/copper/hyprland-runtime}
 LIBDIR=${COPPER_LIBDIR:-/usr/lib/x86_64-linux-gnu}
 if [ -d "$LIBSTASH" ]; then
@@ -558,33 +467,23 @@ if [ -d "$LIBSTASH" ]; then
     done
 fi
 
-# The runtime directory. Wayland keeps its sockets in $XDG_RUNTIME_DIR and
-# refuses to start the compositor without one; on a normal system the login
-# stack makes it, but nothing here logs in through pam. PID 1 makes
-# /run/user/<uid> and hands ownership over before this runs -- a user cannot
-# mkdir under root-owned /run -- so this only has to confirm it and export it,
-# and fall back to a directory of the user's own when PID 1 did not get there.
+# Wayland needs $XDG_RUNTIME_DIR for its sockets. No pam login here, so PID 1
+# makes /run/user/<uid> and hands it over before this runs; just confirm and
+# export it, falling back to /tmp/copper-runtime-<uid> if PID 1 did not.
 uid=$(id -u 2>/dev/null) || uid=
 if [ -z "$uid" ]; then
     say "cannot determine this login's uid"
     exit 22
 fi
 if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -d "$XDG_RUNTIME_DIR" ]; then
-    # Set to something that is not a directory -- a stale path, a regular file.
-    # Adopting it silently is how a session ends up writing its sockets into a
-    # file and failing several layers down.
+    # A stale path or regular file here would make the session write sockets
+    # into a file and fail several layers down, so refuse it now.
     say "XDG_RUNTIME_DIR is set to $XDG_RUNTIME_DIR, which is not a directory"
     exit 22
 fi
-# Explicit runtime directory override. The launcher falls back to creating
-# /tmp/copper-runtime-<uid> when XDG_RUNTIME_DIR is unset, which is the normal
-# case on a writable /tmp; for that reason there is no way to exercise the
-# "no writable runtime directory" branch from a test that only sets the
-# environment. COPPER_RUNTIME_DIR is the override: if it points at a path that
-# is not an existing directory, the launcher reports "runtime directory"
-# directly instead of creating it behind the scenes. Do not set it on a real
-# machine -- the launcher creates a private directory for you when this is not
-# set.
+# COPPER_RUNTIME_DIR is the gate's override for the untestable "no writable
+# runtime" branch: a non-directory makes the launcher report "runtime
+# directory" directly. Do not set it on a real machine.
 if [ -n "${COPPER_RUNTIME_DIR:-}" ] && [ ! -d "$COPPER_RUNTIME_DIR" ]; then
     say "runtime directory is set to $COPPER_RUNTIME_DIR, which is not a directory"
     exit 22
@@ -606,34 +505,24 @@ export XDG_RUNTIME_DIR
 say "runtime directory: $XDG_RUNTIME_DIR"
 mkdir -p /dev/shm 2>/dev/null || :
 
-# Who this session says it is. A compositor started from a bare tty has no
-# display manager to stamp the session, and the readers are not cosmetic:
-# xdg-desktop-portal chooses a backend by XDG_CURRENT_DESKTOP, so without it the
-# GTK fallback is started instead of the hyprland one, and toolkits read
-# XDG_SESSION_TYPE to pick Wayland over X11. hyprland --session sets both for
-# its children; exporting them here covers everything this script starts first,
-# and the session bus below, which is where D-Bus-activated services get their
-# environment.
+# No display manager stamps a bare tty session. Export the desktop identity
+# so portals pick the Hyprland backend instead of GTK and toolkits choose
+# Wayland; hyprland --session only covers its own children.
 XDG_SESSION_TYPE=wayland
 XDG_CURRENT_DESKTOP=hyprland
 XDG_SESSION_DESKTOP=hyprland
 DESKTOP_SESSION=hyprland
 export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
 
-# libxkbcommon uses these as its fallback when the config does not provide a
-# keyboard layout. Set an explicit installed rules tree and US layout so a
-# missing inherited desktop setting cannot leave an enumerated keyboard
-# without a usable keymap. A caller can still select another layout through
-# the environment or the hyprland configuration.
+# Give libxkbcommon an explicit installed rules tree and US layout, so an
+# inherited desktop setting cannot leave a keyboard without a usable keymap.
 XKB_CONFIG_ROOT=${XKB_CONFIG_ROOT:-/usr/share/X11/xkb}
 XKB_DEFAULT_LAYOUT=${XKB_DEFAULT_LAYOUT:-us}
 export XKB_CONFIG_ROOT XKB_DEFAULT_LAYOUT
 
-# No package manager runs maintainer scripts on this image, so the caches a
-# postinst would have built are built here, once, when absent. Without the
-# font cache every program that asks fontconfig for a glyph walks the font
-# directories again; without the pixbuf cache GTK draws holes where images
-# should be. Both are quiet: this is a session starting, not a build log.
+# No maintainer scripts run here, so build missing font/pixbuf caches once:
+# otherwise glyph lookups rescan directories and GTK shows holes for images.
+# Keep it quiet -- this is a session starting, not a build log.
 if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
     if [ -z "$(find /usr/lib -name loaders.cache -print -quit 2>/dev/null)" ]; then
         gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || :
@@ -645,13 +534,9 @@ if command -v fc-cache >/dev/null 2>&1; then
     fi
 fi
 
-# The session bus. The portals, dunst, gnome-keyring and the polkit agent all
-# want one, and there is no session manager to have started it. Prefer
-# dbus-launch, which sets both the address and the pid; fall back to
-# dbus-daemon directly, which only prints the address. Either way it is exported
-# into the compositor's environment, and a machine that turns out to have
-# neither still starts -- the compositor runs without a bus, the pieces that
-# want one say so, and that is a degraded session rather than no session.
+# Portals, dunst, keyring and polkit all want a bus, with no session manager
+# to start one. Prefer dbus-launch (address + pid), fall back to dbus-daemon
+# (address only); without either, start anyway and let the consumers complain.
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     if command -v dbus-launch >/dev/null 2>&1; then
         bus=$(dbus-launch --sh-syntax 2>/dev/null) || bus=
@@ -672,22 +557,16 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     fi
 fi
 
-# A bus started above already carries the session identity: this process had it
-# before dbus-daemon forked. A bus inherited from somewhere else may not, and
-# D-Bus-activated services (the portal frontend is the one that matters) read
-# the daemon's environment, not the caller's. Push the identity in when the tool
-# is there. No --systemd: there is no systemd to tell, and the bus is what
-# matters.
+# A bus started above inherits this process's session identity; an inherited
+# bus may not, and D-Bus-activated services read the daemon's environment.
+# Push the identity in with dbus-update-activation-environment, no --systemd.
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
     dbus-update-activation-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP \
         XDG_SESSION_DESKTOP DESKTOP_SESSION >/dev/null 2>&1 || :
 fi
 
-# The seat. Without logind, libseat talks to seatd, and seatd is PID 1's to
-# start -- a daemon needs root and this runs as the session user. Its socket
-# path is what libseat reads; make sure the variable points at the default
-# unless the machine says otherwise, so a libseat built for /run/seatd.sock and
-# a seatd started there agree.
+# Without logind, libseat reads seatd's socket path; keep the variable at
+# its default unless the machine says otherwise, so libseat and seatd agree.
 if [ -S "$SEATD_SOCK" ]; then
     say "seat: $SEATD_SOCK"
 else
@@ -696,11 +575,10 @@ else
     say "  did not start it the compositor will exit and its log will say so."
 fi
 
-# The renderer. A framebuffer with a DRM node but no render node is a VM with no
-# 3D, where GL fails in a way that reads as a compositor bug rather than a
-# missing GPU. Force the software path there, and only there: on a machine with
-# a render node nothing is overridden, and COPPER_HYPRLAND_SOFTWARE=1 forces it
-# by hand for a machine the heuristic gets wrong.
+# A DRM node with no render node is a VM with no 3D: force software rendering
+# there, since GL failure looks like a compositor bug. Leave machines with a
+# render node alone; COPPER_HYPRLAND_SOFTWARE=1 forces it by hand for a
+# machine the heuristic gets wrong.
 soft=0
 if [ "${COPPER_HYPRLAND_SOFTWARE:-0}" = 1 ]; then
     soft=1
@@ -713,14 +591,10 @@ if [ "$soft" = 1 ]; then
     say "no render node; forcing software rendering"
 fi
 
-# The graphics device. Hyprland's DRM backend opens /dev/dri/card0. A non-root
-# user cannot open it without a device node and correct group membership. This
-# image has no udev, so the nodes are created by the kernel and the only thing
-# that grants access is the group bits on the node itself. The standard
-# /dev/dri/card0 node is owned by root:render with 0600; this script does not
-# rewrite device permissions after the image is built (that is what a running
-# udev or a session polkit rule is for), so it checks and reports rather than
-# guessing.
+# Hyprland's DRM backend opens /dev/dri/card0. With no udev, kernel-created
+# nodes carry only their own group bits; root:render 0600 is the standard,
+# and this script does not rewrite permissions (that is udev/polkit's job).
+# Check and report rather than guess.
 if [ -e "$DRM_DIR/card0" ]; then
     _cr=$(stat -c '%U %G %a' "$DRM_DIR/card0" 2>/dev/null)
     _cg=$(id -nG 2>/dev/null)
@@ -733,41 +607,28 @@ if [ -e "$DRM_DIR/card0" ]; then
     esac
 fi
 
-# Hand the session over. Background first so the launch can be watched: a
-# compositor that dies in the first second -- no seat, no DRM master, a broken
-# config -- prints its reason and exits, and a launcher that only waited on the
-# process would hand back a bare nonzero status with the reason already gone
-# from the screen. The wait is bounded and checks whether the process is still
-# alive, because "still starting" and "already died" look identical if all you
-# do is count to a limit.
+# Launch in the background so a compositor that dies in the first second
+# (no seat, no DRM master, bad config) prints its reason before we read the
+# log. The bounded wait also checks liveness: "starting" and "died" look
+# identical if you only count to a limit.
 #
-# The compositor takes no session argument. `--session` is not one of its
-# options -- it answers "[ERROR] Unknown option '--session'!" and exits, which
-# means a session that never reached a screen -- and the wrapper that would have
-# supplied one, start-hyprland, wants a systemd --user to talk to, which this
-# image does not run. Everything that wrapper used to arrange is set here
-# instead, above, so handing over to the binary directly is the whole job.
+# Pass no --session: Hyprland rejects it with "Unknown option", and the
+# start-hyprland wrapper wants a systemd --user this image does not run.
+# Everything the wrapper arranged is set above, so exec the binary directly.
 say "starting hyprland, log in $SESSIONLOG"
 
-# The compositor's config directory. hyprland reads $XDG_CONFIG_HOME/hypr, so
-# the seeded config is already in the user's home from the seeding step above.
-# Set XDG_CONFIG_HOME to the user's so a fresh login has a real place to read
-# from and nothing falls back to a root-owned or missing directory.
+# hyprland reads $XDG_CONFIG_HOME/hypr; point it at the user's home so a
+# fresh login reads the seeded config, not a root-owned or missing tree.
 XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
 export XDG_CONFIG_HOME
 
 "$HYPRLAND" > "$SESSIONLOG" 2>&1 &
 hyprlandpid=$!
 
-# hyprland keeps one directory per instance under $XDG_RUNTIME_DIR/hypr/, whose
-# name IS HYPRLAND_INSTANCE_SIGNATURE: a random hex string, followed by the
-# start time and the pid. hyprctl connects to
-# $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock -- it is the
-# only client that speaks the IPC protocol, the compositor has no "msg"
-# subcommand of its own, and XDG_HYPRLAND_IPC_SOCKET is not a real variable.
-# The name is unguessable, so it is read back off the newest instance directory
-# that exists. A directory that exists but does not answer is treated as absent:
-# one left behind by a crashed instance would otherwise read as a live one.
+# The instance dir under $XDG_RUNTIME_DIR/hypr is named by
+# HYPRLAND_INSTANCE_SIGNATURE (random hex, start time, pid); hyprctl is the
+# only IPC client, and the socket left by a crashed instance must not read
+# as a live one. Find the newest dir, then prove it answers via hyprctl.
 up=0
 i=0
 ipc_dir=
@@ -797,9 +658,8 @@ done
 if [ "$up" = 1 ]; then
     say "hyprland is up"
 else
-    # Alive but no answering socket. A compositor that is running and drawing is
-    # not something to declare dead, so say what was not found and keep waiting
-    # rather than fail a session that may be perfectly well on screen.
+    # Alive but no answering socket: a compositor that is drawing is not dead.
+    # Say what was missing and keep waiting rather than fail a working session.
     say "no answering IPC socket appeared under $XDG_RUNTIME_DIR; waiting for hyprland anyway"
 fi
 

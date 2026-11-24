@@ -1,26 +1,9 @@
 #!/bin/sh
-# Prove copper-sh survives the defects the 2026-10-30 audit found in it, so a
-# future edit cannot bring any of them back silently. Every case here was a
-# real crash, a silent data-damage bug or an overread, found by reading the
-# source and reproduced against the binary before the fix landed:
-#
-#   1. a trailing '|' parsed into a segment whose argv[0] is NULL, and the
-#      child crashed in builtin_lookup()'s strcmp (SIGSEGV as root's shell)
-#   2. b_chmod fed anything to strtol() with no validation, so
-#      "chmod xyz file" silently became mode 0 -- an unreadable, unwritable file
-#   3. tokenize_line() wrote past its fixed 256-slot argv on a line with more
-#      words than slots, which one 4096-byte line can hold hundreds of
-#   4. a redirect-only line ("> file") is legal in every other shell and used
-#      to reach the same NULL-argv crash as the trailing pipe
-#   5. refresh_line() passed snprintf()'s would-be length straight to write(),
-#      reading past the end of its stack buffer whenever prompt+line exceeded
-#      it -- the prompt alone reaches PATH_MAX + user + host. Clamped in the
-#      source; the gate re-derives the clamp rather than trusting it.
-#
-# Needs a C compiler (gcc, cc, clang or musl-gcc); without one this test
-# SKIPS and says so, the same contract as xprobe-gate.sh -- the Windows box
-# this tree is maintained on has no gcc, CI and the build VM do.
-#
+# Prove copper-sh survives the defects the 2026-10-30 audit found: a trailing
+# pipe and a redirect-only line reached NULL argv, b_chmod turned "chmod xyz"
+# into mode 0, tokenize_line overflowed its argv on a long line, and
+# refresh_line's unbounded write length overread its stack buffer.
+# Needs a C compiler; without one this test SKIPS, like xprobe-gate.sh.
 # Run: sh tests/shell-gate.sh
 
 set -u
@@ -42,8 +25,7 @@ fails=0
 ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n       %s\n' "$1" "$2"; fails=$((fails + 1)); }
 
-# Build the real shell from the real sources. -O2 matches the Makefile closely
-# enough; the point is the shipped code, not the flags.
+# Build the real sources with -O2; the shipped code, not the flags, is under test.
 if ! "$CC" -O2 -o "$TMP/copper-sh" "$REPO/src/main.c" "$REPO/src/builtins.c" \
         2>"$TMP/cc.log"; then
     echo "  FAIL copper-sh does not compile"
@@ -53,9 +35,7 @@ fi
 SH="$TMP/copper-sh"
 cd "$TMP" || exit 1
 
-# run <label> -- feeds stdin lines to the shell, captures stdout+stderr+rc.
-# The shell is not a tty here, so read_line_edited() takes its getline()
-# fallback and every line is executed without a prompt dance.
+# Non-tty shell: read_line_edited() takes the getline() fallback.
 rc=0
 out=""
 run() {
@@ -74,8 +54,7 @@ else
     ok "trailing pipe is refused, not a crash"
 fi
 
-# 2. chmod must accept octal modes and refuse anything else, leaving the file
-#    exactly as it was. Mode 0 from a typo used to be silent data damage.
+# chmod must reject non-octal: mode 0 from a typo is silent data damage.
 printf 'x\n' > f
 printf 'chmod xyz f\n' > in
 run < in
@@ -96,8 +75,7 @@ else
     bad "chmod accepts valid octal" "expected 7777, got $mode (out: $out)"
 fi
 
-# 3. more words than the 256-slot argv must be a clean error, not a write
-#    past the end of the array. 300 two-byte words fit in one line easily.
+# 300 two-byte words fit one line and must error, not overrun argv[].
 {
     i=0
     while [ "$i" -lt 300 ]; do printf 'a '; i=$((i + 1)); done
@@ -112,8 +90,7 @@ else
     ok "a 300-word line is refused before it overflows argv"
 fi
 
-# 4. a redirect-only line is legal shell: the file must appear, and nothing
-#    may crash. The empty segment now stops at run_one()'s NULL guard.
+# A redirect-only line is legal shell and must create the file, not crash.
 printf '> only-redirect\n' > in
 run < in
 if [ "$rc" -ge 128 ]; then
@@ -124,8 +101,7 @@ else
     ok "a redirect-only line creates the file and exits cleanly"
 fi
 
-# 5. the everyday shapes still work, so the guards above are not swallowing
-#    real commands: a pipe, a redirect from a file, and a normal chmod.
+# Everyday shapes still work, so the guards do not swallow real commands.
 printf 'echo piped thing | wc -w\n' > in
 run < in
 if printf '%s' "$out" | grep -q '2'; then
@@ -134,10 +110,8 @@ else
     bad "an ordinary pipeline still runs" "out=$out"
 fi
 
-# 6. the refresh_line clamp: rebuild the arithmetic the function uses and
-#    prove a write length is never allowed past the buffer. This mirrors the
-#    fix rather than executing it (an overread does not crash on demand), and
-#    its job is to fail loudly if someone reverts the clamp to `n` unbounded.
+# Mirror refresh_line's clamp arithmetic statically: an overread does not
+# crash on demand, so fail loudly if someone restores unbounded `n`.
 if grep -A8 'static void refresh_line' "$REPO/src/main.c" | grep -q 'sizeof seq'; then
     ok "refresh_line clamps its write length to the buffer"
 else
@@ -145,9 +119,7 @@ else
         "no clamp in refresh_line(); snprintf's return is unbounded again"
 fi
 
-# 7. chaining: ';' always, '&&' on success, '||' on failure, and the operators
-#    split even with no spaces around them. A success-only branch on a failing
-#    command has to stay quiet, and vice versa.
+# Chaining: ';' always, '&&' on success, '||' on failure, even with no spaces.
 rm -f chain
 printf 'echo one > chain; echo two >> chain\ntrue && echo three >> chain\nfalse && echo WRONG >> chain\nfalse || echo four >> chain\ntrue || echo WRONG >> chain\necho five&&echo six >> chain\n' > in
 run < in
@@ -162,8 +134,7 @@ else
     ok "; && || chain in order and honour exit status"
 fi
 
-# 8. a missing command has to say so and point at ingot. The old message named
-#    the command and stopped there -- on a fresh image that's a dead end.
+# A missing command must point at ingot, not just name itself.
 printf 'definitely-not-a-command\n' > in
 run < in
 if ! printf '%s' "$out" | grep -q 'definitely-not-a-command: not installed or command not found'; then

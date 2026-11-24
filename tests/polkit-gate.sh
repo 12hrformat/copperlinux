@@ -1,24 +1,9 @@
 #!/bin/sh
-# Prove the system bus, the polkit daemon and the session agent can meet.
-#
-# The niri session config starts the polkit agent, but an agent with nothing
-# to talk to is a process and a promise. Four separate pieces have to exist before a password
-# prompt can actually authorise anything:
-#
-#   * a system bus, because polkitd is D-Bus-activated on it and is not run by
-#     anything else on this image;
-#   * the messagebus and polkitd accounts. system.conf names the first, and
-#     polkitd drops to the second; neither package postinst runs in this build;
-#   * polkit-agent-helper-1 setuid root, or the agent can collect a password
-#     and never verify it;
-#   * an admin rule naming wheel. polkitd's stock rules name sudo and admin,
-#     and the wizard's account is in neither, so the only user on the machine
-#     would be treated as a non-admin and asked for root's (locked) password.
-#
-# Everything here is static: the boot-side wiring is C in copper-init.c and the
-# image-side wiring is files in the overlay. The one runtime half -- that
-# dbus-daemon binds a socket -- needs a boot and is recorded in BUGS.md, bug 45.
-#
+# Prove the system bus, polkit daemon and session agent can meet.
+# An agent alone is a promise: polkitd needs D-Bus activation, the messagebus
+# and polkitd accounts, the setuid helper, and a rule naming wheel (the wizard's
+# user is in neither sudo nor admin). Otherwise a prompt cannot authorise.
+# Everything here is static; actual dbus-daemon binding needs a boot (bug 45).
 # Run: sh tests/polkit-gate.sh
 
 set -u
@@ -67,8 +52,7 @@ else
     bad "the bus is up before the login shell is spawned" \
         "call at ${bus:-?}, shell at ${shell:-?}"
 fi
-# The daemon invocation itself: --system selects /usr/share/dbus-1/system.conf
-# and the system socket, and --fork leaves nothing for PID 1 to reap.
+# --system selects system.conf and the socket; --fork leaves nothing to reap.
 if grep -qE 'execl\(exe, "dbus-daemon", "--system", "--fork"' "$INIT"; then
     ok "it starts dbus-daemon --system --fork"
 else
@@ -82,10 +66,8 @@ else
         "no mkdir or no socket path"
 fi
 
-# ---- the accounts the bus and polkitd need ------------------------------
-# The bus must be able to look up messagebus before it drops privileges, and
-# polkitd must be able to look up its own account after activation. The
-# runtime writer is the repair path; the overlay records are the normal path.
+# The bus must look up messagebus before dropping privileges and polkitd after
+# activation; the runtime writer is the repair path, overlay records the norm.
 mb=$(line_of 'ensure_system_user("/etc/passwd", "/etc/group", "messagebus"' "$INIT")
 pd=$(line_of 'ensure_system_user("/etc/passwd", "/etc/group", "polkitd"' "$INIT")
 fork=$(line_of 'execl(exe, "dbus-daemon"' "$INIT")

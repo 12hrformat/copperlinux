@@ -1,35 +1,9 @@
-/* Unit test for the session-account logic in iso/src-init/copper-init.c.
- *
- * Why this exists
- * ---------------
- * On a real Copper boot the shell ran as uid 0 while HOME said
- * /home/<user>, and Firefox refused to start on exactly that mismatch:
- *
- *     Running Firefox as root in a regular user's session is not supported.
- *
- * The fix reads the wizard's login name out of /etc/copper-firstboot.done and
- * drops the tty child to that account. A C function that reads a file and a C
- * function that calls setuid are both easy to get subtly wrong, and there is
- * no way to boot the whole ISO in CI. So the two functions are compiled here
- * on their own -- copper-init.c is #included, main and all, with main renamed
- * out of the way -- and the drop is exercised in a forked child, which is
- * where it actually happens.
- *
- * The account used is whatever this machine already has (nobody, or daemon, or
- * bin): the test never creates one, so running it does not touch the host's
- * account database. Run as root, because setuid to somebody else requires it.
- *
- * tests/init-session.sh compiles and runs this.
- */
+/* Session test: the wizard marker's login drives the tty child's uid/gid/home;
+ * uid 0 with a user's HOME made Firefox refuse to start. Requires root, uses an
+ * existing account. tests/init-session.sh compiles this with copper-init.c. */
 
 #define main copper_init_main
-/* reboot(2) is faked for this whole translation unit, so the failure-path
- * test can make it FAIL: a real reboot(2) here would reboot (or halt) the
- * machine the test runs on. copper-init.c's #include <sys/reboot.h> therefore
- * declares fake_reboot instead of reboot, and its one call site -- the power
- * handler -- calls it. The mapping tests below still use the RB_* macros,
- * which the macro does not touch.
- * updated by farcrowx, bug 33, tests/init-session.c */
+/* reboot(2) is faked so failure tests cannot reboot the host. updated by farcrowx, bug 33, tests/init-session.c */
 #define reboot fake_reboot
 #include "copper-init.c"
 #undef reboot
@@ -37,8 +11,7 @@
 
 static int fails;
 
-/* Matches the declaration sys/reboot.h left behind via the macro above.
- * Always fails: EPERM is what reboot(2) answers when it refuses. */
+/* Stub reboot returns EPERM, as a real refusal would. */
 static int fake_reboot_how = -1;
 int fake_reboot(int how) { fake_reboot_how = how; errno = EPERM; return -1; }
 
@@ -52,7 +25,6 @@ static void put(const char *path, const char *text) {
     fclose(f);
 }
 
-/* Create a directory and every parent above it. */
 static void mkpath(const char *path) {
     char tmp[320];
     snprintf(tmp, sizeof tmp, "%s", path);
@@ -65,7 +37,6 @@ static void mkpath(const char *path) {
     (void)mkdir(tmp, 0755);
 }
 
-/* Write `text` to `dir`/`rel`, making `dir` and any parent it needs first. */
 static void put_in(const char *dir, const char *rel, const char *text) {
     char path[320];
     snprintf(path, sizeof path, "%s/%s", dir, rel);
@@ -78,9 +49,6 @@ static void put_in(const char *dir, const char *rel, const char *text) {
     put(path, text);
 }
 
-/* Delete a file, or a tree under it, ignoring what is not there. The fixture
-   is three directories deep and the test's job is the assertions, not a tidy
-   /tmp. */
 static void rmtree(const char *path) {
     DIR *d = opendir(path);
     if (!d) {
@@ -115,7 +83,6 @@ static void fake_device(const char *sysdir, const char *name, const char *event,
     put_in(sysdir, rel, dev);
 }
 
-/* The contents of one record, or "" when there is no such record. */
 static void record_text(const char *dbdir, const char *dev, char *buf, size_t bufsz) {
     char path[320];
     snprintf(path, sizeof path, "%s/c%s", dbdir, dev);
@@ -136,7 +103,6 @@ static int record_names_type(const char *dbdir, const char *dev) {
     return strstr(buf, "E:ID_INPUT_") != NULL;
 }
 
-/* Read a whole file into buf, or "" when it is not there. */
 static void slurp(const char *path, char *buf, size_t bufsz) {
     buf[0] = '\0';
     FILE *f = fopen(path, "r");
@@ -206,7 +172,6 @@ int main(void) {
     dprintf(fd, "%s\nIgnored Display Name\n", name);
     close(fd);
 
-    /* ------------------------------------------------- the marker read */
     struct session s;
     if (session_from_marker(marker, &s)) {
         printf("ok   session_from_marker accepts the marker\n");
@@ -236,7 +201,6 @@ int main(void) {
     }
     unlink(marker);
 
-    /* ------------------------------------------- the two root sessions */
     struct session n;
     if (!session_from_marker(marker, &n)) {
         printf("ok   no marker -> no session user (first boot stays root)\n");
@@ -260,7 +224,6 @@ int main(void) {
     }
     unlink(marker);
 
-    /* --------------------------------- the system bus's service accounts */
     /* dbus-daemon --system refuses to start without the messagebus account
        its system.conf names, and polkitd drops to polkitd. The package
        postinsts that would create them do not run in this build, so
@@ -276,7 +239,6 @@ int main(void) {
         snprintf(pwp, sizeof pwp, "%s/passwd", adir);
         snprintf(grp, sizeof grp, "%s/group", adir);
 
-        /* A bare database: both records are missing and must be made. */
         put(pwp, "root:x:0:0:root:/root:/bin/sh\n");
         put(grp, "root:x:0:\n");
         int r = ensure_system_user(pwp, grp, "messagebus",
@@ -297,7 +259,6 @@ int main(void) {
             fails++;
         }
 
-        /* Calling it again must change nothing. Boot runs this every time. */
         slurp(pwp, before, sizeof before);
         r = ensure_system_user(pwp, grp, "messagebus",
                                "/nonexistent", "/bin/false");
@@ -331,7 +292,6 @@ int main(void) {
             fails++;
         }
 
-        /* Ids already in either file are never handed out twice. */
         put(pwp, "root:x:0:0:root:/root:/bin/sh\nfoo:x:999:999::/:/bin/false\n");
         put(grp, "root:x:0:\nfoo:x:999:\n");
         r = ensure_system_user(pwp, grp, "messagebus",
@@ -352,7 +312,6 @@ int main(void) {
         rmtree(adir);
     }
 
-    /* -------------------------------------------------- the actual drop */
     if (s.ok) {
         pid_t pid = fork();
         if (pid == 0) {
@@ -378,7 +337,6 @@ int main(void) {
         }
     }
 
-    /* ------------------------------------------- the controlling terminal */
     /* `sudo` on the console asked for a password it could not read: "a
        terminal is required to read the password". The shell had stdin and
        stdout on tty1 but no controlling terminal: under systemd,
@@ -404,7 +362,6 @@ int main(void) {
                 printf("FAIL pipe: %s\n", strerror(errno));
                 fails++;
             } else {
-                /* The service's session, exactly as systemd leaves it. */
                 pid_t holder = fork();
                 if (holder == 0) {
                     close(ready[0]);

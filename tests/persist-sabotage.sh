@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
 # Sabotage suite for tests/persist.sh — prove the persistence gate can FAIL.
-#
-# tests/persist.sh asserts decisions, not devices: which disk the wizard takes,
-# what it refuses, and what it runs. A gate like that is only worth its lines if
-# it goes red when a decision is wrong, and that claim is what this file tests.
-#
-# It exists because of the pattern the systemd work kept hitting: a test that
-# agrees with the code because both were written by the same hand at the same
-# moment certifies nothing. So each case plants one defect, against the real
-# gate, and requires the gate to notice.
-#
+# Each case plants one wrong decision against the real gate, because a test
+# written with the code it guards certifies nothing.
 # Root only (the gate uses a mount namespace). Run: sudo tests/persist-sabotage.sh
 #
 #
-# NOTE: unlike tests/systemd-gate-sabotage.sh, this copies ONLY the source file
-# it sabotages, and points tests/persist.sh at it with PERSIST_SRC. The gate
-# already supports that redirection (there is a comment on the variable), and it
-# keeps the sabotage honest: the defect is in the file under test and nowhere
-# else.
+# NOTE: unlike systemd-gate-sabotage.sh, only the source file is copied and
+# pointed at by PERSIST_SRC. The gate already supports that redirection, so
+# the defect is in the file under test and nowhere else.
 
 set -u
 
@@ -73,27 +63,19 @@ run_case() {
 
 echo "sabotaging persistence, one decision at a time:"
 
-# 1. The new feature is removed: the branch goes back to "empty disk only", so
-#    a disk that already carries the COPPER label falls through to the ERASE
-#    prompt again. This is the change PERSISTENCE.md exists to make, and the
-#    reason case 9 is in the gate.
+# 1. removing auto-claim sends an already-COPPER disk back to the ERASE prompt.
 run_case "already-COPPER disks are no longer auto-claimed (back to empty-only)" \
     'if (n == 1 && (disk_is_copper(disks[0]) || !disk_has_fs(disks[0]))) {' \
     'if (n == 1 && !disk_has_fs(disks[0])) {' \
     "the already-COPPER disk was not recognised and reclaimed"
 
-# 2. The label test is inverted in the other direction: ANY filesystem is now
-#    treated as Copper's, so a disk holding somebody's data is silently claimed
-#    and formatted -- the one mistake that costs a person their files. Case 10
-#    exists to catch exactly this.
+# 2. treating any filesystem as Copper's would silently take someone's data.
 run_case "a foreign filesystem is taken without ERASE (label test always true)" \
     'if (n == 1 && (disk_is_copper(disks[0]) || !disk_has_fs(disks[0]))) {' \
     'if (n == 1 && (1 || !disk_has_fs(disks[0]))) {' \
     "a foreign filesystem was taken without asking|a foreign filesystem was formatted without ERASE"
 
-# 3. The COPPER disk is claimed but still formatted first, which would erase the
-#    previous Copper session the disk exists to hold. The gate's "nothing was
-#    formatted" line is the assertion.
+# 3. claiming a COPPER disk but still formatting it destroys its session.
 run_case "the already-COPPER path formats the disk anyway (loses the session)" \
     '        if (already) {
             /* Nothing to format, and no countdown: the disk is already a
@@ -111,10 +93,7 @@ run_case "the already-COPPER path formats the disk anyway (loses the session)" \
         } else {' \
     "an already-COPPER disk was formatted"
 
-# 4. The already-COPPER path claims the disk but never reboots into it, so the
-#    session stays in RAM and the disk is dead weight -- a silent no-op that
-#    looks exactly like success in the transcript. The call is deleted outright;
-#    the gate's "still takes the boot into persistence" line is what catches it.
+# 4. claiming but not rebooting leaves the session in RAM: a silent no-op.
 run_case "the already-COPPER path forgets to reboot into the disk" \
     '        carry_firstboot_answers(disks[0]);
         reboot_into_persistence();

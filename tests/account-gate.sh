@@ -1,19 +1,11 @@
 #!/bin/sh
 # Prove tests/account.sh catches the three bugs it exists for, by putting each
 # one back and checking the test goes red.
-#
 # Run as root:  sudo tests/account-gate.sh
 #
-# A green test proves nothing until it has been seen to fail. The bug
-# tests/account.sh guards was found by booting real hardware twice. The reason
-# it came back a third time would be that everyone trusted a check that had
-# never failed -- and the POSIX gate in iso/build.sh once printed "the busybox
-# tools are POSIX sh" while checking zero files, so that is not a hypothetical.
-#
-# Each case copies the source, breaks it in one specific way, and runs the real
-# assertions against the result. The repository source is never modified. If a
-# sabotage no longer applies, that is reported as a failure: it means the source
-# has moved on and this gate is no longer testing anything.
+# A green test proves nothing until seen to fail; the bug it guards was found
+# by booting real hardware twice. Each case copies the source, breaks one thing
+# and runs the real test; a sabotage that no longer applies is a failure.
 
 set -u
 

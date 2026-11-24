@@ -27,7 +27,6 @@
 
 static char prev_dir[PATH_MAX] = "";   /* remembered by "cd -" */
 
-/* ---------------------------------------------------------------- */
 
 int b_pwd(int argc, char **argv) {
     (void)argv;
@@ -61,7 +60,6 @@ int b_cd(int argc, char **argv) {
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 
 static void modestr(mode_t m, char out[11]) {
     const char rwx[] = "rwxrwxrwx";
@@ -154,7 +152,6 @@ int b_ls(int argc, char **argv) {
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 
 int b_cat(int argc, char **argv) {
     if (argc == 1) {                     /* cat with no args = echo stdin */
@@ -220,7 +217,6 @@ int b_date(int argc, char **argv) {
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 
 int b_mkdir(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "mkdir: usage: mkdir DIR...\n"); return 1; }
@@ -292,7 +288,6 @@ int b_rm(int argc, char **argv) {
     return rc;
 }
 
-/* ---------------------------------------------------------------- */
 
 static int copyfile(const char *src, const char *dst) {
     int in = open(src, O_RDONLY);
@@ -322,7 +317,6 @@ int b_mv(int argc, char **argv) {
     return 1;
 }
 
-/* ---------------------------------------------------------------- */
 
 static char *find_in_path(const char *cmd) {
     if (strchr(cmd, '/')) {
@@ -371,8 +365,6 @@ int b_which(int argc, char **argv) {
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
-/*  head / tail / wc / grep / tee                                     */
 
 static void print_head(FILE *in, int n) {
     char *line = NULL;
@@ -407,8 +399,7 @@ int b_head(int argc, char **argv) {
 /* rolling buffer holding the last n lines */
 static void print_tail(FILE *in, int n) {
     if (n <= 0) return;
-    /* why am i doing this: a ring buffer, in C, for `tail -n`. The modulo is
-       the whole algorithm and the off-by-one is the whole bug. */
+    /* Ring buffer for `tail -n`: the modulo indexes the oldest line. */
     char **ring = calloc((size_t)n, sizeof(char *));
     if (!ring) { perror("tail"); return; }
     int idx = 0, total = 0;
@@ -582,8 +573,6 @@ int b_tee(int argc, char **argv) {
     return rc;
 }
 
-/* ---------------------------------------------------------------- */
-/*  misc utils: sleep, true, false, id, hostname, path helpers        */
 
 int b_sleep(int argc, char **argv) {
     if (argc != 2) { fprintf(stderr, "sleep: usage: sleep SECONDS\n"); return 1; }
@@ -663,9 +652,7 @@ int b_ln(int argc, char **argv) {
 
 int b_chmod(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "chmod: usage: chmod MODE FILE\n"); return 1; }
-    /* strtol() with no validation turned "chmod xyz file" into mode 0 and
-       silently made the file unwritable -- and into mode 0 for anything past
-       the first bad digit too. Require a pure octal mode in the legal range. */
+    /* strtol() without validation made "chmod xyz" mode 0; require pure octal. */
     char *end = NULL;
     long mode = strtol(argv[1], &end, 8);
     if (end == argv[1] || !end || *end != '\0' || mode < 0 || mode > 07777) {
@@ -686,16 +673,11 @@ int b_env(int argc, char **argv) {
     return 0;
 }
 
-/*
- * export NAME=value, in the one place where a shell can actually change its
- * own environment: a builtin, running in this process. A forked `env` could
- * never do it, which is why every installer that ends with
- * "export PATH=$HOME/.opencode/bin:$PATH" used to fail here and look like it
- * had installed nothing.
- *
- * `export NAME` (no '=') only checks that NAME exists; there is no shell
- * variable table, so there is nothing else to mark as exported.
- */
+/* A builtin runs in this process; a forked `env` cannot set its environment.
+   That is why installers ending in "export PATH=$HOME/.opencode/bin:$PATH"
+   failed here and looked like they had installed nothing. `export NAME`
+   (no '=') only checks NAME exists: there is no shell variable table,
+   so nothing else can be marked exported. */
 int b_export(int argc, char **argv) {
     if (argc == 1) {
         for (char **e = environ; *e; e++) puts(*e);

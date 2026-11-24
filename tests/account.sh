@@ -187,30 +187,35 @@ if [ -n "$bo_uid" ]; then
     fi
 fi
 
-# The image-wide choices are not cosmetic: the passwd shell is what copper-init
+# The image-wide settings are not cosmetic: the passwd shell is what copper-init
 # execs for the session, and /etc/copper.conf is what the launchers read for
-# audio. The driver answers zsh and pipewire, so those tokens -- not the
-# defaults -- are what have to land.
+# audio. A new user is not asked about these, so the wizard must still write a
+# usable default for each one -- and the account test is where that is checked.
 bo_shell=$(printf '%s' "$bo_line" | cut -d: -f7)
-if [ "$bo_shell" = "/usr/bin/zsh" ]; then
-    ok "bo's login shell is /usr/bin/zsh (the wizard's answer)"
+if [ "$bo_shell" = "/usr/bin/bash" ]; then
+    ok "bo's login shell is /usr/bin/bash (the default)"
 else
-    bad "bo's login shell is '$bo_shell', expected /usr/bin/zsh"
+    bad "bo's login shell is '$bo_shell', expected /usr/bin/bash"
 fi
-if grep -qx 'shell=zsh' "$ROOT/etc/copper.conf" 2>/dev/null; then
-    ok "/etc/copper.conf records shell=zsh"
+if grep -qx 'shell=bash' "$ROOT/etc/copper.conf" 2>/dev/null; then
+    ok "/etc/copper.conf records shell=bash"
 else
-    bad "/etc/copper.conf does not record shell=zsh"
+    bad "/etc/copper.conf does not record shell=bash"
 fi
-if grep -qx 'audio=pipewire' "$ROOT/etc/copper.conf" 2>/dev/null; then
-    ok "/etc/copper.conf records audio=pipewire"
+if grep -qx 'audio=pulseaudio' "$ROOT/etc/copper.conf" 2>/dev/null; then
+    ok "/etc/copper.conf records audio=pulseaudio"
 else
-    bad "/etc/copper.conf does not record audio=pipewire"
+    bad "/etc/copper.conf does not record audio=pulseaudio"
 fi
 if [ "$(cat "$ROOT/etc/copper-init" 2>/dev/null)" = busybox ]; then
-    ok "/etc/copper-init records busybox (the wizard's answer)"
+    ok "/etc/copper-init records busybox (the default)"
 else
     bad "/etc/copper-init does not record busybox"
+fi
+if [ "$(cat "$ROOT/etc/copper-desktop" 2>/dev/null)" = xfce ]; then
+    ok "/etc/copper-desktop records xfce (the default)"
+else
+    bad "/etc/copper-desktop does not record xfce"
 fi
 
 if [ $fail -gt 0 ]; then

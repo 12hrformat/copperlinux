@@ -1,35 +1,22 @@
 #!/bin/sh
 # copper-audio -- the mixer and the audio servers, from one command.
-#
-# The image ships both servers (pulseaudio, and pipewire + wireplumber +
-# pipewire-pulse) and a session starts the one /etc/copper.conf names. What
-# neither the kernel config nor the server can do is raise the mixer: an HDA
-# codec comes out of reset with its outputs muted or at zero on plenty of
-# machines, and a live image persists no mixer state. A running server over a
-# muted card is a silent machine that reports itself healthy in every log.
-#
-# So:
-#
+# A live image persists no mixer state, and an HDA codec often boots muted:
+# a healthy-looking server on a silent card. Nothing here is fatal -- no card
+# still boots, just quietly. Both launchers call `init` after the server starts.
 #   copper-audio           same as status
 #   copper-audio init      unmute and raise the ALSA controls on every card,
-#                          then unmute the server's default sink and store the
-#                          mixer state (root)
-#   copper-audio status    cards, mixer levels, sinks, which server is running
+#                          then unmute the server's default sink and source and
+#                          store the mixer state (root)
+#   copper-audio status    cards, mixer levels, sinks, sources, server state
 #   copper-audio test      1 second of 440 Hz on the default device
 #   copper-audio server    print the backend and whether it is up
 #
-# Both launchers call `copper-audio init` after the server starts, so a fresh
-# boot is audible without anyone opening a mixer. Nothing here is fatal: a
-# machine with no card still boots, it is just quiet.
+# init raises the ALSA controls, then the server's default sink and source.
 #
-# Raising ALSA alone is not enough. PulseAudio and PipeWire keep their OWN mute
-# and volume on the sink they hand to clients, and a fresh server can come up
-# with that sink muted or pointed at the null output. That is the machine where
-# cava draws bars from the monitor source while Firefox plays a video and
-# nothing reaches the speakers: the graph sees the stream, the sink swallows
-# it. So init also talks to the server over the Pulse protocol -- pactl works
-# against both the PulseAudio daemon and pipewire-pulse -- picks a real sink if
-# the default is the null one, and unmutes it.
+# PulseAudio and PipeWire keep their OWN mute/volume: a fresh server can be muted
+# or pointed at the null sink, so the graph sees the stream but nothing reaches
+# the speakers, or a browser sees a monitor source but never hears the user.
+# Raising ALSA alone is not enough -- talk to the server over the Pulse protocol.
 
 set -u
 
@@ -51,28 +38,21 @@ backend() {
     esac
 }
 
-# Card indices, one per line, from the kernel's own list rather than from
-# /dev/snd ordering (controlC0 and pcmC0D0p can be missing independently).
+# Card indices from the kernel's own list, not /dev/snd ordering.
 cards() {
     sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p' /proc/asound/cards 2>/dev/null
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# The server may still be bringing the sink up when init runs. pactl needs the
-# Pulse-protocol socket specifically -- pipewire's own graph socket can be up a
-# moment before pipewire-pulse publishes its -- so wait for that one, whatever
-# backend the config chose. That is what keeps this from unmuting a sink that
-# does not exist yet.
+# Wait for the Pulse-protocol socket specifically: pipewire's graph socket can
+# appear before pipewire-pulse publishes its, so a sink may not exist yet.
 pulse_ready() {
     [ -S "$RT/pulse/native" ] || [ -n "${PULSE_SERVER:-}" ]
 }
 
-# Server-side mute/volume and the default device. pactl is in pulseaudio-utils
-# and speaks to both daemons, so the same commands cover either /etc/copper.conf
-# choice. A null sink is a real sink as far as the server is concerned -- cava's
-# monitor follows it, which is why the bars move with no sound -- so prefer a
-# listed hardware sink whenever one shows up.
+# pactl speaks to both daemons. A null sink is a real sink to the server -- cava's
+# monitor follows it -- so prefer a listed hardware sink over the default.
 server_unmute() {
     have pactl || return 0
     _i=0
@@ -96,9 +76,7 @@ server_unmute() {
             ;;
     esac
 
-    # Unmute every listed sink, then make certain the default one is at a
-    # usable level. Setting each by name also covers a machine with both an
-    # analogue and an HDMI output where only one is the default.
+# Unmute each sink by name, then make sure the default one is at a usable level.
     pactl list short sinks 2>/dev/null | while read -r _idx _name _rest; do
         pactl set-sink-mute "$_name" 0 >/dev/null 2>&1 || :
         pactl set-sink-volume "$_name" 100% >/dev/null 2>&1 || :
@@ -108,11 +86,36 @@ server_unmute() {
         pactl set-sink-volume "$_def" 100% >/dev/null 2>&1 || :
     fi
     say "server: sinks unmuted"
+
+# A monitor source is the sink's own playback, not a microphone. Pick the first
+# real source and raise it too, on top of the ALSA Capture controls.
+    _defsrc=$(pactl get-default-source 2>/dev/null) || _defsrc=
+    case "$_defsrc" in
+        ''|*null*|*.monitor)
+            _realsrc=$(pactl list short sources 2>/dev/null \
+                       | while read -r _idx _name _rest; do
+                             case "$_name" in *null*|*.monitor) ;; *) printf '%s\n' "$_name"; break ;; esac
+                         done)
+            if [ -n "$_realsrc" ]; then
+                pactl set-default-source "$_realsrc" >/dev/null 2>&1 && _defsrc=$_realsrc
+                say "server: default source is $_realsrc"
+            fi
+            ;;
+    esac
+    pactl list short sources 2>/dev/null | while read -r _idx _name _rest; do
+        case "$_name" in *.monitor) continue ;; esac
+        pactl set-source-mute "$_name" 0 >/dev/null 2>&1 || :
+        pactl set-source-volume "$_name" 100% >/dev/null 2>&1 || :
+    done
+    case "${_defsrc:-}" in
+        ''|*.monitor) ;;
+        *) pactl set-source-mute "$_defsrc" 0 >/dev/null 2>&1 || :
+           pactl set-source-volume "$_defsrc" 100% >/dev/null 2>&1 || : ;;
+    esac
+    say "server: sources unmuted"
 }
 
-# Playback control names by codec: Master/PCM on most HDA, Speaker/Headphone on
-# laptops, Front/Surround/Center/LFE on 5.1, HDMI on the digital outputs. A name
-# the card does not have makes amixer exit nonzero and is skipped.
+# Playback control names by codec; a name the card lacks is skipped.
 raise_card() { # raise_card <index>
     _c=$1
     _done=
@@ -126,10 +129,9 @@ raise_card() { # raise_card <index>
     else
         say "card $_c: no playback control this tool knows; check 'amixer -c $_c scontrols'"
     fi
-    # A capture side left at zero is the other half of "the microphone does not
-    # work"; raise it too, since nothing else in the image does.
-    for _n in Capture "Mic" "Internal Mic"; do
-        amixer -c "$_c" -q sset "$_n" 70% cap >/dev/null 2>&1 || :
+# A capture side left at zero is the other half of a dead microphone.
+    for _n in Capture "Mic" "Internal Mic" "Mic Boost" "Front Mic" "Line" "Line In"; do
+        amixer -c "$_c" -q sset "$_n" 100% cap >/dev/null 2>&1 || :
     done
 }
 
@@ -150,13 +152,10 @@ cmd_init() {
     for _c in $_cs; do
         raise_card "$_c"
     done
-    # Store it, so a persisted install keeps the levels across boots. On a live
-    # session this lands in the overlay and does not survive a reboot, which is
-    # why the launchers call init on every boot instead of trusting the file.
-    #
-    # alsactl is /usr/sbin/alsactl, not /usr/bin: a plain `command -v alsactl`
-    # misses it on any PATH without the sbin directories (which is the default
-    # for a non-root login), so it is looked up by absolute path as well.
+# Store the levels across boots where state persists; on a live image the file
+# lands in the overlay, so the launchers call init every boot instead.
+# alsactl lives in /usr/sbin, not /usr/bin: a plain `command -v` misses it on a
+# non-root PATH, so look it up by absolute path as well.
     _alsactl=
     for _p in /usr/sbin/alsactl /sbin/alsactl /usr/bin/alsactl; do
         if [ -x "$_p" ]; then _alsactl=$_p; break; fi
@@ -164,9 +163,7 @@ cmd_init() {
     if [ -n "$_alsactl" ] && [ "$(id -u 2>/dev/null || echo 1)" = 0 ]; then
         "$_alsactl" store >/dev/null 2>&1 || :
     fi
-    # The hardware is up; now make the graph above it deliver sound. This is
-    # deliberately after the ALSA work so a muted codec and a muted sink are
-    # both cleared on the same boot, whatever backend the config selected.
+# Clear the server-side graph after the ALSA work, whatever backend was chosen.
     server_unmute
     return 0
 }
@@ -212,6 +209,8 @@ cmd_status() {
     if have pactl && pulse_ready; then
         printf '\ndefault sink: %s\n' "$(pactl get-default-sink 2>/dev/null)"
         pactl list short sinks 2>/dev/null | sed 's/^/  /'
+        printf '\ndefault source: %s\n' "$(pactl get-default-source 2>/dev/null)"
+        pactl list short sources 2>/dev/null | sed 's/^/  /'
     fi
 }
 

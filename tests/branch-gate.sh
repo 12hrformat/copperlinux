@@ -1,50 +1,9 @@
 #!/usr/bin/env bash
 # Run this branch's tests, and be honest about which ones did not run.
-#
-# Twenty-two gates: smoke.sh always; startxfce-gate.sh,
-# account-gate.sh, persist.sh, persist-sabotage.sh and shutdown-gate.sh need
-# root, because they exercise sockets, staged rootfs trees,
-# a mount namespace and a private /sbin; init-session.sh needs root because it
-# calls setuid, and
-# systemd-gate.sh and systemd-gate-sabotage.sh need root because they chroot
-# into a staged tree to check the units. ingot-gate.sh,
-# startniri-gate.sh, starthyprland-gate.sh, plymouth-gate.sh, polkit-gate.sh,
-# network-gate.sh and console-gate.sh do not --
-# ingot's install lands in a scratch INGOT_ROOT and its repo is served on
-# localhost, startniri's compositor is a stub under a private home,
-# starthyprland's compositor is a stub too and it points the launcher at a
-# private runtime directory and seatd socket,
-# plymouth-gate.sh only reads iso/boot/entries, copper-init.c and the Plymouth
-# units/helpers, polkit-gate.sh only reads the init source, the
-# overlay and build.sh, network-gate.sh runs the real lease script against
-# a stub ip(8), and console-gate.sh reads the startup files and runs their
-# TERM block against a stubbed tty(1) -- so all six run unprivileged too.
-# kernel-gate.sh and kernel-gate-sabotage.sh run unprivileged as well: they run
-# the shipped require_kernel_config() against synthetic configs rather than
-# building a kernel.
-# font-gate.sh is unprivileged too: it reads the shipped console font (a PSF1
-# binary), the fastfetch config and copper-init.c, and needs python3 to walk
-# the font's unicode table.
-# xprobe-gate.sh needs a C
-# compiler and python3, which CI and the build VM have, and skips cleanly where
-# neither exists; startniri-gate.sh needs python3 for one case and skips the
-# same way; plymouth-gate.sh checks options against a real plymouthd when the
-# host has one and skips that part when it does not. CI runs this same file with
-# sudo, so a green build there means every
-# gate ran and none were skipped.
-#
-# This file used to carry known-failure classifications: the CI workflow came
-# over from `untested`, and on the old `gui` tree two of its tests failed
-# describing work that branch never had. Those were classified by their exact
-# output signatures so a real regression still went red -- and when the port
-# landed and both tests passed, the classifications were deleted rather than
-# kept as permanent excuses. That was the deal the file stated from the start.
-# Any failure from here on is a regression, and it is red.
-#
-# boot-gate.sh is deliberately not in this list: it needs a built ISO and a
-# QEMU, so the workflow runs it beside the build rather than on every host
-# that has a checkout.
-#
+# Root gates exercise real namespaces, sockets and chroots; the rest are
+# stubbed or static, and each gate below is named with why it may skip.
+# A past known-failure list was deleted when the port landed; red is red.
+# boot-gate.sh needs a built ISO and QEMU, so CI runs it beside the build.
 # Run as root:  sudo tests/branch-gate.sh
 # Non-root runs smoke.sh only, and says so.
 
@@ -60,11 +19,7 @@ fail=0
 skip=0
 
 # check <label> <ok|bad|skipped> [detail]
-#
-# Every status the callers use is listed. A status with no arm here prints
-# nothing and moves no counter, so the test it describes disappears from the
-# summary without a word -- and this runs non-root as well as root, which is
-# what most of the skipped paths are for.
+# Every status needs an arm or the test silently vanishes from the summary.
 record() {
     case "$2" in
         ok)    printf '  PASS       %-24s %s\n' "$1" "${3:-}" ; pass=$((pass + 1)) ;;
@@ -93,11 +48,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/startxfce-gate.sh: the startxfce launcher ---"
-# A real gate on this branch, not a known gap. The launcher ships before XFCE
-# does, so the only thing it can be tested on is its failure behaviour, and
-# that is the part that has to be right: each missing piece names itself and
-# returns its own exit code, so "XFCE is not built yet" is never confused with
-# a broken PATH or a server that would not start.
+# A real gate; each missing piece names itself and returns its own exit code.
 if [ "$ROOT" -ne 1 ]; then
     record startxfce-gate.sh skipped "needs root for the socket stubs"
 elif out=$(bash tests/startxfce-gate.sh 2>&1); then
@@ -105,12 +56,7 @@ elif out=$(bash tests/startxfce-gate.sh 2>&1); then
     record startxfce-gate.sh ok "$n checks"
 else
     record startxfce-gate.sh bad "a startxfce check failed"
-    # The failures come first, in full, with the detail line that follows each
-    # one. Capping the report by taking its first N lines hides the failure
-    # whenever the test passed more than N checks first: this gate reported
-    # twenty green ticks and no reason, because the one failing check was the
-    # twenty-first line. The passes are then a count, which is all they were
-    # for.
+# Report failures in full: capping at N lines hides failures after N passes.
     printf '%s\n' "$out" | grep -E '^  FAIL|^        ' | sed 's/^/    /'
     oks=$(printf '%s\n' "$out" | grep -cE '^  ok' || true)
     printf '    (%s checks passed; the failures are the lines above)\n' "$oks"
@@ -119,12 +65,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/xprobe-gate.sh: the real xprobe binary vs a synthetic X server ---"
-# Compiles the actual iso/x11/probe/xprobe.c and drives it through every socket
-# state (no socket, stale file, mute listener, live handshake, usage errors,
-# bounded timeout), asserting the 0/1/2/3 exit-code contract, plus a static
-# check that iso/build.sh stages the result as /usr/bin/xprobe. Needs a C
-# compiler and python3 -- both present in CI and on the build VM. Skips cleanly
-# on a host with neither (the Windows box this tree is maintained on).
+# Compiles the real xprobe and asserts its 0/1/2/3 exit-code contract; needs a
+# C compiler and python3, and skips cleanly where neither exists.
 if out=$(bash tests/xprobe-gate.sh 2>&1); then
     case "$out" in
         *SKIPPED*)
@@ -141,12 +83,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/startniri-gate.sh: the niri launcher ---"
-# Unprivileged, like xprobe-gate.sh: it stubs the compositor and points the
-# launcher at a private home, runtime directory, DRM path and seatd socket, so
-# it never touches this machine's session. It needs python3 for the one case
-# that binds a real unix socket to prove the seatd line, so it skips cleanly
-# where python3 is absent -- the same shape as xprobe-gate.sh without a
-# compiler.
+# Stubbed compositor and private paths keep this off the host's session; one
+# case needs python3 to bind a real socket and skips without it.
 if ! command -v python3 >/dev/null 2>&1; then
     record startniri-gate.sh skipped "no python3 on this host"
 elif out=$(sh tests/startniri-gate.sh 2>&1); then
@@ -160,12 +98,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/starthyprland-gate.sh: the Hyprland launcher ---"
-# Unprivileged and self-contained, like startniri-gate.sh: the compositor is a
-# stub in two roles (--session and msg), the launcher is pointed at a private
-# home, runtime directory, DRM path and seatd socket, and a real unix socket
-# stands in for seatd when python3 is available -- so nothing here touches this
-# machine's session. The exit-code contract is the thing under test: a script
-# branching on 20/21/22/23 breaks silently when one of them moves.
+# Stubbed compositor and private paths; the exit-code contract is the thing
+# under test, since a script branching on 20/21/22/23 breaks silently.
 if out=$(sh tests/starthyprland-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^  ok' || true)
     ns=$(printf '%s' "$out" | grep -c '^  skip' || true)
@@ -182,9 +116,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/bootloader-gate.sh: shared entries and the provider hooks ---"
-# Unprivileged and buildless: it renders the shipped GRUB provider into a
-# scratch tree and reads the build wiring, so a rename on either side of the
-# provider contract fails here instead of at ISO time.
+# Buildless: renders the shipped provider and reads the build wiring.
 if out=$(sh tests/bootloader-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^ok' || true)
     record bootloader-gate.sh ok "$n checks"
@@ -196,9 +128,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/plymouth-gate.sh: the splash switches and the daemon's argv ---"
-# Unprivileged and self-contained: it reads iso/boot/entries and copper-init.c, and
-# only checks options against a real plymouthd when the host happens to have
-# one (a skip, not a failure, when it does not).
+# Reads the shipped entries and units; checks a real plymouthd only if present.
 if out=$(sh tests/plymouth-gate.sh 2>&1); then
     n=$(printf '%s\n' "$out" | grep -c '^ok' || true)
     ns=$(printf '%s\n' "$out" | grep -c '^skip' || true)
@@ -220,9 +150,7 @@ if [ "$ROOT" -ne 1 ]; then
 elif out=$(bash tests/account-gate.sh 2>&1); then
     record account-gate.sh ok "all three sabotages proved"
 else
-    # This used to carry a known-signature arm for the sabotages that could
-    # not apply to this branch's short wizard. The long wizard is in the tree
-    # now and all three apply, so nothing is left to classify: red is red.
+# All three sabotages apply now; there is nothing left to classify.
     record account-gate.sh bad "exit $?"
     printf '%s\n' "$out" | tail -15 | sed 's/^/    /'
 fi
@@ -250,17 +178,14 @@ elif out=$(bash tests/persist.sh 2>&1); then
     record persist.sh ok "$n checks"
 else
     record persist.sh bad "a persistence check failed"
-    # The whole transcript, not just the FAIL lines: when a wizard run dies on
-    # the runner the reason is what it printed before it died.
+# Keep the whole transcript: a death before the FAIL line is the reason.
     printf '%s\n' "$out" | tail -60 | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/shutdown-gate.sh: shutdown maps flags onto the right applet ---"
-# Needs root for the private mount namespace it uses to replace /sbin with
-# stubs. The mapping is the whole risk (bug 18): `shutdown -r now` must reboot,
-# not power off.
+# Root for the mount namespace; `shutdown -r now` must reboot, not power off.
 if [ "$ROOT" -ne 1 ]; then
     record shutdown-gate.sh skipped "needs root for the mount namespace"
 elif out=$(bash tests/shutdown-gate.sh 2>&1); then
@@ -278,8 +203,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/ingot-gate.sh: ingot against a fake Pages repo ---"
-# Needs python3 (serves the fake repo), wget, tar, sha256sum. No root: it
-# installs into a scratch INGOT_ROOT and never touches the live tree.
+# Needs python3/wget/tar; installs into a scratch root, never the live tree.
 if out=$(bash tests/ingot-gate.sh 2>&1); then
     record ingot-gate.sh ok "all ingot checks passed"
 else
@@ -291,11 +215,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/systemd-gate.sh: the systemd PID-1 swap, structurally ---"
-# Needs root: the stage verifies its units by chrooting into the staged tree,
-# so ExecStart resolves the way it will at boot. It runs the REAL build_systemd
-# against a mock rootfs with apt/dpkg stubbed, so it downloads and execs
-# nothing. Nothing here claims the image boots -- SYSTEMD-MIGRATION.md says so
-# plainly -- but a red gate means the swap is incoherent.
+# Root: chroots into the staged tree so ExecStart resolves as at boot. Runs the
+# real build_systemd with apt/dpkg stubbed; structural, not a boot claim.
 if [ "$ROOT" -ne 1 ]; then
     record systemd-gate.sh skipped "needs root to chroot for the unit check"
 elif out=$(bash tests/systemd-gate.sh 2>&1); then
@@ -309,9 +230,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/systemd-gate-sabotage.sh: prove that gate can go red ---"
-# The gate above checks a migration nothing here can boot, so its whole value
-# is that it fails when the swap is wrong. This plants nine defects, one at a
-# time, and asserts every one is caught. Needs root, as systemd-gate.sh does.
+# Nine planted defects, one at a time, must each be caught; needs root.
 if [ "$ROOT" -ne 1 ]; then
     record systemd-gate-sabotage.sh skipped "needs root to chroot for the unit check"
 elif out=$(bash tests/systemd-gate-sabotage.sh 2>&1); then
@@ -325,11 +244,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/persist-sabotage.sh: prove the persistence gate can go red ---"
-# tests/persist.sh asserts DECISIONS (which disk the wizard takes, what it
-# refuses, what it runs), not devices. A gate like that is worth its lines only
-# if it goes red when a decision is wrong, so this plants four defects in the
-# wizard, one at a time, and asserts every one is caught. Needs root, as
-# persist.sh does -- it uses the same mount namespace.
+# persist.sh asserts decisions, not devices; this plants four wrong decisions
+# in the wizard and requires the gate to catch each. Needs root.
 if [ "$ROOT" -ne 1 ]; then
     record persist-sabotage.sh skipped "needs root for the mount namespace"
 elif out=$(bash tests/persist-sabotage.sh 2>&1); then
@@ -343,11 +259,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/kernel-gate.sh: the kernel config asserts what it needs ---"
-# The kernel config is where a dropped symbol turns into a machine that boots to
-# a shell -- no disk (bug 46), no screen, no network. require_kernel_config()
-# asserts every symbol is =y after olddefconfig, and until this gate nothing
-# tested it. No root needed: it runs the shipped function against synthetic
-# configs, deleting each asserted symbol in turn.
+# A dropped kernel symbol boots to a shell with no disk, screen or network;
+# the shipped function is run against synthetic configs, each symbol deleted.
 if out=$(bash tests/kernel-gate.sh 2>&1); then
     n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
     record kernel-gate.sh ok "$n checks"
@@ -359,9 +272,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/kernel-gate-sabotage.sh: prove that gate can go red ---"
-# For the same reason as the two sabotage suites above: a gate that only ever
-# goes green certifies nothing. Plants a dropped symbol, a misspelled symbol (the
-# DRM_VMWARE mistake, again), a deleted block and an emptied loop.
+# A gate that only goes green certifies nothing; four defects are planted.
 if out=$(bash tests/kernel-gate-sabotage.sh 2>&1); then
     n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
     record kernel-gate-sabotage.sh ok "$n sabotages, all caught"
@@ -373,11 +284,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/font-gate.sh: the console font and the glyphs Copper draws ---"
-# No root. The console has ONE bitmap font and no fallback, so a codepoint it
-# lacks is a question mark -- the same fastfetch separator that renders in
-# xfce4-terminal. Reads the font's real unicode table (python3) and the real
-# fastfetch config, so a renamed font, a dropped package or a config that
-# starts printing emoji goes red here rather than on a user's tty1.
+# One bitmap font, no fallback: a missing glyph is a question mark on tty1.
+# Reads the real font table and fastfetch config; needs python3.
 if ! command -v python3 >/dev/null 2>&1; then
     record font-gate.sh skipped "no python3 on this host"
 elif out=$(bash tests/font-gate.sh 2>&1); then
@@ -391,11 +299,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/shell-gate.sh: copper-sh against the defects the audit found ---"
-# Unprivileged, needs a C compiler. Compiles the real shell and drives it
-# through the crashers: a trailing pipe (NULL argv segfault), a non-octal
-# chmod (used to become mode 0 silently), a 300-word line (argv overflow),
-# and a redirect-only line; plus a static check that refresh_line clamps its
-# write length so the stack overread cannot come back.
+# Compiles the real shell and drives the audit's crashers; needs a C
+# compiler, plus a static check that the refresh_line clamp survives.
 if out=$(sh tests/shell-gate.sh 2>&1); then
     case "$out" in
         *SKIPPED*)
@@ -412,12 +317,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/firstboot-eof-gate.sh: the wizard cannot hot-loop on EOF ---"
-# Unprivileged, needs a C compiler and setsid. Runs the real wizard with
-# closed stdin and no controlling tty (so getpass falls back to stdin, the
-# path where the bug lived) and asserts it exits 1 instead of spinning on
-# "Password can't be empty" forever. The apply path shells out to absolute
-# /bin/busybox, absent on any non-Copper host, so a regression cannot touch
-# this machine's accounts.
+# Runs the real wizard on closed stdin with no tty; needs a C compiler and
+# setsid, and the apply path uses absolute /bin/busybox paths for safety.
 if out=$(sh tests/firstboot-eof-gate.sh 2>&1); then
     case "$out" in
         *SKIPPED*)
@@ -434,9 +335,7 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/polkit-gate.sh: the bus, the daemon and the agent can meet ---"
-# Unprivileged and static: the text of copper-init.c, the overlay's account
-# files and polkit rule, and the build's setuid/read-back pins. What it cannot
-# prove is that dbus-daemon actually binds -- that is a boot, bug 45.
+# Static wiring checks; actual dbus-daemon binding needs a boot (bug 45).
 if out=$(sh tests/polkit-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^  ok' || true)
     record polkit-gate.sh ok "$n checks"
@@ -448,11 +347,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/network-gate.sh: a lease always leaves a resolver ---"
-# The real udhcpc lease script, run against a stub ip(8). It exists because an
-# ISO shipped a script that only wrote /etc/resolv.conf when the lease carried
-# a search domain; a normal lease left 1.1.1.1/9.9.9.9 as the only servers,
-# and a network that blocks public DNS turned every lookup into "bad address".
-# Unprivileged: it never touches the host's interfaces.
+# A lease without a search domain left only public DNS and broke lookups on
+# networks that block it; the real lease script runs against a stub ip(8).
 if out=$(sh tests/network-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^  ok' || true)
     record network-gate.sh ok "$n checks"
@@ -464,11 +360,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/console-gate.sh: the prompt names you, the shell knows its tty ---"
-# Reads /etc/profile, /etc/bash.bashrc and copper-init.c. It exists because
-# the prompt shipped as a literal "copper:" with no user, and nothing set
-# TERM: bash invented "dumb", readline lost the character at the right margin
-# on a long command, and `clear` needed a second Enter. The TERM block is run
-# against a stubbed tty(1), so the VT-only upgrade is exercised. Unprivileged.
+# The prompt shipped as a literal with no user and nothing set TERM; both
+# startup files are exercised against a stub tty(1). Unprivileged.
 if out=$(bash tests/console-gate.sh 2>&1); then
     n=$(printf '%s' "$out" | grep -c '^  ok' || true)
     record console-gate.sh ok "$n checks"
@@ -480,12 +373,8 @@ fi
 # ---------------------------------------------------------------------------
 echo
 echo "--- tests/config-gate.sh: every image-wide switch agrees with itself ---"
-# Unprivileged and buildless. It reads both ends of the three switches the
-# image ships: GRUB -> /init for the init, /etc/copper.conf -> copper-init and
-# the passwd record for the shell, /etc/copper.conf -> both launchers for the
-# audio server. A rename on one side is silent -- the image still boots and
-# just ignores the user's answer -- so nothing else in the suite reads every
-# pair.
+# Reads both ends of the init, shell and audio switches; a rename on one side
+# still boots but ignores the user's answer, so every pair is checked here.
 if out=$(sh tests/config-gate.sh 2>&1); then
     n=$(printf '%s\n' "$out" | grep -c '^  ok' || true)
     record config-gate.sh ok "$n checks"

@@ -1,34 +1,11 @@
 #!/usr/bin/env bash
 # boot-gate.sh -- boot the built ISO in QEMU and prove the machine comes up.
-#
-# Every other gate is structural (grep a unit, extract a function), stubbed
-# (fake mkfs, fake sudo), or replayed in a mount namespace. That is how they
-# stay fast and rootless, and it is also how they can all be green while the
-# disc does not start: GRUB, the kernel, the initramfs, finding the medium,
-# the overlay and PID 1 only exist together on the ISO.
-#
-# So this starts the real image and reads its serial console. In grub mode it
-# asserts that copper-init ran and brought the network up -- the last thing it
-# says on the serial port before the first-boot wizard takes the console and
-# waits for a human. The wizard itself is driven for real by
-# tests/account.sh, so stopping there is deliberate: this gate is about the
-# boot chain, not about answering questions.
-#
-#   grub    (default) boot the ISO through its own GRUB. Proves the disc is
-#           bootable, the default entry is chosen without input, and the
-#           command line the image ships is the one that runs.
-#   serial  boot the kernel and initrd extracted from the ISO with ttyS0 as
-#           /dev/console, so the wizard draws where this gate can see it.
-#           Proves the wizard gets a terminal. The GRUB entry cannot show that:
-#           tty0 is the console there, and a headless VM has no tty0.
-#   systemd boot the same way, with copper.init=systemd on the command line.
-#           Proves /init's systemd branch hands PID 1 to /lib/systemd/systemd
-#           and systemd actually starts the Copper units -- the half a
-#           structural check of the tree cannot boot.
-#
-# Uses KVM when /dev/kvm is usable and TCG otherwise. TCG is several times
-# slower, which is why the deadline is minutes rather than seconds and why
-# BOOT_TIMEOUT exists.
+# Every other gate is structural or stubbed, so all can be green while the disc
+# does not start: GRUB, kernel, initramfs, medium discovery, overlay and PID 1
+# only exist together on the ISO.
+# grub asserts the initramfs handover and the network; --serial proves the wizard
+# gets a console; --systemd proves /init execs systemd and its units start.
+# Uses KVM when usable, TCG otherwise; BOOT_TIMEOUT covers slow emulation.
 #
 #   tests/boot-gate.sh iso/out/copper.iso
 #   tests/boot-gate.sh --serial iso/out/copper.iso
@@ -125,15 +102,11 @@ cleanup() {
     rm -rf "$WORK"
 }
 trap cleanup EXIT
-# Without the exit, a Ctrl-C runs the cleanup and then the loop carries on
-# grepping a log that cleanup just deleted, so the gate sits out its deadline
-# instead of stopping.
+# Ctrl-C must exit so cleanup is not followed by grepping a deleted log.
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# KVM is worth several minutes on a slow runner, but only when the device is
-# actually usable by this user -- an unreadable /dev/kvm falls back quietly
-# rather than failing the gate for a reason that has nothing to do with the ISO.
+# Use KVM only when this user can open /dev/kvm; fall back quietly otherwise.
 ACCEL=()
 if [ -r /dev/kvm ] && [ -w /dev/kvm ] &&
    "$QEMU" -accel help 2>/dev/null | grep -qw kvm; then
@@ -187,8 +160,7 @@ report() { # report <wait_for status> <description>
     esac
 }
 
-# A failed boot is only diagnosable from the console, and the last screenful is
-# what says whether it stopped in GRUB, the kernel, the initramfs or PID 1.
+# The last console screenful says whether it stopped in GRUB, kernel or PID 1.
 dump_log() {
     [ -s "$LOG" ] || { say "the serial console is empty"; return; }
     say "last 40 serial lines:"
@@ -201,35 +173,22 @@ say "booting $ISO in $MODE mode ($ACCEL_NAME, ${MEM}MiB, ${CPUS} vCPU, ${TIMEOUT
 
 case "$MODE" in
 grub)
-    # -boot d: the CD is the boot device. The NIC is explicit, and build.sh
-    # asserts CONFIG_E1000=y, so the interface has to come up -- the gate's
-    # pattern also accepts the no-interface line only so a missing driver is
-    # reported in a second instead of waiting out the deadline.
+# -boot d boots the disc; the NIC is explicit because build.sh asserts E1000.
+# The skip lines only shorten the wait and are still reported as failures.
     start_qemu -cdrom "$ISO" -boot d -nic user,model=e1000
 
-    # The initramfs says this immediately before switch_root. It is a stricter
-    # milestone than any "copper:" line, because /init is what finds the
-    # medium and builds the overlay: nothing after it can run unless both
-    # worked.
+# The handover is stricter than any prompt: /init must find the medium.
     wait_for 'copper: handing over to copper-init' "the initramfs handover"; rc=$?
     report "$rc" "GRUB, the kernel, the initramfs and the overlay reached PID 1"
     [ "$rc" -eq 0 ] || failed=1
 
-    # If the handover never happened, the network milestone cannot, and waiting
-    # another full deadline only delays the failure report.
+# Without the handover, waiting another deadline only delays the report.
     if [ "$failed" -eq 0 ]; then
         wait_for 'copper(-[a-z]+)?: .*(is up, asking DHCP|no network interface|skipping DHCP)' \
             "the network setup"; rc=$?
-        # The emulated card is always attached and the kernel is built with the
-        # driver, so the skip lines mean the interface never came up. Those are
-        # failures, not a machine without a NIC -- but matching them ends the
-        # wait immediately instead of letting it time out.
-        #
-        # The prefix is not always "copper:". The busybox flavour's PID 1 logs
-        # as copper-init and says "copper: ...", while the systemd flavour runs
-        # the DHCP client and the lease script as their own units, which log
-        # under their own names -- "copper-dhcp:" and "copper-net:". The gate
-        # is asking whether the NIC came up, not which process said so.
+# The skip lines mean the interface never came up, so they are failures; they
+# just end the wait quickly. The prefix varies: busybox logs "copper:", while
+# systemd's DHCP and lease units log as copper-dhcp:/copper-net:.
         if [ "$rc" -eq 0 ] && grep -qE 'copper(-[a-z]+)?: .*is up, asking DHCP' "$LOG"; then
             note_ok "copper-init brought the emulated NIC up and said so on the serial port"
         else
@@ -253,10 +212,7 @@ serial)
         exit 1
     }
 
-    # ttyS0 is /dev/console here because it is the only console=, so the
-    # wizard's stdout is this log. nosplash keeps Plymouth out of the way: a
-    # headless guest has no framebuffer, and the splash is not what this mode
-    # is asking about.
+# ttyS0 is the only console; nosplash keeps Plymouth off the serial log.
     start_qemu -kernel "$WORK/vmlinuz" -initrd "$WORK/initrd.img" \
         -append 'console=ttyS0,115200 rdinit=/init nosplash' \
         -cdrom "$ISO" -nic user,model=e1000
@@ -266,11 +222,8 @@ serial)
     [ "$rc" -eq 0 ] || failed=1
     ;;
 systemd)
-    # The unified image's other half. GRUB's "systemd init" entry is the switch
-    # a user sees; build_iso reads that entry back off the disc, and this boots
-    # the same kernel command line it passes. The console is serial for the same
-    # reason as --serial: a headless guest has no tty0 to read systemd's status
-    # lines from.
+# The unified image's other half: boot the entry's own command line on serial,
+# since a headless guest has no tty0 to read systemd's status from.
     command -v xorriso >/dev/null 2>&1 || {
         echo "boot-gate: --systemd needs xorriso to extract the kernel" >&2
         exit 2
@@ -288,22 +241,15 @@ systemd)
         -append 'console=ttyS0,115200 rdinit=/init nosplash copper.init=systemd' \
         -cdrom "$ISO" -nic user,model=e1000
 
-    # /init says which init it is handing over to, and this line only exists on
-    # the systemd branch. A fallback to copper-init prints a different sentence,
-    # so the wait cannot be satisfied by the default boot.
+# Only the systemd branch prints this handover line.
     wait_for 'handing over to systemd \(copper\.init=systemd\)' \
         "the initramfs handing over to systemd"; rc=$?
     report "$rc" "/init read copper.init=systemd and exec'd /lib/systemd/systemd"
     [ "$rc" -eq 0 ] || failed=1
 
-    # systemd starts the Copper units itself; the wizard is one of them and
-    # prompts on tty1, which is why this is a "Starting/Started" milestone and
-    # not the wizard's own greeting. A busybox boot never prints these lines.
-    # Match the unit NAME and its Description from the shipped .service files:
-    # noble's systemd prints "Starting <unit> - <Description>...", with the
-    # unit name wrapped in SGR colour escapes. The old pattern looked for
-    # "Starting Copper ..." and never matched that line, so a fully working
-    # systemd boot failed the gate for the shape of the log, not the boot.
+# Systemd starts the wizard as a unit, so wait for "Starting/Started", not its
+# greeting: a busybox boot never prints these. Match the shipped unit NAME and
+# Description, since noble wraps the name in colour escapes.
     if [ "$failed" -eq 0 ]; then
         wait_for 'copper-(firstboot|console)\.service.*Copper (first-boot wizard|console)' \
             "systemd starting the Copper units"; rc=$?
@@ -313,10 +259,8 @@ systemd)
     ;;
 esac
 
-# A milestone can be seen and the machine still be dead a second later: a
-# panic after the last 'copper:' line is exactly the failure this gate exists
-# to catch, and a grep that stops at the first match would miss it. Give the
-# guest a moment, then look again.
+# A milestone can be seen and the machine dead a second later. Check again
+# after a short pause so a later panic cannot slip through.
 if [ "$failed" -eq 0 ]; then
     sleep 3
     if grep -qE 'Kernel panic|Attempted to kill init|not syncing:' "$LOG"; then

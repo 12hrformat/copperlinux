@@ -49,9 +49,12 @@ login prompt on tty3. Use the account and password created during first boot;
 Ctrl+Alt+F1 returns to the main session. The systemd image provides login
 prompts on tty2 through tty6 as well.
 
-First boot also asks which desktop you want, `xfce`, `niri` or `hyprland`;
-XFCE is the default and both `niri` and `hyprland` are opt-in. Either launcher
-works from the prompt whatever you picked.
+First boot only asks about you: your name, login, machine name, passwords and
+timezone. It does not ask you to choose a desktop, shell, audio server or init —
+those are implementation details, and the defaults (XFCE, bash, PulseAudio and
+copper-init) are what the image is built around. You can still run `startniri`
+or `starthyprland`, switch audio in `/etc/copper.conf`, or pick the systemd
+entry from the boot menu once the machine is up.
 
 ## Sound
 
@@ -62,9 +65,17 @@ audio=pulseaudio      # the default
 audio=pipewire        # pipewire + wireplumber + pipewire-pulse
 ```
 
-The first-boot wizard asks for one and writes the line; switching later is a
-one-line edit and a new session, not a reinstall. Both serve the PulseAudio
-protocol, which is what firefox, mpv and cava speak.
+The first-boot wizard writes the default line; switching later is a one-line
+edit and a new session, not a reinstall. Both serve the PulseAudio protocol,
+which is what firefox, mpv and cava speak.
+
+The default init runs no udev, so Copper's `/etc/pulse/default.pa` uses
+`module-detect` rather than the stock udev-only detector. It reads
+`/proc/asound/devices` directly and gives the card a real playback sink and a
+real capture source; without it every client lands on the null sink, cava draws
+bars from that sink's monitor, Firefox plays into silence and a browser in a
+call has no microphone. `pavucontrol` ships in the image for the desktop's
+mixer shortcut.
 
 A running server on a muted card is a silent machine that looks healthy in
 every log, so the launchers do more than start a daemon: they call
@@ -73,8 +84,8 @@ card the kernel reports. The same command is available from a prompt:
 
 | Command | What it does |
 |---|---|
-| `copper-audio` / `copper-audio status` | The selected server, whether it is running, the cards and their Master level. |
-| `copper-audio init` | Unmute and raise Master/PCM/Speaker/Headphone/Front/HDMI to 80% on every card, then store the state if it can. |
+| `copper-audio` / `copper-audio status` | The selected server, whether it is running, the cards, sinks, sources and their levels. |
+| `copper-audio init` | Unmute and raise the playback controls to 80% and capture controls to 100% on every card, then unmute the server's sink and source and store the state if it can. |
 | `copper-audio test` | One second of 440 Hz on the default device. |
 | `copper-audio server` | Just which server is up. |
 
@@ -98,6 +109,14 @@ gentles the animation springs so motion settles instead of snapping, rounds
 every window, and dims unfocused windows slightly. Removing the include line
 restores the shipped configuration exactly.
 
+On VMware, leave **3D acceleration** enabled in the VM settings. niri refuses
+software EGL renderers, so `startniri` forces Mesa's llvmpipe only when the
+machine has no render node at all. A VMware virtual GPU that advertises one
+keeps its hardware renderer -- forcing llvmpipe there leaves a live Wayland
+socket with nothing drawn on it, which looks like a frozen session. The
+launcher still turns off direct scanout and the cursor plane on VMware, which
+avoids the overlay stalls virtual GPUs are prone to.
+
 ## Hyprland desktop
 
 Hyprland is Copper's third desktop. It is optional and never the default. Unlike
@@ -110,9 +129,9 @@ sudo ingot install hyprland
 ```
 
 Once installed, it coexists with XFCE and Niri without touching either; each is
-started by its own launcher. The first-boot wizard stores the choice in the
-first line of `/etc/copper-desktop` and copper-init prints the matching launcher
-hint (including the install command when the payload is absent).
+started by its own launcher. `/etc/copper-desktop` holds the default (`xfce`)
+for copper-init's console hint; running `starthyprland` does not need you to
+change it.
 
 ```
 | Command | What it does |

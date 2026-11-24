@@ -34,15 +34,8 @@ set -euo pipefail
 SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$0")"
 ROOT=$(pwd)
-# ROOT is iso/. The repository is its parent, and several gates below need it:
-# they list tracked files with git, and they run scripts from the top of the
-# tree rather than from inside iso/.
-#
-# This line is the reason the ISO built at all until it was missing. The two gate
-# functions that use $REPO arrived with their bodies and without this assignment,
-# and under `set -u` that is not a warning -- it is "REPO: unbound variable" and
-# a build that stops thirteen minutes in with nothing built. main has no $REPO
-# anywhere, so nothing there noticed; this branch has both halves.
+# ROOT is iso/; REPO is the parent for gates that list tracked files and run top-level scripts.
+# Without this assignment `set -u` aborts thirteen minutes into a build with "REPO: unbound variable".
 REPO=$(cd "$ROOT/.." && pwd)
 WORK="$ROOT/work"; OUT="$ROOT/out"; DL="$WORK/downloads"
 SYS="$WORK/sys"            # our toolchain prefix (musl + musl-gcc)
@@ -120,16 +113,7 @@ lint_scripts() {
 lint_scripts
 
 # ---- stage caching -----------------------------------------------------
-# iso/work/ is cached between runs, and the CI cache deliberately falls back
-# to the most recent older tree so the expensive kernel build survives an
-# unrelated change. That makes a stale stage easy: "does the output file
-# exist" is just as true for a tree built from sources that have since
-# changed. This build shipped exactly that once — an ISO whose initrd was
-# packed from the previous version of iso/live/init, so the overlay
-# directories were missing and the first boot died on a valid-looking
-# artifact. So every stage stamps its output with a hash of the inputs that
-# produced it, and only skips when that still matches. A warm cache buys
-# speed now; it can't be wrong.
+# A stale cached tree once shipped an old initrd; hash each stage's inputs so a warm cache cannot lie.
 stamped_skip() {   # stamped_skip <stamp> <input>...
   local stamp="$1" want f; shift
   # An input we can't read means we can't know whether the stage is current.
@@ -155,23 +139,8 @@ stamp_set() {      # stamp_set <stamp> <input>...
   cat "$@" | sha256sum | cut -d' ' -f1 > "$stamp"
 }
 
-# The ISO is a copy of the entire staged rootfs, so its inputs are the tree
-# itself rather than any one file in it. Run from inside the tree so the
-# hashed paths are relative — absolute ones carry the checkout directory and
-# would make the stamp differ between runners for no reason.
-#
-# `-type f` alone is wrong here, and the systemd stage is what exposed it. The
-# swap to PID 1 is a SYMLINK (/sbin/init -> /lib/systemd/systemd) and so are
-# the power commands, and find with `-type f` cannot see either: two trees that
-# differ only in what init points at hash the same. The first version of this
-# guard was therefore one symlink-only change away from skipping the rebuild
-# and shipping the previous flavour's ISO under a stamp that said it was
-# current — a stale artifact with a green light. Symlinks are hashed as
-# name -> target; regular files by content; every other type (a device node
-# under /dev, a fifo) by path and type, which is all that distinguishes them.
-# Directory entries need no line of their own: a directory's existence is
-# implied by the paths under it, and an EMPTY directory is not something the
-# ISO's behaviour depends on in any way this hash is meant to catch.
+# Hash the staged tree from inside it so paths stay runner-independent; include symlink targets,
+# because a different init link is a different image. This is what stops a stale artifact with a green light.
 tree_hash() {      # tree_hash <dir>
   ( cd "$1" && {
       find . -type f -exec sha256sum {} + | LC_ALL=C sort
@@ -209,32 +178,15 @@ unpack() {                  # unpack tarball -> prints its dir
   echo "$d"
 }
 
-# PPA indexes flap. Launchpad answers 503 to one request and 200 to the next
-# (measured on the niri and hyprland PPAs in November 2026: six consecutive
-# requests came back 503, 503, 200, 503, 200, 503). apt-get update does NOT
-# fail for a single dead source -- it warns, exits 0, and carries on with the
-# sources that did answer. The update therefore looks successful while the
-# PPA's package list is missing, and the pinned compositor then dies with
-# "E: Unable to locate package niri" several lines later. That is exactly how
-# CI went red on 2026-11-17 with nothing in the image changed.
-#
-# So ask apt itself whether the package has an installable candidate, rather
-# than trusting the update's exit status. Acquire::Retries (set by the callers)
-# gives each individual index fetch several immediate tries; this loop gives
-# an outage that outlasts them eight tries with a short backoff in between.
-#   apt_update_for <package> <logfile> <apt options...>
+# PPA indexes flap: apt-get update can exit 0 with a missing package list, so ask apt-cache for an
+# installable Candidate instead. Acquire::Retries plus this loop ride out the outage.
 apt_update_for() {
   local pkg="$1" log="$2" try policy
   shift 2
   : > "$log"
   for try in 1 2 3 4 5 6 7 8; do
     apt-get "$@" update -qq >>"$log" 2>&1 || :
-    # Capture before grepping. Piping apt-cache straight into `grep -q` can
-    # kill apt-cache with SIGPIPE when grep leaves on the first hit, and under
-    # pipefail that reports failure even on a match -- a PPA stage hit
-    # exactly that. A here-string has no writer to interrupt.
-    # The candidate check itself is build_gui's: a name apt only recognizes
-    # through Provides/Replaces prints "(none)" and must not count.
+# Capture apt-cache output before grep: piping straight to grep -q can SIGPIPE under pipefail and report a false miss.
     policy=$(apt-cache "$@" policy "$pkg" 2>/dev/null) || policy=
     if grep -q '^ *Candidate: [^ (]' <<<"$policy"; then
       echo "  apt indexes ready for $pkg (attempt $try)"
@@ -253,23 +205,9 @@ apt_update_for() {
 # 1. Linux kernel, from kernel.org, with Copper's .config subset
 # ---------------------------------------------------------------
 
-# A kernel that boots to a black screen, or that comes up with no NIC able to
-# speak DHCP, is miserable to debug from inside a VM — you never see a build
-# error, just a dead machine. So the options Copper actually leans on are
-# checked after kconfig has had its say, and a missing one fails the build
-# here with a readable list instead.
-#
-# Only symbols that really exist in $KREL belong in this list. 6.12 dropped
-# `ETHERNET` (the driver menu is unconditional once NET is on) and moved
-# BLK_DEV_NVME to drivers/nvme/host, so grepping the old paths lies.
-#
-# BLK_DEV_IDE is deliberately absent, and must stay absent: the legacy IDE
-# subsystem was deleted from the kernel before 6.12 (drivers/ide does not
-# exist in v6.12), so the symbol can never be enabled and requiring it fails
-# every build with "these options did not survive olddefconfig: BLK_DEV_IDE".
-# Requiring it without ever passing --enable for it could not have worked
-# either way. PIIX IDE disks are not lost: libata serves a PIIX controller
-# in IDE compatibility mode through ATA and ATA_PIIX, both enabled below.
+# Assert the symbols Copper needs after olddefconfig: kconfig can silently drop a flag and leave a black
+# screen or no DHCP. Only symbols that exist in $KREL belong here; BLK_DEV_IDE is gone in 6.12 (libata
+# covers PIIX), and asking for a symbol that was never enabled could not have worked either way.
 require_kernel_config() {
   local cfg="$1" sym missing=""
   for sym in \
@@ -294,29 +232,8 @@ require_kernel_config() {
   # double-clicking an .AppImage only says "Fuse not installed". Built in, and
   # devtmpfs publishes /dev/fuse at boot with no udev to ask.
 
-  # Every display driver, asserted rather than merely requested.
-  #
-  # Two separate mistakes are guarded against here, and both produced a machine
-  # that booted to a shell.
-  #
-  # The first is asking for a symbol whose dependencies are unmet. kconfig
-  # accepts --enable FB with no complaint, olddefconfig drops it without a word,
-  # and the build goes green with a kernel that has neither a framebuffer nor a
-  # driver to make one. A flag that vanishes quietly needs a check that fails
-  # loudly, so each of these is asserted to be =y in the config after
-  # olddefconfig rather than trusted to have been requested.
-  #
-  # The second is a driver that is present but useless on the machine it is
-  # needed on -- DRM_BOCHS on anything that is not QEMU's Bochs VGA adapter,
-  # which is most machines. No amount of asserting it is =y catches that, because
-  # it genuinely is =y. Asserting every driver here means a machine with no
-  # matching driver is a gap in this list rather than a surprise at boot, and
-  # that the two failures are told apart: a dropped symbol stops the build, an
-  # unbound one shows up as a missing /dev/fb0 in the log.
-  #
-  # FONT_8x16 is pinned so the console keeps the glyphs it had on the text
-  # plane. Left to its own devices kconfig also picks FONT_8x8, and the console
-  # renders 160x100 of unreadably small text instead.
+# Assert display drivers =y after olddefconfig: kconfig accepts a request then drops it without a word,
+# and DRM_BOCHS alone only drives QEMU's 1234:1111. FONT_8x16 keeps the text console readable.
   for sym in DRM DRM_FBDEV_EMULATION DRM_BOCHS DRM_SIMPLEDRM \
              DRM_VMWGFX DRM_VIRTIO_GPU DRM_QXL DRM_VBOXVIDEO DRM_I915 \
              FB FB_VESA FB_EFI \
@@ -420,21 +337,8 @@ build_kernel() {
   KT=$(fetch "https://cdn.kernel.org/pub/linux/kernel/$KPATH/linux-$KREL.tar.xz")
   KD=$(unpack "$KT")
 
-  # The compiler, pinned rather than whatever the machine happens to have.
-  #
-  # gcc 15 turned -Wunterminated-string-initialization into a warning the kernel
-  # builds with -Werror, and this kernel's ACPI signature table trips it:
-  #
-  #     drivers/acpi/tables.c:410: error: initializer-string for array of 'char'
-  #     truncates NUL terminator [-Werror=unterminated-string-initialization]
-  #
-  # so the build stops in ACPI code, thousands of lines away from anything that
-  # was changed. Pinning the compiler is the smaller fix: the alternative is
-  # carrying a patch against the kernel's own source that no upstream asked for,
-  # and that silently stops being needed the moment the kernel is bumped.
-  #
-  # The pin lives here rather than in CI config so a local build gets it too.
-  # Set KERNEL_CC to override; set it empty to force the system default.
+# Pin the compiler here, not just in CI: gcc 15 turns this kernel's ACPI signature initializer into a
+# -Werror failure thousands of lines from the change. KERNEL_CC overrides; empty forces the system default.
   local KCC="${KERNEL_CC-gcc-13}"
   local kcc=()
   if [ -n "$KCC" ]; then
@@ -565,17 +469,8 @@ build_kernel() {
 # 2. musl libc (our C library, compiled from source)
 # ---------------------------------------------------------------
 build_musl() {
-  # The toolchain is a cache entry as much as a build product, and a cache
-  # entry can outlive the path it was built at. musl-gcc is a wrapper that
-  # names its specs file, its crt objects and its libc by ABSOLUTE path, and
-  # $SYS lives under the workspace, whose directory is named after the
-  # repository. Renaming or transferring the repo moves that path, and a
-  # restored musl-gcc then exists and cannot link anything: it still points
-  # at /home/runner/work/<old-name>/..., which is gone. "the file exists" is
-  # not evidence the toolchain works, so compile something with it. This was
-  # a real red build -- a cache from when the repo was copper/copper was
-  # restored under copperlinux/copperlinux, and coreutils' configure died
-  # with "C compiler cannot create executables" while the cache looked fine.
+# musl-gcc embeds absolute paths, so a restored cache from a renamed repo exists but cannot link;
+# compile a throwaway program before trusting it.
   local musl_ok=0
   if [ -x "$SYS/bin/musl-gcc" ]; then
     if printf 'int main(void){return 0;}\n' \
@@ -610,12 +505,8 @@ build_musl() {
   export LDFLAGS="-static"
 }
 
-# busybox ships no scripts/config (that's a kernel tool), so enable the
-# symbols we need via the kernel tree's copy, which edits .config in
-# place. Appending CONFIG_* lines instead would duplicate the defaults
-# that make defconfig already wrote — conf rejects those as "reassign"
-# (first assignment wins, so CONFIG_STATIC=y got silently dropped) and a
-# redundant write into a kconfig choice corrupts its state.
+# Use the kernel tree's scripts/config: appending CONFIG_* lines duplicates defconfig defaults, and conf
+# rejects the reassignment (or corrupts a kconfig choice) instead of setting the symbol.
 set_bb_config() {
   local sym="$1"
   local kcfg="$DL/linux-$KREL/scripts/config"
@@ -762,61 +653,18 @@ build_tools() {
   stamp_set "$WORK/tools.stamp" "$SELF"
 }
 
-# Point the power commands at the tools THIS TREE's PID 1 understands -- in
-# BOTH directories PATH searches for them. The order is /usr/local/sbin:
-# /usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin (assert_commands_reachable above
-# keeps it in step with copper-init's setenv, and sudo's secure_path and
-# /etc/profile carry the same list), so /usr/sbin comes FIRST: a `reboot` left
-# there by systemd-sysv wins the name over a busybox link in /sbin, and `sudo
-# reboot` answers "System has not been booted with systemd" (bug 29). The
-# 2026-10-17 fix only relinked /sbin; the CI ISO built from it still shipped
-# /usr/sbin/reboot|poweroff|halt|shutdown -> ../bin/systemctl, which is how
-# this was caught -- by reading the links back off the shipped disc, and
-# re-checked there by build_iso's gate.
-#
-# ONE image now carries both inits, and the GRUB entry (or the wizard's saved
-# /etc/copper-init) decides which one actually becomes PID 1. A build-time tree
-# therefore cannot pick the power tools: /sbin/init in the staged tree says
-# which flavour was built LAST, not which one is running. All four names are
-# Copper's wrapper in both directories, and the wrapper asks the running PID 1
-# at call time -- /proc/1/comm is "systemd" on a systemd boot and "copper-init"
-# otherwise. systemctl gets `systemctl --no-block <mode>` (a blocking client is
-# SIGTERMed by the very shutdown it started, cancels its own job, and hands the
-# prompt back halfway); copper-init gets the busybox applet, which signals the
-# convention its on_power_signal() reads.
-#
-# shutdown itself has to be Copper's wrapper on both flavours, as a real file
-# at /sbin/shutdown with /usr/sbin/shutdown pointing at it. busybox ships no
-# shutdown applet, and systemd-sysv's compatibility `shutdown` treats a bare
-# invocation as "power off in one minute" -- a real util-linux default, but on
-# a live ISO it looks like the command did nothing (`sudo shutdown` was silent;
-# `sudo reboot` worked). The wrapper maps bare/`now` to an immediate poweroff
-# and then dispatches by running init.
-#
-# This has to be right on EVERY call, not only the first. The `iso` chain
-# re-runs the desktop stages over the tree -- build_rootfs clobbers /etc/group
-# and takes the _seatd group with it, and that group is part of what those
-# stages' skip guards ask about -- and each of them calls this. A version that
-# always wrote busybox quietly undid the systemd flavour's systemctl links on
-# the way to the disc, and the systemd ISO failed its own read-back gate:
-#
-#     iso: the ISO boots systemd but its power commands are wrong:
-#          sbin/reboot -> /bin/busybox usr-sbin/reboot -> /bin/busybox ...
-#
-# Called after every stage that copies packages into $TGT (copper, gui, niri;
-# plymouth only copies its own lib directory), and by the systemd stage right
-# after it swaps PID 1.
-# updated by farcrowx, bug 29, iso/build.sh (the /sbin-only relink loops)
+# Point power commands at the tools THIS TREE's PID 1 understands, in both /sbin and /usr/sbin:
+# /usr/sbin comes first on PATH, and a systemd-sysv link there wins so `sudo reboot` answers "System has
+# not been booted with systemd" (bug 29). One image boots either init, so all four names are Copper's
+# wrapper: it reads /proc/1/comm and uses `systemctl --no-block` (a blocking client is SIGTERMed by the
+# shutdown it started, cancels its own job, and hands the prompt back) or the busybox applet. Re-run after
+# every stage that copies packages, or the systemd ISO fails its read-back gate. A bare `sudo shutdown`
+# once looked like it did nothing, so shutdown is the wrapper as a real file too.
 power_links() {          # power_links <staged-root>
   local root=$1 cmd
   mkdir -p "$root/sbin" "$root/usr/sbin"
-  # All four names are the wrapper on both flavours. One image can boot either
-  # init now, so the build-time tree cannot decide this: the wrapper reads the
-  # RUNNING PID 1 (/proc/1/comm) and either runs `systemctl --no-block` or execs
-  # the busybox applet. A link straight to systemctl breaks the busybox boot,
-  # and a link straight to busybox signals a PID 1 convention systemd does not
-  # read. iso/shutdown.sh carries the dispatch; tests/shutdown-gate.sh binds a
-  # fake comm file to check both halves without COPPER_INIT masking the path.
+# All four names are the wrapper on both init flavours: the wrapper reads the RUNNING PID 1 (/proc/1/comm)
+# and dispatches at call time. tests/shutdown-gate.sh binds a fake comm file to check both halves.
   for cmd in reboot poweroff halt; do
     ln -sf /sbin/shutdown "$root/sbin/$cmd"
     ln -sf /sbin/shutdown "$root/usr/sbin/$cmd"
@@ -830,17 +678,8 @@ power_links() {          # power_links <staged-root>
   ln -sf /sbin/shutdown "$root/usr/sbin/shutdown"
 }
 
-# Which init is staged in this tree? "busybox" (copper-init, the shipped
-# default) or "systemd" (the migration, opt-in via the systemd stage).
-#
-# The answer is read off sbin/init rather than remembered in a variable,
-# because the staged tree outlives any one build.sh run: a cached $TGT from
-# actions/cache could hold either. Every gate that cares asks this question,
-# so there is one definition of "which init is this" and not four.
-#
-# readlink, not -e: sbin/init is an absolute symlink and -e would follow it
-# onto the build host, where neither target exists. The bug that stopped /init
-# handing over was this exact trap, one file over (see build_copper).
+# Ask sbin/init, not a variable: the cached tree outlives any one build.sh run. Use readlink, not -e,
+# because the absolute target does not exist on the build host and -e would call a good tree broken.
 init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
   case "$(readlink "$1/sbin/init" 2>/dev/null)" in
     /usr/bin/copper-init)  echo busybox ;;
@@ -849,49 +688,11 @@ init_flavour() {         # init_flavour <staged-root> -> busybox|systemd|unknown
   esac
 }
 
-# ---------------------------------------------------------------
-# The merged-usr bridge: /lib/systemd is a NAME for /usr/lib/systemd
-# ---------------------------------------------------------------
-# The systemd flavour needs one directory to answer at two names. The systemd
-# deb this image stages ships PID 1 at /usr/lib/systemd/systemd, because the
-# tree it is built in is merged-usr -- /lib IS /usr/lib.
-# Copper's tree is NOT merged-usr: /lib here is a real directory holding the
-# musl loader and busybox. So the systemd stage makes lib/systemd a symlink
-# to ../usr/lib/systemd (build_systemd), and PID 1 is reachable at the name
-# the kernel execs.
-#
-# The bridge is a systemd-flavour ARTEFACT, and the staged tree outlives any
-# one build.sh run: the CI saves iso/work AFTER the systemd flavour has run,
-# so the next run can restore a tree that carries the bridge. Two things
-# then go wrong, and both of them happened for real:
-#
-#   * cp cannot merge a directory into a symlink, so a package tree that has
-#     a real lib/systemd of its own -- the old Wayland desktop closure had one,
-#     the gui closure does not -- cannot be copied into the tree at all:
-#
-#         cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with
-#             directory '.../desktop-root/./lib/systemd'
-#
-#     and cp stops. That killed the second-desktop stage in CI, on two
-#     consecutive runs, on a tree that had been perfectly good a moment
-#     before.
-#
-#   * a tree whose PID 1 is systemd packages a "default" ISO that silently
-#     boots systemd -- the half-done swap SYSTEMD-MIGRATION.md warns about,
-#     and the reason the two artefacts have to stay unambiguous.
-#
-# So the stages that copy packages in take the bridge off for the copy and
-# put it back afterwards IF this tree is the systemd flavour's. The tree
-# then ends where a fresh build of the same flavour ends: the systemd tree
-# bridged again (which is exactly what build_systemd's own bridge does to a
-# real lib/systemd), the default tree with a real lib/systemd directory, as
-# the packages ship it.
-#
-# build_systemd's own bridge is NOT this code: it is the stage's, it is
-# tested by the gate's fixture (which deliberately leaves a real lib/systemd
-# squatting on the name), and the sabotage suite proves the gate goes red
-# when that block is disabled. Two copies of a rule is a smell, but a gate
-# that stops testing the code the stage actually runs is worse.
+# The systemd deb puts PID 1 at /usr/lib/systemd/systemd; Copper's /lib is real, so the stage bridges
+# lib/systemd -> ../usr/lib/systemd. A cached tree can carry that symlink into a package copy and
+# `cp: cannot overwrite non-directory '.../rootfs/./lib/systemd' with` stops the build. Stages take the bridge off for
+# copies and restore it only for a systemd tree; build_systemd keeps its own bridge so its gate still
+# tests the code that actually runs.
 merged_usr_bridge() {    # merged_usr_bridge <staged-root> -> true if the bridge is in place
   [ -L "$1/lib/systemd" ] && [ "$(readlink "$1/lib/systemd")" = "../usr/lib/systemd" ]
 }
@@ -932,24 +733,13 @@ copy_stage_in() {        # copy_stage_in <stage> <target>
   fi
 }
 
-# Take the staged tree back to the default flavour: PID 1 is copper-init
-# again, the power commands are busybox's again, and the bridge is off.
-# Idempotent -- a tree that is already the default flavour is left as it is.
-#
-# This is called by the DEFAULT flavour's chains only. The `iso` chain is not
-# one of them: the CI builds the default ISO and the systemd ISO with the
-# same command, and the tree's own state is what says which flavour is being
-# packaged. The `systemd` chain is not one either: that stage is what puts
-# the swap in place.
+# Return a cached tree to the default flavour (copper-init, busybox power tools, no bridge); idempotent,
+# and only the DEFAULT flavour's chains call it, never `iso` or `systemd`.
 default_flavour() {
   if [ "$(init_flavour "$TGT")" = systemd ]; then
     ln -sf /usr/bin/copper-init "$TGT/sbin/init"
-    # A cached tree from before the unified wrapper may still have systemctl's
-    # link here. Replace it with the real file before power_links points the
-    # other names at /sbin/shutdown: busybox ships no shutdown applet, and a
-    # stale systemctl link makes `sudo shutdown` talk to a PID 1 that is not
-    # there. rm first so what is left is a regular file and not a link -- the
-    # ISO read-back gate checks that shape too.
+# Replace a stale systemctl link with the real shutdown wrapper before power_links: busybox ships no
+# shutdown applet, and the ISO read-back gate checks that what is left is a regular file.
     rm -f "$TGT/sbin/shutdown"
     install -m 0755 "$ROOT/shutdown.sh" "$TGT/sbin/shutdown"
     echo "  sbin/init: systemd -> copper-init (the tree came in systemd-flavoured)"
@@ -962,15 +752,8 @@ default_flavour() {
 # 5. Copper's own pieces: shell, init (PID 1), first-boot wizard
 # ---------------------------------------------------------------
 
-# build_musl is what exports $CC, $CFLAGS and the musl PATH -- and it is not
-# obvious from inside build_copper that it needs any of that, because in the
-# default `full()` path build_musl has always run first. A stage that reaches
-# build_copper without it does not get a compiler that is merely missing: it
-# gets `set -u` aborting on `line 638: CC: unbound variable`, a message about a
-# shell variable that says nothing about the one-line cause. That happened for
-# real when the `systemd` stage was added without build_musl in its dispatch
-# line, and CI is what found it. This guard turns the same mistake into a
-# sentence that names the missing stage.
+# build_copper needs $CC/$CFLAGS from build_musl; a stage that skips it dies on an unbound variable that
+# says nothing about the missing prerequisite. Turn that mistake into a sentence here.
 require_toolchain() {
   if [ -z "${CC:-}" ] || [ -z "${CFLAGS:-}" ]; then
     echo "build: no toolchain in this shell (CC/CFLAGS unset)." >&2
@@ -1005,12 +788,8 @@ local SRC="$ROOT/../src"
      "$ROOT/src-init/copper-init.c"
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/copper-firstboot" \
      "$ROOT/firstboot/copper-firstboot.c"
-  # xprobe: the X server liveness probe startxfce uses before it trusts an
-  # existing display. Static musl like the rest, so it needs nothing from the
-  # display stack and is safe to run before X exists. Without it startxfce
-  # falls back to believing a bare socket file, and on a machine with the
-  # persistence disk the socket outlives the server that made it -- the next
-  # boot then reuses a dead :0 instead of starting one.
+# xprobe checks X liveness before startxfce trusts a socket; without it a stale :0 from the persistence
+# disk survives the server that made it and the next boot reuses a dead display.
   $CC $CFLAGS -std=c11 -o "$TGT/usr/bin/xprobe" \
      "$ROOT/x11/probe/xprobe.c"
   ln -sf /usr/bin/copper-init "$TGT/sbin/init"   # our PID 1
@@ -1058,12 +837,8 @@ local SRC="$ROOT/../src"
       exit 1
     fi
   done
-  # sbin/init is a symlink, so -e is the wrong test for it: -e follows the
-  # link, the target is absolute, and it therefore gets looked up on the build
-  # host, where there is no /usr/bin/copper-init — the link reads as dangling
-  # and a perfectly good staged tree gets reported as broken. That is the same
-  # trap that stopped /init handing over, one file over. readlink does not
-  # follow, which is exactly what is wanted here.
+# Test sbin/init with readlink, not -e: its absolute target is absent on the build host, so -e reports
+# a perfectly good staged tree as broken.
   if [ "$(readlink "$TGT/sbin/init")" != "/usr/bin/copper-init" ]; then
     echo "copper: sbin/init should be a symlink to /usr/bin/copper-init" >&2
     exit 1
@@ -1120,15 +895,8 @@ build_rootfs() {
     exit 1
   fi
 
-  # The overlay is copied onto a $TGT that may have come straight out of the
-  # build cache, still holding files from an earlier revision. mkdir -p and cp
-  # only ever add, so a file deleted from iso/rootfs-overlay/ would survive
-  # forever and be baked into the next ISO. Record what the overlay contained
-  # last time and drop whatever it no longer claims.
-  #
-  # The list has to come from iso/rootfs-overlay/, not from $TGT: $TGT is the
-  # cached directory that still has the stale file in it, so diffing $TGT
-  # against itself would never notice.
+# The overlay is copied onto a cached $TGT and cp only adds: compare the manifest against the overlay,
+# not $TGT, to drop files the overlay no longer claims instead of baking them into the next ISO.
   local old="$WORK/overlay.manifest" new="$WORK/overlay.manifest.new" rel
   ( cd "$ROOT/rootfs-overlay" && find . \( -type f -o -type l \) | sed 's|^\./||' ) \
     | LC_ALL=C sort > "$new"
@@ -1144,13 +912,8 @@ build_rootfs() {
   fi
   mv -f "$new" "$old"
 
-  # The wifi stack got the axe upstream, but a build cache only ever adds: a
-  # tree staged before the revert still held copper-wifi, wpa_supplicant and the
-  # radio firmware, and the next ISO built on top of it shipped all of them.
-  # That's how copper-wifi snuck back into a downloaded image after the revert.
-  # Delete by name here, every run, before any later stage can re-pack the tree.
-  # build_iso refuses to write a disc that still has them, so a miss fails the
-  # build instead of the boot.
+# Delete removed wifi binaries and firmware every run: a build cache only adds, and build_iso refuses
+# to write a disc that still carries them.
   local stale
   for stale in \
       usr/bin/copper-wifi \
@@ -1181,39 +944,15 @@ build_rootfs() {
          "$TGT/usr/share/man/man5/wpa_supplicant.conf.5.gz" \
          "$TGT/usr/share/bash-completion/completions/copper-wifi" 2>/dev/null || true
 
-  # usr/share/mime/icons is a zero-byte legacy mapping that update-mime-database
-  # emits, and the gui and niri stages each prune it after they run. A cache
-  # restore can still hold one from a build before those prunes existed, and the
-  # gate below would then fail here, in rootfs, before either stage can run.
-  # Drop the same empty mapping the stages drop, so the gate sees the tree the
-  # stages are trying to produce rather than one a previous build left behind.
+# Prune the zero-byte legacy mime icons map a cache could hold from before gui/niri pruned it, so the
+# empty-file gate sees the tree the stages are trying to produce.
   if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
     rm -f "$TGT/usr/share/mime/icons"
   fi
 
-  # A cache restore can leave empty files behind from a previous build's later
-  # stages (kitty/python __init__.py, sensors.d/.placeholder, ...). Those
-  # stages prune their own empties during their run, but rootfs runs first and
-  # the gate below would otherwise fail on the stale copies. Drop every empty
-  # regular file now, except the ones the gate already exempts by name, so the
-  # gate sees the tree the stages are trying to produce.
-  #
-  # Run it from inside the tree. The guards say './etc/motd', which is the
-  # shape find prints for `find .`; the first version of this sweep was
-  # `find "$TGT"` beside them, and $TGT is absolute, so they matched nothing
-  # and the exemption the gate below carries never applied here. That went
-  # unnoticed for motd and timezone -- neither is empty in this image -- but
-  # not for the old Wayland desktop skeleton: its Lua configuration require()d
-  # files that were DELIBERATELY empty, a stub like
-  # conf/environments/default.lua existing only to be required, and those are
-  # precisely the zero-byte files. Rootfs is stage 6 and the desktop stage was
-  # stage 8, so the skeleton was unpacked after this sweep on a cold build and
-  # survived -- but any rebuild that re-ran rootfs (any edit under
-  # iso/rootfs-overlay/) swept the skel already sitting in the cached tree, and
-  # the desktop stage's stamp still matched, so nothing put the stubs back. The ISO shipped a skeleton missing the files its own config
-  # required (bug 26), and every home seeded from it failed to start. The niri
-  # skeleton has no empty files, but the exemption stays: it is a data tree
-  # from another repo and a future revision can carry an empty marker.
+# Drop empty files left by cached later stages before rootfs's gate runs, and find from inside $TGT so
+# the './etc/motd' exemptions match. Bug 26 was a sweep that missed the vendored skeleton's deliberately
+# empty Lua include stubs and shipped a broken home; keep the niri exemption for future re-pins.
   ( cd "$TGT" && find . -type f -size 0 \
       ! -path './etc/motd' \
       ! -path './etc/timezone' \
@@ -1226,49 +965,11 @@ build_rootfs() {
   assert_shell_scripts_parse
 }
 
-# ---------------------------------------------------------------
-# 6b. no command in the image may be an empty REGULAR file
-# ---------------------------------------------------------------
-# Narrow on purpose, and deliberately not about symlinks.
-#
-# A zero-byte regular file that is supposed to be an executable is fatal:
-# execve() finds it, refuses it, and the shell reports "command not found"
-# for a command that is plainly listed. An empty *symlink* is not a thing --
-# a symlink has no size of its own; it has a target.
-#
-# `find -type f` does not match symlinks (find defaults to -P, no follow), so
-# this ignores every one of the 600-odd applet links and looks only at real
-# files. That distinction matters: an earlier version of this gate was aimed
-# at "310 empty files" which turned out to be a measurement error. p7zip
-# reports those entries correctly as symlinks -- Mode = lr-xr-xr-x,
-# Symbolic Link = ../bin/busybox -- but silently writes some of them to disk as
-# 0-byte regular files on extraction. Inspect the image with `mount -o loop`
-# or bsdtar, never with p7zip, or you will chase this ghost again.
-#
-# A few files are legitimately empty, so they are named rather than allowing a
-# blanket exemption.
-#
-# updated by dragon, bug 26: the desktop config skel is the one exception, and
-# it is exempted as a whole subtree rather than file by file. It is a vendored,
-# sha256-pinned DATA tree (the niri stage checks the tarball hash before it
-# unpacks it), not a set of commands -- which is the only thing this gate is
-# for. The old Wayland desktop tree shipped zero-byte Lua include stubs that
-# `require()`
-# loaded (empty is valid Lua, and deleting them broke the config) and marker
-# files whose *presence* is the setting (`waybar-disabled`, `software.sh`).
-# Naming the files individually would only break again on the next re-pin, when
-# upstream's next release moves them; the subtree is the stable unit. The niri
-# tree has neither, but the exemption is cheap and a re-pin can add one.
-#
-# mach_kernel is the vestigial cosmopolitan artifact: shipped empty, and
-# grub.cfg never boots it (the menu loads /boot/vmlinuz and /boot/initrd.img),
-# so an empty one costs nothing. Worth knowing it is a no-op file.
-#
-# Every exemption is a `! ...` term inside the one find below. Keep it that way:
-# a `#` comment inside a backslash-continued command ends the command at the
-# comment, so every term after it silently stops applying -- which is exactly
-# how bug 26's first fix went red, with the skel term skipped and the gate still
-# naming the files it was meant to exempt.
+# An empty executable is found by execve and then refused as "command not found". `find -type f` ignores
+# symlinks, so only real files are checked; inspect loops with mount/bsdtar, never p7zip, which writes
+# some links as zero-byte files. Exemptions are separate `! ...` terms: a `#` inside a backslash-continued
+# command ends it and silently disables the rest (bug 26). niri-skel is a vendored data tree with
+# meaningful empty markers; mach_kernel is vestigial.
 assert_no_empty_files() {
   local empties
   empties=$( cd "$TGT" && find . -type f -size 0 \
@@ -1301,21 +1002,9 @@ assert_no_empty_files() {
   exit 1
 }
 
-# ---------------------------------------------------------------
-# 6c. the commands people actually type must be reachable BY NAME
-# ---------------------------------------------------------------
-# This tests the thing that actually broke, which is not "is the file there".
-#
-# `ip` and `ifconfig` were present, compiled into the shipped busybox, and
-# correctly symlinked the entire time, and still answered "command not found".
-# They live in sbin. PID 1 started with no PATH in its environment, so execvp
-# fell back to the kernel's compiled-in default -- /bin:/usr/bin -- and sbin
-# was never searched. Every existence-style check passes on that failure,
-# which is how it survived several builds and several boots.
-#
-# So: resolve each name the way the live shell will, through the PATH
-# copper-init sets, in that order, with no fallback and no confstr. If the two
-# ever drift apart, the build says so instead of a user finding out.
+# The old failure was not a missing file: ip/ifconfig were in busybox but sbin was not on PID 1's PATH,
+# so execvp never found them. Resolve each name through copper-init's PATH, in order, and keep the list
+# in step with its setenv().
 assert_commands_reachable() {
   # Must match setenv("PATH", ...) in copper-init.c. Keeping the two in step
   # by hand is exactly the kind of thing that drifts, so if this fires, check
@@ -1384,23 +1073,13 @@ assert_commands_reachable() {
   echo "rootfs: every required command is reachable by name on PATH"
 }
 
-# ---------------------------------------------------------------
-# 6c. no shell script in the repo may fail to parse
-# ---------------------------------------------------------------
-# A quoting mistake in a shell script does not stop it from running: the shell
-# starts executing whatever the broken quoting handed it. One real example --
-# an apostrophe inside a comment within a single-quoted awk program closed the
-# quote, and the remainder of the awk was executed as shell, failing as
-# "buf[depth]: not found" with nothing pointing at the real cause.
+# A quoting mistake in a shell script can still parse and then execute the wrong command; check every
+# tracked *.sh so it is caught at build time, not on a boot.
 assert_shell_scripts_parse() {
   local f bad=0
 
-  # bash -n, not sh -n. build.sh uses process substitution and is run with
-  # bash, so checking it with a POSIX shell reports a syntax error in code
-  # that runs perfectly well every day.
-  # `git ls-files` prints paths relative to the directory you run it in, so
-  # this has to be run from the repository root or the paths do not resolve.
-  # Run from $ROOT and it silently lists iso/ only -- tests/ never gets checked.
+# Use bash -n for build.sh (process substitution is valid), and run git ls-files from $REPO or tests/
+# never gets checked.
   local n_bash=0
   for f in $(cd "$REPO" && git ls-files '*.sh' 2>/dev/null); do
     [ -f "$REPO/$f" ] || { echo "build: $f is listed by git but not on disk" >&2; bad=1; continue; }
@@ -1413,20 +1092,9 @@ assert_shell_scripts_parse() {
   done
   [ "$bad" -eq 0 ] || exit 1
 
-  # The three tools that run on a live system declare #!/bin/busybox sh and
-  # are executed by busybox ash, not by bash. Grammar the POSIX shell does not
-  # have -- array assignment, the `function` keyword, process substitution --
-  # would fail on the machine this ISO is for, which is the only place it
-  # matters. ingot (usr/bin) runs there too: `#!/bin/sh` on the live image is
-  # /bin/busybox, so it gets the same check. So check those against a POSIX
-  # shell too, when one is available.
-  #
-  # What this does NOT catch: bash builtins that happen to be spelled like
-  # ordinary commands. dash -n accepts `[[ -n "$1" ]]`, because to its parser
-  # that is a command called "[[" with two arguments, and it only fails when it
-  # runs. Catching that needs a shell that runs the code, not one that reads
-  # it -- which is why tests/ingot-gate.sh executes ingot rather than only
-  # parsing it.
+# The live tools run under busybox ash, so check them with a POSIX shell too: arrays or `function` would
+# fail only on the target. dash -n still accepts `[[ ... ]]` as a command, so tests/ingot-gate.sh executes
+# it rather than merely parsing it.
   local posix=""
   for c in dash ash busybox; do
     command -v "$c" >/dev/null 2>&1 && { posix="$c"; break; }
@@ -1471,27 +1139,9 @@ assert_shell_scripts_parse() {
   [ "$n_bash" -gt 0 ] || { echo "build: no shell scripts were found to check" >&2; exit 1; }
 }
 
-# ---------------------------------------------------------------
-# 6d. whose distribution is this
-# ---------------------------------------------------------------
-# build_gui copies the display stack out of noble's packages with
-# `cp -a "$STAGE/." "$TGT/"` -- no -n, so the packages win over what rootfs
-# (stage 6) and the overlay already put there. base-files is in that closure,
-# and base-files is what owns /etc/os-release, /etc/lsb-release, /etc/issue and
-# /usr/lib/os-release. The moment the packages land, the image stops being
-# Copper and becomes whatever base-files says the distro is, with that
-# distro's LOGO -- which is what fastfetch then draws on a Copper machine.
-#
-# Nothing in the build reads those files, which is why it stayed invisible.
-# Put Copper's back here, still from iso/rootfs-overlay so there is one source
-# of truth, and assert the result rather than trusting the copy order to stay
-# this way forever. Called at the end of build_gui and on its cached early
-# return: a warm tree whose gui stage is skipped must be repaired too, since it
-# was written by whatever ran last.
-#
-# Both /etc/os-release and /usr/lib/os-release are plain files on this image
-# (on most merged-usr systems the first is a symlink to the second), and a
-# reader may open either, so both are written and then compared.
+# build_gui's package copy makes base-files' os-release etc say Ubuntu, and nothing in the build reads
+# them. Restore Copper's copies from the overlay and assert both /etc and /usr/lib agree, including on
+# a cached gui skip.
 copper_identity() {
   local rel id pkg_manager pkg_home
   for rel in etc/os-release etc/lsb-release etc/issue etc/issue.net etc/legal; do
@@ -1504,6 +1154,18 @@ copper_identity() {
   done
   # ensure /usr/lib/os-release exists as a copy for tools that look there
   install -D -m 0644 "$ROOT/rootfs-overlay/etc/os-release" "$TGT/usr/lib/os-release"
+
+  # The pulseaudio package owns /etc/pulse/default.pa and its copy loads the
+  # udev-only detector. The default Copper init has no udev, so that config
+  # hands every client the null sink: cava's bars move, firefox is silent and
+  # Discord has no microphone. Put Copper's detector back after the packages
+  # land, and assert it so a warm cached tree cannot quietly undo it.
+  install -D -m 0644 "$ROOT/rootfs-overlay/etc/pulse/default.pa" \
+    "$TGT/etc/pulse/default.pa"
+  if ! grep -q '^load-module module-detect$' "$TGT/etc/pulse/default.pa"; then
+    echo "gui: /etc/pulse/default.pa is not Copper's; the image would be silent" >&2
+    exit 1
+  fi
 
   id=$(sed -n 's/^ID=//p' "$TGT/etc/os-release" | head -n1)
   if [ "$id" != copper ]; then
@@ -1524,49 +1186,12 @@ copper_identity() {
   echo "  identity: $(sed -n 's/^PRETTY_NAME=//p' "$TGT/etc/os-release" | head -n1)"
 }
 
-# ---------------------------------------------------------------
-# 6e. the display stack: Xorg + XFCE, unpacked from packages
-# ---------------------------------------------------------------
-# Copper builds its own base system from source, and a desktop is not part of
-# that: XFCE is dozens of packages sitting on GTK and glibc, and rebuilding a
-# toolchain and a desktop environment here would be a distribution of its own.
-# So the display stack arrives the way distributions ship it -- as packages,
-# downloaded and unpacked at BUILD time. The image itself never asks the
-# network for anything; what this costs is space in the ISO, and that is the
-# trade that was made.
-#
-# The dependency closure is computed by apt against an EMPTY dpkg status
-# file: every library the desktop needs counts as missing, including the
-# dynamic loader those binaries are linked against, so nothing arrives
-# half-installed. --download-only, no recommends: what comes down is a pile
-# of .deb files, unpacked with dpkg-deb -x into a staging tree and then
-# merged into the rootfs WITHOUT overwriting anything already in it. The
-# busybox applet links, the static musl tools and the overlay's /etc come
-# first and win; a package that ships the same path loses. That is what keeps
-# /bin/sh busybox's and keeps `ls` the musl binary on PATH.
-#
-# Nothing is configured: maintainer scripts never run, no postinst triggers
-# fire, and the caches they would generate (fonts, icons, pixbuf loaders) are
-# simply absent until something on the target generates them. A missing
-# fontconfig cache costs a slow first font lookup; a missing pixbuf loader
-# cache costs image formats, and is the first thing to look at if the
-# session comes up drawing boxes instead of icons.
+# "Already staged" is not the same question as "the packages are there": XFCE sits on GTK/glibc and dozens
+# of packages, so apt fetches .debs at BUILD time; the image itself never asks the network. An empty dpkg
+# status forces the full closure; dpkg-deb -x runs no maintainer scripts, so caches are absent afterwards.
 build_gui() {
-  # "Already staged" is not the same question as "the packages are there". The
-  # _seatd group is created by a line in THIS stage, and a later stage can take
-  # it back out: build_rootfs runs again before the ISO is made (`build.sh iso`
-  # re-runs the whole chain) and `cp -a "$ROOT/rootfs-overlay/."` overwrites
-  # /etc/group with the eight-line skeleton, erasing whatever this stage
-  # appended. The stamp still matches, so this guard used to skip and the group
-  # never came back -- and the boot paid for it: the systemd image shipped
-  # without _seatd, seatd could not start, and its unit restart-looped on the
-  # wizard's tty. The group is part of what this stage guarantees, so it is
-  # part of "already staged".
-  # zsh and PipeWire are part of what this stage guarantees now, because
-  # /etc/copper.conf can switch the session to them on any boot. A cached tree
-  # from before they were added would otherwise skip on the stamp and ship a
-  # one-line setting that points at a shell (or an audio server) the image does
-  # not have.
+# The _seatd group, zsh and PipeWire are stage guarantees, not just package files: `build.sh iso` re-runs
+# rootfs and can erase the group, so a stamp-only guard would skip the repair. Include them in "already staged".
   if [ -e "$TGT/usr/bin/Xorg" ] && [ -e "$TGT/usr/bin/startxfce4" ] \
      && [ -r "$TGT/usr/share/themes/Blacklight/index.theme" ] \
      && [ -r "$TGT/usr/share/copper/wallpapers/backlight-final.png" ] \
@@ -1591,17 +1216,8 @@ build_gui() {
   # anyway. A cold runner has none; a warm one re-reads them in seconds.
   apt-get update -qq
 
-  # A name probe has to ask for an installable candidate, not for a name apt
-  # recognizes: apt-cache show answers recognition, and a name some other
-  # package Replaces or Provides is recognized without being installable.
-  # That is the rule on both build hosts, not a corner case -- firefox-esr on
-  # the ubuntu-24.04 runner is known to apt only through
-  # gnome-browser-connector's Replaces field, and firefox on kali is known
-  # only as a dropped transitional -- and the first cut of these probes
-  # accepted recognition, so the runner's build died on "Package 'firefox-esr'
-  # has no installation candidate". apt-cache policy states the version apt
-  # would choose; "(none)" is how it spells "nothing to choose", and a name
-  # apt never heard of prints no candidate line at all.
+# Probe for an installable Candidate, not a name apt merely recognizes: firefox-esr on ubuntu is
+# Replaces-only and firefox on Kali is a dropped transitional.
   gui_carries() {
     apt-cache policy "$1" 2>/dev/null | grep -q '^ *Candidate: [^ (]'
   }
@@ -1615,19 +1231,8 @@ build_gui() {
   for p in libgdk-pixbuf2.0-bin libgdk-pixbuf-2.0-bin; do
     if gui_carries "$p"; then pixbuf=$p; break; fi
   done
-  # xfce4-terminal is named explicitly rather than assumed: the xfce4
-  # metapackage does not depend on it (nor recommend it), so under
-  # --no-install-recommends the image had a desktop with no terminal
-  # emulator in it at all. Clicking "Terminal" then ran exo-open --launch
-  # TerminalEmulator, which found no helper and popped the "choose an
-  # application" dialog. It brings exo-utils (exo-open) along as a
-  # dependency, which is what actually performs the launch.
-  #
-  # alsa: firefox dlopens libasound for audio, so it has to be in the image
-  # for the browser to be able to make sound. noble renamed the package for
-  # the 64-bit time_t transition -- libasound2 became a virtual name over
-  # libasound2t64 -- and an apt install of a virtual package fails. Ask the
-  # host which name it carries, like the pixbuf bin above.
+# xfce4-terminal is not pulled in by the metapackage under --no-install-recommends; alsa is probed by
+# name because noble turned libasound2 into a virtual package over libasound2t64.
   local alsa="" p
   for p in libasound2t64 libasound2; do
     if gui_carries "$p"; then alsa=$p; break; fi
@@ -1636,13 +1241,8 @@ build_gui() {
   for p in pulseaudio; do
     if gui_carries "$p"; then pulseaudio=$p; break; fi
   done
-  # alsa-utils: the mixer, and the only way to hear whether a card works at
-  # all. libasound lets a client open the card, but nothing in the image could
-  # unmute it -- and a fresh HDA codec can come out of reset with its outputs
-  # down, which is a silent machine whose every log says the server is fine.
-  # amixer/alsactl/speaker-test are three binaries and a handful of K, and they
-  # are what /usr/bin/copper-audio drives. Named, not assumed: noble carries it
-  # in main, and a build host without it must fail here rather than ship quiet.
+# alsa-utils is the mixer: a muted HDA codec can leave every log healthy but no sound, and copper-audio
+# drives amixer/alsactl to unmute it.
   local alsa_utils="" p
   for p in alsa-utils; do
     if gui_carries "$p"; then alsa_utils=$p; break; fi
@@ -1652,25 +1252,14 @@ build_gui() {
     echo "gui: no way to unmute a card that comes up silent" >&2
     exit 1
   fi
-  # open-vm-tools: the guest half of VMware's display handshake. Its
-  # resolutionKMS plugin is what makes the console mode follow the VMware
-  # window, so a maximised window is really more pixels instead of a smaller
-  # framebuffer stretched over the screen. The kernel side (vmwgfx) is already
-  # in the image; without this daemon nothing tells the driver the window
-  # changed, which is the "loses its quality when fullscreen" symptom. It is
-  # harmless elsewhere: copper-vmtools.service is conditioned on VMware.
+# open-vm-tools makes the console follow the VMware window via resolutionKMS; vmwgfx alone never learns
+# the window resized, which is the "loses quality when fullscreen" symptom.
   local vmtools="" p
   for p in open-vm-tools; do
     if gui_carries "$p"; then vmtools=$p; break; fi
   done
-  # zsh and the PipeWire stack: /etc/copper.conf offers both as a one-line
-  # choice, so both have to be in the image. Installing only the chosen one at
-  # build time would make the setting a lie on the disc it ships on. zsh is the
-  # login shell (adduser -s /usr/bin/zsh, and copper-init execs $SHELL);
-  # pipewire is the graph server, wireplumber the session manager and
-  # pipewire-pulse the PulseAudio-protocol half that firefox, mpv and cava
-  # speak to. All three are named: pipewire-pulse does not depend on
-  # wireplumber, and a graph with no session manager has no devices.
+# Both shells and both audio servers have to ship because /etc/copper.conf switches them at boot;
+# pipewire-pulse and wireplumber are named explicitly, not assumed as dependencies.
   local zsh="" pipewire="" pipewire_pulse="" wireplumber="" pmiss="" p
   for p in zsh; do
     if gui_carries "$p"; then zsh=$p; break; fi
@@ -1698,13 +1287,8 @@ build_gui() {
     echo "gui: /etc/copper.conf offers them as a one-line switch" >&2
     exit 1
   fi
-  # pulseaudio-utils: pactl. Both launchers start a server and both call
-  # copper-audio init, but a server with a muted sink is a silent machine whose
-  # every log says it is healthy -- cava still draws bars because it reads the
-  # monitor of that very sink. copper-audio uses pactl to unmute the default
-  # sink (and to point it at a real device when it landed on the null output).
-  # pactl speaks to pipewire-pulse as well as to the PulseAudio daemon, so one
-  # binary covers both /etc/copper.conf choices.
+# pactl is what unmutes the default sink for cava and mpv; it speaks to PulseAudio and pipewire-pulse,
+# so one binary covers both /etc/copper.conf choices.
   local pulseutils="" p
   for p in pulseaudio-utils; do
     if gui_carries "$p"; then pulseutils=$p; break; fi
@@ -1712,6 +1296,18 @@ build_gui() {
   if [ -z "$pulseutils" ]; then
     echo "gui: no installable pulseaudio-utils; copper-audio could not unmute" >&2
     echo "gui: the server's sink, and a fresh boot would be silent" >&2
+    exit 1
+  fi
+  # pavucontrol: the desktop's mixer shortcut execs this binary. Without it the
+  # first place a user looks when a video is silent or a call has no microphone
+  # just reports "pavucontrol not found". It is a small GTK program in universe;
+  # named and asserted here for the same reason pactl is.
+  local pavucontrol="" p
+  for p in pavucontrol; do
+    if gui_carries "$p"; then pavucontrol=$p; break; fi
+  done
+  if [ -z "$pavucontrol" ]; then
+    echo "gui: no installable pavucontrol; the mixer shortcut would fail" >&2
     exit 1
   fi
   # FUSE for AppImages. The file is a squashfs image with its own runtime; that
@@ -1734,60 +1330,18 @@ build_gui() {
     [ -n "$fusetools" ] || echo "  fuse" >&2
     exit 1
   fi
-  # firefox, under whichever name the host's distro carries -- with
-  # "carries" settled by the candidate check, because the first cut of
-  # this probe accepted recognition and the runner died for it:
-  # firefox-esr is a name ubuntu-24.04 knows (gnome-browser-connector
-  # Replaces it) yet has no candidate for, so the probe chose it and apt
-  # stopped the stage with "Package 'firefox-esr' has no installation
-  # candidate". Kali is the mirror image -- it really carries firefox-esr,
-  # which also answers to /usr/bin/firefox so the desktop's helper finds
-  # it, and knows `firefox` only as a dropped transitional. With candidates,
-  # Kali puts a real browser on the disc and the runner falls through to
-  # firefox, the snap-transition stub -- no browser binary, exactly the
-  # image it shipped before this question was asked.
+# Ask apt for a browser Candidate: ubuntu knows firefox-esr only through Replaces, Kali carries it and
+# knows `firefox` only as a dropped transitional. The wrong probe shipped an image with no browser.
   local browser="" p
   for p in firefox-esr firefox; do
     if gui_carries "$p"; then browser=$p; break; fi
   done
   [ -z "$browser" ] && echo "gui: no firefox package on this host" \
     "(tried firefox-esr, firefox); the image will have no browser" >&2
-  # openssl and ca-certificates: busybox wget's openssl helper (the path that
-  # verifies certs and works against GitHub release CDNs) forks `openssl
-  # s_client`. Without the binary busybox silently falls back to its internal
-  # TLS, which cannot verify certificates and hangs on
-  # release-assets.githubusercontent.com -- the "downloads don't go through"
-  # bug. libssl/libcrypto already arrive through the glibc closure; this brings
-  # the tool itself. ca-certificates brings the roots to build the bundle from.
-  # e2fsprogs: the first-boot wizard formats the spare disk the user picks with
-  # the real mkfs.ext4, and /init mounts the result as the overlay upper. The
-  # busybox mke2fs applet cannot stand in: it creates ext2 only, and its
-  # superblock leaves EXT2_FEATURE_COMPAT_SUPP at zero, so there is no EXT_ATTR
-  # bit and overlayfs refuses that upper outright. A real ext4 carries the
-  # xattrs an overlay needs, which is why the glibc tool comes in here.
-  #
-  # fonts: DejaVu is Latin and little else. The terminal tools draw out of the
-  # rest of Unicode -- btop's graphs and fastfetch's separators are braille,
-  # block elements and dingbats -- and a font that lacks them is a tofu box in
-  # the terminal or a question mark on the console. Noto carries the scripts
-  # and symbols, Symbola the monochrome emoji, Noto Color Emoji the coloured
-  # ones VTE can draw, Powerline the prompt glyphs, and Font Awesome the set
-  # the desktop's panels ask for by name. Hack, JetBrains Mono, Fira Code and
-  # Liberation are the terminal faces themselves: they carry box drawing and
-  # the powerline-adjacent shapes at one advance width, which is what the
-  # desktop's font picker is looking for when it offers "more fonts".
-  #
-  # fontconfig (the package -- the library arrives with GTK) is the one that
-  # ships fc-cache and fc-match. --no-install-recommends drops it, so the font
-  # cache step in startxfce/startniri found no fc-cache to run, silently
-  # skipped, and left the live image rescanning every font directory on every
-  # glyph lookup.
-  #
-  # libc-bin is not desktop, but it owns /usr/lib/locale/C.utf8. The session
-  # sets LANG=C.UTF-8 and glibc refuses a locale whose files are absent, so
-  # without this every TUI would quietly stay in the C locale and draw one
-  # byte at a time. It also brings ldd and ldconfig, which the image otherwise
-  # lacks.
+# openssl and ca-certificates are needed because busybox wget's TLS helper forks `openssl s_client` and
+# hangs on GitHub CDNs without it. e2fsprogs brings the real mkfs.ext4: busybox mke2fs makes ext2 with no
+# xattrs, which overlayfs rejects. Fonts cover the glyphs terminal tools draw, fontconfig supplies
+# fc-cache, and libc-bin carries C.utf8 plus ldd/ldconfig.
   set -- xserver-xorg-core xserver-xorg-input-evdev xkb-data x11-xkb-utils \
          dbus dbus-x11 xfce4 xfce4-terminal hicolor-icon-theme \
          adwaita-icon-theme dmz-cursor-theme librsvg2-common openssl ca-certificates e2fsprogs \
@@ -1799,14 +1353,10 @@ build_gui() {
   [ -n "$alsa" ] && set -- "$@" "$alsa"
   [ -n "$pixbuf" ] && set -- "$@" "$pixbuf"
   [ -n "$browser" ] && set -- "$@" "$browser"
-  # pulseaudio: the server cava's client (pulse-simple) and mpv's audio backend
-  # talk to. The gui stage ships the client libraries (libasound for firefox's
-  # ALSA backend, the pulse client stack for the console tools) but used to ship
-  # no daemon at all, so every PulseAudio client in the image reported "no
-  # pulse audio" -- which is where cava sat, and where the desktop's playback
-  # sat too. The daemon is the missing half of the audio stack.
+# PulseAudio's daemon is the missing half of the audio stack: without it every client reports "no pulse
+# audio" even though the client libraries are staged.
   [ -n "$pulseaudio" ] && set -- "$@" "$pulseaudio"
-  set -- "$@" "$alsa_utils" "$pulseutils"
+  set -- "$@" "$alsa_utils" "$pulseutils" "$pavucontrol"
   [ -n "$vmtools" ] && set -- "$@" "$vmtools"
   set -- "$@" "$zsh" "$pipewire" "$pipewire_pulse" "$wireplumber"
   set -- "$@" "$fuselib" "$fusetools"
@@ -1816,15 +1366,8 @@ build_gui() {
     -o APT::Sandbox::User=root \
     --download-only --no-install-recommends -y install "$@"
 
-  # Unpack each package on its own first, then merge. bash depends on
-  # base-files, and base-files ships the merged-usr compatibility links
-  # (/bin, /sbin, /lib, /lib64 -> /usr/...). Copper's tree is deliberately
-  # NOT merged-usr: those names are real directories holding busybox and the
-  # musl loader. Unpacking straight into one shared tree makes dpkg-deb fail
-  # with "Cannot create symlink ... File exists" as soon as base-files meets
-  # a directory another package created. Drop the links from the per-package
-  # tree and let Copper's real directories survive the merge; build_gui puts
-  # /lib64/ld-linux-x86-64.so.2 in place itself below.
+# Unpack each .deb on its own before merging: base-files' merged-usr links would collide with Copper's
+# real /bin, /sbin and /lib. Drop those links so the real directories survive the package merge.
   local d="$WORK/gui-deb"
   rm -rf "$STAGE" "$d"; mkdir -p "$STAGE" "$d"
   for deb in "$DG"/*.deb; do
@@ -1842,27 +1385,9 @@ build_gui() {
 
   copy_stage_in "$STAGE" "$TGT"
 
-  # /usr/bin/zsh exists only because zsh's postinst makes it. The package ships
-  # the binary at /bin/zsh and says so in its own postinst:
-  #
-  #     # New hardcoded symlinks which unfortunately can't be shipped inside
-  #     # the package itself since some people want to merge /bin and /usr/bin
-  #     if [ ! -e /usr/bin/zsh -a ! -L /usr/bin/zsh ]; then
-  #       ln -s /bin/zsh /usr/bin/zsh
-  #     fi
-  #
-  # No maintainer script runs on this image, so nothing ever made that link,
-  # and the package layout alone cannot: Copper's tree is deliberately not
-  # merged-usr (/bin is a real directory holding busybox), so /bin/zsh is not
-  # reachable under /usr/bin. Every part of the image asks for the /usr/bin
-  # spelling -- the wizard writes it into passwd, copper-init exports $SHELL,
-  # kitty execs $SHELL, and the required-file check below asserts it -- so the
-  # stage has to make the link itself, exactly as the postinst would.
-  #
-  # Relative, not absolute: an absolute /bin/zsh inside the staged tree
-  # resolves against the BUILD HOST, where it is bash or nothing, and the
-  # check below would then read "missing" for a link that is right in the
-  # image. `../../bin/zsh` from /usr/bin is /bin/zsh in both worlds.
+# zsh's postinst makes /usr/bin/zsh -> /bin/zsh; no maintainer script runs here and Copper is not
+# merged-usr, so make the link ourselves. Use the relative ../../bin/zsh target: an absolute one resolves
+# against the build host, not the image.
   if [ ! -e "$TGT/usr/bin/zsh" ] && [ ! -L "$TGT/usr/bin/zsh" ]; then
     if [ -x "$TGT/bin/zsh" ]; then
       ln -s ../../bin/zsh "$TGT/usr/bin/zsh"
@@ -1924,14 +1449,8 @@ build_gui() {
   done < "$WORK/gui-empties"
   echo "  $(wc -l < "$WORK/gui-empties") empty package files pruned"
 
-  # The CA bundle, built the way ca-certificates' postinst builds it -- no
-  # maintainer script runs on this image (see the block of mirrors elsewhere
-  # in this stage), so update-ca-certificates never fires and the default
-  # openssl CAfile /etc/ssl/certs/ca-certificates.crt would be missing. That
-  # leaves busybox wget's openssl helper able to connect but unable to verify:
-  # -verify 100 -verify_return_error fail the handshake on every real site.
-  # update-ca-certificates is just "concatenate the mozilla roots", so mirror
-  # that one step directly.
+# No postinst runs, so mirror ca-certificates' one useful step: concatenate the mozilla roots into
+# /etc/ssl/certs/ca-certificates.crt so busybox wget can verify TLS.
   mkdir -p "$TGT/etc/ssl/certs"
   if ls "$STAGE"/usr/share/ca-certificates/mozilla/*.crt >/dev/null 2>&1; then
     cat "$STAGE"/usr/share/ca-certificates/mozilla/*.crt \
@@ -1952,24 +1471,9 @@ build_gui() {
   # only after the server has already started drawing.
   mkdir -p "$TGT/var/lib/xkb" "$TGT/usr/share/X11/xkb/compiled"
 
-  # gdk-pixbuf refuses to know any image format without loaders.cache, and on
-  # an installed system only the package postinst writes it -- which never
-  # runs here. Without it every icon lookup returns NULL, GTK's g_error()
-  # ("Bail out!") aborts each XFCE component as it starts, and the session
-  # respawns them in an endless crash-loop that never paints a desktop.
-  # First seen on VMware: xfdesktop PIDs 268 -> 279 -> 297 -> 304 climbing in
-  # /tmp/session.log while the screen stayed dark.
-  #
-  # Mirror the gdk-pixbuf postinst here. Layout moved between releases: the
-  # generator lives beside the library (newer builds) or in /usr/bin (older);
-  # in 2.42 it takes the loader modules as arguments instead of scanning, and
-  # PNG/JPEG are compiled into the library so they need no entry. So locate
-  # the tool in the staged tree, feed it every loader .so under the module
-  # dir it arrived with, ordered with LC_ALL=C for a byte-deterministic
-  # cache, and take its stdout as loaders.cache next to the module dir. Run
-  # it chrooted into the staged rootfs, where the glibc closure and the
-  # modules it dlopens both live. PNG and JPEG ship in the library itself;
-  # the SVG loader module arrives in librsvg2-common (in the list above).
+# gdk-pixbuf needs loaders.cache or GTK aborts each XFCE component and the session crash-loops; no
+# postinst runs here. Mirror the query in a chroot, with the trailing /* on the loader path (find -path
+# matches whole paths) or the stage dies with "no loader modules" for a tree full of them.
   local ql="" m0="" cache="" mods="" m=""
   ql=$(find "$TGT/usr" -path '*gdk-pixbuf*' -name gdk-pixbuf-query-loaders \
        -print -quit 2>/dev/null)
@@ -2003,23 +1507,15 @@ build_gui() {
   fi
   echo "  pixbuf loaders.cache written ($(wc -l <"$cache") entries)"
 
-  # Adwaita resolves panel/status icons to scalable SVGs, and the crash log
-  # dies exactly there (ensure_surface_for_gicon on .../scalable/status/).
-  # If librsvg2-common's loader module failed to dlopen in the chroot it is
-  # silently absent from the cache -- the file looks fine but SVG icons go
-  # NULL. Verify the entry here, where a missing module is cheap to fix,
-  # instead of on a dark screen.
+# Check the SVG entry in loaders.cache: Adwaita's panel icons are SVG and a failed librsvg dlopen leaves
+# icons silently NULL.
   if ! grep -q 'image/svg+xml' "$cache"; then
     echo "gui: loaders.cache has no SVG entry (librsvg module did not load)" >&2
     exit 1
   fi
 
-  # The same GTK message names the mime database: without /usr/share/mime/
-  # mime.cache, g_content_type_guess() cannot identify image files, and
-  # gdk-pixbuf's content-type loader selection fails for formats not covered
-  # by filename. shared-mime-info ships the generator (verified: /usr/bin/
-  # update-mime-database in the file list) but only its postinst ever runs
-  # it. Mirror that here, chrooted where its glib/libxml2 live.
+# Mirror update-mime-database's postinst in the chroot; without mime.cache g_content_type_guess cannot
+# identify images by content type.
   if [ ! -x "$TGT/usr/bin/update-mime-database" ]; then
     echo "gui: update-mime-database did not arrive from the packages" >&2
     exit 1
@@ -2036,12 +1532,8 @@ build_gui() {
   fi
   echo "  mime database compiled ($(wc -c <"$TGT/usr/share/mime/mime.cache") bytes)"
 
-  # update-mime-database also emits a legacy /usr/share/mime/icons mapping.
-  # On the minimal database this image carries there are no icon mappings to
-  # write, so the file is zero bytes -- and every later stage re-runs the
-  # whole-tree "no empty regular file" check, so it would fail the build two
-  # stages after we made it. An empty icons file carries no information, so
-  # prune it; keep a non-empty one, which means real mappings landed.
+# Prune the zero-byte legacy mime icons map update-mime-database emits; a later whole-tree empty-file
+# gate would fail on it.
   if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
     rm -f "$TGT/usr/share/mime/icons"
     echo "  pruned empty mime icons map (no icon mappings in the database)"
@@ -2078,7 +1570,8 @@ build_gui() {
            usr/bin/zsh usr/bin/pipewire usr/bin/pipewire-pulse \
            usr/bin/wireplumber \
            usr/bin/amixer usr/sbin/alsactl usr/bin/speaker-test \
-           usr/bin/pactl bin/fusermount \
+           usr/bin/pactl usr/bin/pavucontrol bin/fusermount \
+           etc/pulse/default.pa \
            usr/share/dbus-1/system.conf \
            lib64/ld-linux-x86-64.so.2 \
            usr/bin/openssl etc/ssl/certs/ca-certificates.crt; do
@@ -2152,54 +1645,14 @@ build_gui() {
 }
 
 # ---------------------------------------------------------------
+# 6f. the niri session: the compositor from the praksharma PPA, the vendored niri configuration
 # ---------------------------------------------------------------
-# 6f. the niri session: the compositor from the praksharma PPA,
-#     the vendored niri configuration
-# ---------------------------------------------------------------
-# niri is the optional second desktop. The first-boot wizard records whether it
-# was chosen (/etc/copper-desktop), startniri starts it from the tty, and this
-# stage is what puts it in the image.
-#
-# Two things arrive here, from two places, for two reasons.
-#
-# The compositor and its session tools come from ppa:praksharma/ubuntu-niri for
-# noble. noble packages no niri at all, and upstream publishes source tarballs
-# only -- there is no prebuilt release binary -- so a PPA built against noble's
-# glibc 2.39 is the one source that can actually run here. The closure is
-# computed exactly the way build_gui computes XFCE's: apt against an EMPTY dpkg
-# status file with --download-only --no-install-recommends, so every library
-# counts as missing and nothing arrives half-installed, then dpkg-deb -x into a
-# staging tree and cp -a -n into the rootfs, where the busybox applets, the musl
-# tools and the overlay's /etc already are and win.
-#
-# The configuration is vendored in this repo under
-# iso/rootfs-overlay/usr/share/copper/niri-skel and copied to
-# /usr/share/copper/niri-skel. startniri seeds it into the user's home the
-# first time it runs, as the user, so the files are owned by them (a root copy
-# would leave a config the user cannot edit). It was vendored from
-# 12hrformat/copper-niriconfig at the commit recorded in NIRI_CFG_SHA.
-#
-# The PPA is added in isolation: apt is pointed at a private sourceparts
-# directory holding a copy of the host's own sources plus the PPA, so the host's
-# /etc/apt is never written to and no later stage can see the PPA and change
-# what IT resolves. The archive key is fetched by fingerprint and its
-# fingerprint is checked before it is trusted.
-#
-# noble's waybar is 0.9.24 and predates niri's `niri/workspaces` modules, which
-# arrived in 0.11. The bar configuration therefore uses `custom` modules that
-# ask niri over its IPC socket, rather than chasing a second, newer GTK stack
-# into the image.
+# noble has no niri binary and upstream ships source only, so the PPA's noble/glibc-2.39 build is the
+# runnable source; its closure is staged like build_gui's. The config is vendored and copied, never
+# symlinked, so the image stays self-contained when iso/work is cached without the repo.
 build_niri() {
-  # The skeleton is unpacked here, but a stage that runs earlier can take files
-  # back out of it: build_rootfs sweeps every zero-byte file in the tree, and a
-  # cached tree can already have been swept while niri's stamp still matches.
-  # The files the session reads are part of "already staged": if one is gone,
-  # the skeleton is not whole and the whole stage re-runs to re-unpack it.
-  #
-  # seatd and the _seatd group are here for the same reason, and a boot found
-  # them missing once. Without the seat niri cannot take the DRM master and
-  # exits at start, so the guard asks about the binary and the group as well as
-  # the compositor.
+# A cached tree can lose zero-byte skel files or the _seatd group while niri's stamp still matches;
+# include them in "already staged" so the stage re-runs and the compositor can take the DRM master.
   if [ -e "$TGT/usr/bin/niri" ] \
      && [ -e "$TGT/usr/share/copper/niri-skel/.config/niri/config.kdl" ] \
      && [ -e "$TGT/usr/share/copper/niri-skel/.config/waybar/config.jsonc" ] \
@@ -2236,12 +1689,8 @@ build_niri() {
   rm -rf "$HA"
   mkdir -p "$HA/etc/apt/sources.list.d" "$HA/etc/apt/keyrings"
   local asc="$WORK/praksharma-ubuntu-niri.asc" fpr
-  # keyserver.ubuntu.com is Launchpad's own keyserver, and it degrades in
-  # blips -- the 2026-11-11 CI run died here while the same runner could
-  # still reach github and archive.ubuntu.com. wget's -t retries are
-  # back-to-back, which a minutes-long blip outrides, so give the fetch a
-  # few more lives spread over a couple of minutes instead of failing the
-  # stage on the first minute of an outage.
+# keyserver.ubuntu.com blips for minutes while apt still reaches other hosts; retry the key fetch with
+# spacing instead of failing on wget's back-to-back retries.
   local try=0
   until wget -q -t 3 -T 15 -O "$asc" \
          "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$NIRI_PPA_FPR"; do
@@ -2261,12 +1710,8 @@ build_niri() {
   [ -s "$KEYRING" ] || { echo "niri: the PPA keyring came out empty" >&2; exit 1; }
   echo "  archive key verified ($NIRI_PPA_FPR)"
 
-  # ---- sources, isolated ------------------------------------------------
-  # A private sourceparts directory: a copy of whatever the host already uses,
-  # plus the PPA. apt then reads the host's sources.list (untouched) and this
-  # directory instead of /etc/apt/sources.list.d, so the PPA is visible to this
-  # stage and to nothing else. The copy is what keeps noble's own mirrors in
-  # the mix: seatd, swaybg, jq and the rest are ordinary noble packages.
+# Use a private sourceparts dir (host sources plus the PPA) so apt never writes /etc/apt and later
+# stages cannot see the PPA and resolve differently.
   if [ -d /etc/apt/sources.list.d ]; then
     cp -a /etc/apt/sources.list.d/. "$HA/etc/apt/sources.list.d/" 2>/dev/null || :
   fi
@@ -2302,49 +1747,9 @@ build_niri() {
     || { echo "niri: the PPA never became reachable; cannot stage the session" >&2
          exit 1; }
 
-  # The list is what has to be in the image for the session to come up with no
-  # network at all: the compositor and the pieces its own config names, plus the
-  # ordinary noble pieces the session leans on. Everything heavier is an ingot
-  # package and is named in the manifest, not here.
-  #
-  #   niri=25.11ppa4        the compositor, pinned to the version this stage was
-  #                         written against; a silent PPA bump is how a config
-  #                         stops parsing on a machine nobody can type on
-  #   waybar=0.9.24-1build3   the bar, pinned to noble's build. The ppa carries
-  #                         a newer waybar, and that one is built against a newer
-  #                         GTK Layer Shell than noble's libgtk-layer-shell0, so
-  #                         the staged tree ended up with a bar the library could
-  #                         not serve (missing gtk_layer_try_force_commit).
-  #   swaybg                the wallpaper, a layer-shell client
-  #   sway-notification-center  notifications (the swaync binary)
-  #   fuzzel                the launcher
-  #   kitty                 the terminal
-  #   seatd                 the seat, since there is no logind
-  #   policykit-1-gnome     the authentication agent (no systemd to autolaunch
-  #                         polkit-gnome for us)
-  #   polkitd pkexec        the polkit daemon and the tool the agent prompts
-  #                         through
-  #   xdg-desktop-portal and its gtk+gnome backends
-  #                         niri-portals.conf prefers `gnome;gtk;`; naming both
-  #                         means FileChooser, notifications and the secret
-  #                         service all have a running backend
-  #   gnome-keyring libsecret-1-0   the Secret portal's store
-  #   libnotify-bin         notify-send for scripts and swaync's client tests
-  #   wl-clipboard cliphist clipboard and its history
-  #   brightnessctl         brightness keys
-  #   playerctl             media keys
-  #   xdg-user-dirs         the XDG_* directories the desktop expects
-  #   gvfs-backends udisks2 mounting, for file managers and upload dialogs
-  #   power-profiles-daemon the profile switcher a future bar module can talk to
-  #   bibata-cursor-theme   the cursor named by the config; without it a session
-  #                         with no visible pointer
-  #   jq                    the bar's niri IPC helpers parse JSON with it
-  #   libgl1-mesa-dri libegl-mesa0 libgbm1 libglx-mesa0
-  #                         the GL/GBM stack the renderer needs; the gui
-  #                         closure may not have brought the DRI drivers
-  #   libgtk-layer-shell0    the Wayland Layer Shell library waybar is linked
-  #                         against; without it the staged bar dies on a
-  #                         missing gtk_layer_try_force_commit
+# Stage only what the session needs with no network: pinned niri and noble-pinned waybar (the PPA waybar
+# needs a newer Layer Shell than noble's library), bar, launcher, terminal, seat, polkit, portals, keyring
+# and GL stack. Everything heavier is an Ingot package named in the manifest.
   set -- niri=25.11ppa4 waybar=0.9.24-1build3 swaybg sway-notification-center fuzzel kitty \
          seatd brightnessctl playerctl wl-clipboard cliphist jq \
          policykit-1-gnome polkitd pkexec \
@@ -2385,13 +1790,9 @@ build_niri() {
         "$TGT/usr/bin/swaybg" "$TGT/usr/bin/swaync" "$TGT/usr/bin/kitty"
   copy_stage_in "$STAGE" "$TGT"
 
-  # polkitd's package postinst makes its authentication helper setuid root and
-  # hands two state directories to the polkitd group. No postinst runs in this
-  # build, so what arrived from the .deb is a plain 0755 root:root helper. The
-  # session agent collects the password and then runs that helper to verify it;
-  # without the setuid bit the verification cannot read the shadow database,
-  # and every prompt answers "wrong password" no matter what was typed. Mirror
-  # the postinst here, and again in the iso stage after the ownership sweep.
+# Mirror polkitd's postinst: setuid helper and polkitd-owned state dirs. Without the bit the agent reads
+# no shadow database and every prompt answers "wrong password"; the iso stage re-asserts it after the
+# ownership sweep.
   if [ -e "$TGT/usr/lib/polkit-1/polkit-agent-helper-1" ]; then
     chown 0:0 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
     chmod 4755 "$TGT/usr/lib/polkit-1/polkit-agent-helper-1"
@@ -2406,22 +1807,9 @@ build_niri() {
     done
   fi
 
-  # Shared libraries are the one thing copied from a PACKAGE that must be
-  # allowed to replace an earlier package's copy. cp -a -n lets the gui stage's
-  # version win, which is right for /etc, for the busybox applet links and for
-  # the static musl tools -- but wrong here: if the PPA ever carries a library
-  # newer than noble's, niri links that one, and the version gui already put in
-  # /usr/lib would leave the compositor unable to start. Identical version ->
-  # the copy is the same bytes and this is a no-op; newer -> the newer library
-  # is the one its consumer was built against.
-  #
-  # The Wayland Layer Shell library the bar is linked against is staged by
-  # name, the same way the plymouth stage stages the libraries its splash
-  # needs: an install would resolve the closure, and a closure that silently
-  # dropped the bar's own library is what turned the first exec of
-  # /usr/bin/waybar into a bare "undefined symbol: gtk_layer_try_force_commit"
-  # rather than a missing-file error. Fetch and unpack it, and the pass below
-  # carries it into the tree.
+# Shared libraries are the one package copy allowed to replace an earlier stage's: cp -a -n would keep an
+# older base copy and leave niri unable to start. Stage the Layer Shell library by name too, or the bar
+# dies with undefined gtk_layer_try_force_commit.
   rm -rf "$WORK/niri-layer"; mkdir -p "$WORK/niri-layer"
   ( cd "$WORK/niri-layer" && apt-get -o APT::Sandbox::User=root download libgtk-layer-shell0 ) \
     >"$WORK/niri-layer.log" 2>&1 \
@@ -2469,12 +1857,8 @@ build_niri() {
     chroot "$TGT" /usr/bin/update-mime-database /usr/share/mime \
       >"$WORK/niri-mime.log" 2>&1 \
       || echo "  (update-mime-database failed; new mime types will not resolve)"
-    # the same legacy zero-byte icons map the gui stage prunes is re-created
-    # here, because this stage re-runs update-mime-database after gui already
-    # pruned it. Left alone it fails the whole-tree empty-file gate two stages
-    # later -- on a cache restore it fails *earlier*, in the rootfs step that
-    # runs before this one. Mirror the gui prune so the niri stage cannot
-    # reintroduce it.
+# update-mime-database recreates the zero-byte mime icons map gui pruned; prune it again or the whole-tree
+# empty-file gate fails later (earlier, in rootfs, on a cache restore).
     if [ -f "$TGT/usr/share/mime/icons" ] && [ ! -s "$TGT/usr/share/mime/icons" ]; then
       rm -f "$TGT/usr/share/mime/icons"
       echo "  pruned empty mime icons map (no icon mappings in the database)"
@@ -2497,17 +1881,8 @@ build_niri() {
     echo "  (no update-desktop-database in the image; menu cache left unbuilt)"
   fi
 
-  # ---- the configuration, vendored --------------------------------------
-  # This tree used to be fetched from 12hrformat/copper-niriconfig at a pinned
-  # commit and checked against NIRI_CFG_SHA256. It is now vendored in this
-  # repository, so the whole session -- compositor config, bar, notifications,
-  # launcher and terminal -- is designed, reviewed and built in one place. The
-  # bytes are the ones that pin produced; NIRI_CFG_SHA and NIRI_CFG_SHA256
-  # record where they came from, and the stamp below is what notices an edit.
-  #
-  # Copied, not symlinked: the staged rootfs has to be self-contained, and a
-  # symlink into the source tree would dangle the moment the build tree is
-  # cached without the repository.
+# The config is now vendored, not fetched; the SHA constants only record provenance. Copy it, never
+# symlink it, so a cached build tree stays self-contained; the stamp notices edits.
   local skel_src="$ROOT/rootfs-overlay/usr/share/copper/niri-skel"
   if [ ! -d "$skel_src/.config/niri" ]; then
     echo "niri: the vendored configuration tree is missing at $skel_src" >&2
@@ -2545,13 +1920,8 @@ build_niri() {
     exit 1
   fi
 
-  # ---- Copper's own tweaks, layered on top -----------------------------
-  # niri reads one config.kdl, so Copper's adjustments ship as a separate file
-  # pulled in with niri's top-level `include`, appended last. Includes are
-  # positional -- later settings win -- which is what lets Copper tune the
-  # session without editing or re-pinning the upstream configuration tree.
-  # The pinned tarball and its hash check are untouched; deleting the include
-  # line restores upstream behaviour exactly.
+# Copper's tweaks are a separate kdl included last: includes are positional, so we can tune the session
+# without editing or re-pinning the vendored config.
   local overlay="$ROOT/rootfs-overlay/usr/share/copper/niri-overlay"
   if [ -r "$overlay/.config/niri/copper-tweaks.kdl" ]; then
     mkdir -p "$TGT/usr/share/copper/niri-skel/.config/niri"
@@ -2643,12 +2013,8 @@ build_niri() {
     exit 1
   fi
 
-  # The chroot is the honest test: the loader resolves and every library niri
-  # links is present at the path it names. `validate` parses the shipped config
-  # and exits without a compositor, so this needs no display and no seat. It is
-  # also the only place the config is checked against the niri that will read it
-  # -- a KDL syntax error found here costs a build, found on a boot it costs a
-  # machine nobody can type on.
+# Chroot niri validate: it parses the shipped config with the exact compositor that will read it, with no
+# display or seat. A KDL error here costs a build; found on a boot it costs a machine nobody can type on.
   if ! chroot "$TGT" /usr/bin/niri validate \
        -c /usr/share/copper/niri-skel/.config/niri/config.kdl \
        >"$WORK/niri-validate.log" 2>&1; then
@@ -2670,13 +2036,8 @@ build_niri() {
     exit 1
   fi
 
-  # The niri closure can carry systemd-sysv (an empty dpkg status makes apt keep
-  # every Priority: important package systemd ships), and that is where
-  # /usr/sbin/reboot|poweroff|halt|shutdown -> ../bin/systemctl came from in the
-  # shipped ISO. Re-point them after the copy, or `sudo reboot` resolves to
-  # systemctl first (bug 29). power_links() answers from the tree's own PID 1,
-  # so this stage cannot undo the systemd flavour's links on a tree that has
-  # already been swapped.
+# The niri closure can pull in systemd-sysv's power links; re-run power_links so it answers from the
+# tree's PID 1 and cannot undo the systemd flavour on a tree already swapped.
   power_links "$TGT"
 
   echo "  niri session staged ($(du -sh "$TGT" | cut -f1)) rootfs total"
@@ -2696,40 +2057,10 @@ build_niri() {
 # ---------------------------------------------------------------
 # 6g. the boot splash: Plymouth, staged the way the desktop is
 # ---------------------------------------------------------------
-# Plymouth is the boot splash engine: it takes the console over early, draws a
-# theme, and hands the console back when it is told to quit. It is the same
-# kind of thing as the desktop -- a real project's binary rather than something
-# Copper builds -- so it arrives the same way, from packages unpacked at build
-# time.
-#
-# Building it from source is the obvious alternative and was tried first. The
-# no-udev build is broken upstream in the version this targets: in 24.004.60
-# add_input_devices_to_renderer() is defined inside `#ifdef HAVE_UDEV` but
-# called outside it (src/libply-splash-core/ply-device-manager.c:318 defines,
-# :1133 calls), so -Dudev=disabled does not compile. It must not be built with
-# udev either: that links udev's enumeration path, which finds no device
-# without the udev daemon running, and this image runs no udev.
-#
-# It does not need udev at runtime. plymouthd reads a documented kernel command
-# line switch, `plymouth.ignore-udev` -- src/main.c sets
-# PLY_DEVICE_MANAGER_FLAGS_IGNORE_UDEV on it -- and skips udev entirely, taking
-# its own fallback path: PLY_RENDERER_TYPE_AUTO, which tries DRM and then the
-# framebuffer. grub.cfg passes that switch. The libraries still link libudev
-# (libply-splash-core.so.5 NEEDs libudev.so.1), so the library is staged, but
-# no code path ever calls into the daemon.
-#
-# A second switch travels the same way. `plymouth.ignore-serial-consoles` maps
-# to PLY_DEVICE_MANAGER_FLAGS_IGNORE_SERIAL_CONSOLES, and without it plymouthd
-# treats the machine's second console= (ttyS0 in the VM) as a serial console,
-# sets serial_consoles_detected in ply-device-manager.c, and returns before it
-# ever creates a renderer -- the splash loads, runs its script, and draws no
-# frame (bug 25). grub.cfg passes it too; it changes only what plymouth treats
-# as the display, not the console= entries themselves.
-#
-# Only what the live image uses is copied out of the packages: the daemon, the
-# control client, the four libply libraries, the script and text plugins and
-# the two renderers. The systemd units, the SysV init script and the
-# initramfs-tools hooks the package also ships are left behind on purpose.
+# Plymouth is packaged upstream, not built here: the no-udev build is broken in 24.004.60 and enabling
+# udev would need a daemon this image has no. The kernel switches plymouth.ignore-udev and
+# plymouth.ignore-serial-consoles (grub.cfg passes both) steer it to DRM/fb and off ttyS0, which otherwise
+# draws no frame. Copy only the daemon, client, libs, plugins and renderers.
 build_plymouth() {
   if [ -e "$TGT/usr/sbin/plymouthd" ] \
      && stamped_skip "$WORK/plymouth.stamp" "$SELF" \
@@ -2844,16 +2175,8 @@ CONF
     "$ROOT/plymouth/copper/frames/"*.png
 }
 
-# ---------------------------------------------------------------
-# 6b. sudo — real privilege elevation, staged with the glibc closure
-# ---------------------------------------------------------------
-# sudo is a glibc binary and the base image is musl, so it gets built on the
-# build host (which has the same-family glibc the gui closure brings in) and
-# staged whole into the rootfs. It is what lets a normal user run
-# `ingot install`: copper-firstboot puts the account in the wheel group, the
-# overlay's sudoers grants wheel full rights, and sudo (setuid root) is the
-# elevation step. fetch/unpack come from the top of this file; the URL and
-# flags below are the ones proven on the Kali box in sudo-dev.sh.
+# sudo is a glibc binary and the base is musl, so build it on the host and stage it whole; wheel/ingot
+# install depends on it. The URL and flags are the ones proven in sudo-dev.sh.
 build_sudo() {
   if [ -e "$TGT/usr/bin/sudo" ] \
      && stamped_skip "$WORK/sudo.stamp" "$SELF" "$ROOT/sudo/sudoers"; then
@@ -2875,15 +2198,8 @@ build_sudo() {
       make -j"$JOBS"; make DESTDIR="$TGT" install
     popd >/dev/null
   fi
-  # make install drops an example sudoers; ours is authoritative and the
-  # gates below compare byte-for-byte, so ours goes in last and wins.
-  #
-  # The binary may have arrived through actions/cache, which restores the tree
-  # owned by the unprivileged runner: sudo would be uid 1000, the setuid bit
-  # would then elevate to that user instead of root, and the chroot gate below
-  # fails on "effective uid is not 0, is sudo installed setuid root?". build_iso
-  # pins the tree back to root:root before packaging, but that runs later -- this
-  # gate is the one that decides, so the owner is pinned here too.
+# Install our sudoers last so the byte-for-byte gate sees ours, and pin root:root: a cache restore can
+# bring the tree back as uid 1000, making setuid elevate to that user instead of root.
   chown 0:0 "$TGT/usr/bin/sudo"
   chmod 4755 "$TGT/usr/bin/sudo"
   mkdir -p "$TGT/run/sudo" "$TGT/etc/sudoers.d"
@@ -2918,60 +2234,14 @@ build_sudo() {
 # ---------------------------------------------------------------
 # 6i. systemd as PID 1 -- the migration, opt-in
 # ---------------------------------------------------------------
-# This is the first real step of SYSTEMD-MIGRATION.md, and it is deliberately
-# a stage that has to be asked for (`bash iso/build.sh systemd`) rather than
-# something `full` runs. The migration document says a half-finished swap is
-# an unbootable ISO rather than a degraded one, and that is exactly right: the
-# image on the other side of this stage has never been booted. Keeping it out
-# of the default path means the shippable ISO is never the half-finished one,
-# and means this stage can be iterated on without the busybox image paying for
-# it.
-#
-# What it does NOT do, and why:
-#
-#   - it does not touch iso/live/init. /init builds the overlay out of the
-#     persistent disk, mounts it and switch_roots into it; systemd has to
-#     start INSIDE that merged tree, not instead of the tree. So switch_root
-#     still execs /sbin/init, and this stage re-points that one symlink. An
-#     `init=/lib/systemd/systemd` kernel argument (which the migration
-#     document originally suggested) would skip the overlay entirely and boot
-#     the read-only squashfs: same rootfs, no persistence, and /etc from the
-#     medium. That is why the swap is a symlink and not a kernel argument.
-#
-#   - it does not delete copper-init. It keeps running as a service
-#     (copper-console.service, `copper-init --console`), because the wizard
-#     and the session shell need a controlling terminal and the account drop
-#     that file already does correctly. Under systemd only the PID-1 half of
-#     it -- mounts, power signals, hostname, DHCP, seatd, the udev seeder --
-#     is retired, because units do those now.
-#
-#   - it does not enable logind. The seat still comes from seatd, which is
-#     what startniri looks for and what HANDOFF.md documents. Moving the
-#     seat to logind is a later step; doing both at once would mean a niri
-#     failure with two possible causes.
+# Opt-in only (`bash iso/build.sh systemd`): SYSTEMD-MIGRATION.md says a half swap is unbootable, and this
+# image has never been booted.
+# Swap /sbin/init, not the kernel command line, so /init still builds the overlay; keep copper-init as
+# copper-console.service and keep seatd rather than logind, so one change at a time.
 build_systemd() {
-  # The unit files ARE the inputs this stage is stamped on: touch one and the
-  # stage must re-run. Listed with a helper rather than bare globs so a
-  # missing pattern (there is no *.network file today) does not hand
-  # stamped_skip the literal string "…*.network", which would hash a filename
-  # that does not exist and silently change what "already staged" means.
-  #
-  # The four SCRIPTS in this directory count as unit files for this purpose.
-  # copper-tty-clear.service execs copper-tty-clear, copper-network.service
-  # execs copper-dhcp, and the two Plymouth units exec copper-splash-show and
-  # copper-splash-quit, so editing any of them changes what the image does.
-  # They were not in this list, and that was a live bug rather than a
-  # theoretical one: the stage skips itself when its inputs still hash the
-  # same, so a helper that is not one of the inputs did not invalidate the
-  # stamp. Edit the helper, re-run the build, and the stage said "already
-  # staged, skipping" and the ISO shipped the PREVIOUS helper -- a stale
-  # artifact with a green light, which is the entire failure mode the stamp
-  # exists to prevent.
-  #
-  # copper-zram-stop is the same rule twice over: it is the ExecStop of
-  # copper-zram.service, so editing it changes the shutdown of every boot.
-  # The system.conf.d drop-in is a manager setting, not a helper, but it is
-  # installed by this stage and the same staleness argument applies.
+# Unit files and their four helper scripts are this stage's inputs: a helper left out of sdin lets a
+# cached ISO ship the PREVIOUS helper under a matching stamp -- a stale artifact with a green light.
+# Include the drop-in and zram-stop too, since both change how the machine shuts down.
   local sdin=("$SELF" "$ROOT/systemd"/*.service "$ROOT/systemd"/*.target)
   for p in "$ROOT/systemd"/*.conf "$ROOT/systemd"/*.network \
            "$ROOT/systemd/copper-tty-clear" "$ROOT/systemd/copper-dhcp" \
@@ -2997,17 +2267,9 @@ build_systemd() {
   mkdir -p "$DS/partial"; rm -f "$DS"/*.deb
   apt-get update -qq
 
-  # systemd and udev are named here; everything else is their dependency
-  # closure, and --download-only resolves it. The empty dpkg status is the
-  # same device the gui and niri stages use: apt is told nothing is installed,
-  # so it fetches the packages AND their dependencies rather than assuming the
-  # build host's own copy. --no-install-recommends keeps the closure to what
-  # systemd actually links, not the distro's opinion of a complete system.
-  #
-  # systemd-sysv is what carries /sbin/{reboot,poweroff,halt,shutdown} and the
-  # systemctl links. It is named explicitly rather than pulled in as a
-  # dependency, because in the busybox image the power_links() calls go out of
-  # their way to undo exactly those links, and this stage wants them back.
+# An empty dpkg status fetches systemd's full dependency closure without installing a distro;
+# --no-install-recommends keeps it to what systemd links. systemd-sysv is named explicitly because
+# power_links normally removes its links and this stage wants them back.
   local status="$WORK/systemd-status"
   : > "$status"
   apt-get \
@@ -3129,30 +2391,14 @@ build_systemd() {
     echo "  $(wc -l < "$WORK/systemd-empties") empty package files pruned"
   fi
 
-  # ---- the Copper units ---------------------------------------------------
-  # Everything Copper-specific lives in units we write, not in units the
-  # packages ship: the wizard, the console, seatd, the DHCP client. They are
-  # installed and wired up by hand rather than by `systemctl enable`, because
-  # enabling means running systemctl against a staged tree -- which means a
-  # chroot, a running dbus, and a systemd that is not called into that way
-  # from a build. `systemctl enable` creates ordinary symlinks; making the
-  # same symlinks is the same operation without the ceremony.
+# Copper's units are installed by hand: `systemctl enable` against a staged tree would need a chroot
+# and running dbus, and only creates the same symlinks anyway.
   mkdir -p "$TGT/etc/systemd/system/multi-user.target.wants" \
            "$TGT/etc/systemd/system/sysinit.target.wants" \
            "$TGT/etc/systemd/system/copper.target.wants" \
            "$TGT/etc/systemd/network"
-  # install -m 0644, not cp: a Windows checkout hands git these files as 0777
-  # (see .gitattributes), and a world-writable unit is one systemd reads with
-  # a warning and a reviewer reads with suspicion. The mode is set here rather
-  # than trusted from the source tree.
-  #
-  # Each install is guarded rather than globbed bare. A bare glob that matches
-  # nothing expands to the literal pattern, and `install -m 0644 *.network`
-  # with no .network files fails the whole stage with "cannot stat
-  # '...*.network'" -- which is exactly what happened the first time this ran:
-  # iso/systemd/ ships no .network files, and the stage died before it
-  # installed anything. The guard is also what lets a future .network file be
-  # added to the directory and just work.
+# Use install -m 0644 (Windows git can hand units 0777) and guard globs: a bare *.network expands to the
+# literal pattern and killed the first run. The guard lets a future .network file just work.
   install -m 0644 "$ROOT/systemd"/*.service "$TGT/etc/systemd/system/"
   install -m 0644 "$ROOT/systemd"/*.target  "$TGT/etc/systemd/system/"
   # The splash now has units of its own, and an owner: daemon during sysinit,
@@ -3185,12 +2431,8 @@ build_systemd() {
     [ -e "$f" ] || continue
     install -m 0644 "$f" "$TGT/etc/systemd/network/"
   done
-  # Manager-wide settings are a drop-in, not a file to drop in /etc/systemd:
-  # the *.conf loop above is for the files systemd reads by that name directly
-  # (journald.conf and friends), and a system.conf.d entry one directory too
-  # high would be silently ignored while looking installed. install -D makes
-  # the directory, so the image does not depend on the systemd package having
-  # created it.
+# system.conf.d is a manager drop-in, not a file for /etc/systemd; install -D makes the directory so the
+# image does not depend on the systemd package having created it.
   for f in "$ROOT/systemd/system.conf.d"/*.conf; do
     [ -e "$f" ] || continue
     install -D -m 0644 "$f" "$TGT/etc/systemd/system.conf.d/$(basename "$f")"
@@ -3231,57 +2473,17 @@ build_systemd() {
   mkdir -p "$TGT/run/dbus" "$TGT/run/systemd/system" "$TGT/run/systemd/ask-password" \
            "$TGT/var/lib/systemd" "$TGT/etc/systemd/system/getty.target.wants"
 
-  # The power commands are systemd's now. After build_copper's power_links()
-  # pointed them at busybox, and after the Isle of Man of links the GUI closure
-  # dropped in /usr/sbin, put them where a systemd machine expects: /usr/sbin
-  # wins PATH, so both directories have to agree.
-  #
-  # power_links() answers that from the tree's own PID 1, which is systemd as
-  # of the line above, so the stage and the stages that re-run over this tree
-  # later cannot disagree about what a systemd machine wants. That is the whole
-  # point: the stages that re-run over this tree (the `iso` chain runs the
-  # desktop stages again) each call power_links(), and a power_links() that
-  # always wrote busybox's applets silently undid this stage on the way to the
-  # disc.
-  #
-  # /usr/sbin/shutdown is the one with a history: build_copper installs our own
-  # wrapper there and busybox ships no shutdown applet. systemd-sysv does ship
-  # one, and on a systemd machine it is the right one to ship -- /usr/bin/
-  # systemctl and a D-Bus that answers. power_links removes the wrapper's link
-  # first, so the link that is left answers the question directly instead of
-  # pointing through /sbin/shutdown.
+# power_links reads the tree's PID 1, which is systemd after the swap, so desktop stages re-run over a
+# cached tree cannot silently undo this. /usr/sbin is searched before /sbin, and /usr/sbin/shutdown is
+# the wrapper link, not systemd-sysv's bare "power off in one minute" compatibility default.
   power_links "$TGT"
 
-  # ---- the spare virtual consoles get a login prompt -----------------------
-  # Ctrl+Alt+F2/F3 and friends have to work on a Copper box, not just the
-  # console the session lives on. The session's own unit (copper-console) owns
-  # tty1 -- Conflicts= the stock getty there and runs the wizard/login shell
-  # instead -- but the spare VTs had no owner at all in this image: nothing
-  # enabled getty@ttyN, so switching there gave a VT with a blinking cursor and
-  # nobody reading it. Couldn't type, nothing to log in on. Enable the spares
-  # explicitly; enabling an instance of getty@ (a template) is the same op
-  # systemctl enable does, and systemd making one itself won't stop it making
-  # the same one, so nothing doubles up.
+# Enable getty@ttyN for the spare VTs: copper-console owns tty1 but nothing enabled the others, leaving
+# blinking unusable consoles. Linking template instances is the same operation systemctl enable performs.
   local vt
-  # ---- agetty has to exist at the path the getty units name ---------------
-  # getty@.service and serial-getty@.service both have
-  #
-  #     ExecStart=-/sbin/agetty -o '-p -- \u' --noclear - $TERM
-  #
-  # and Copper is NOT merged-usr: /sbin is a real directory, so an absolute
-  # /sbin/agetty is not bridged to /usr/sbin. Debian's util-linux installs the
-  # binary at /usr/sbin/agetty and leaves /sbin/agetty absent. On the green
-  # systemd ISO that made every getty -- tty2..tty6 AND serial-getty@ttyS0 --
-  # fail and restart forever: the stock getty@ unit is Restart=always, so the
-  # serial log showed the same "Started getty@ttyN.service" line ten times a
-  # minute and never a login prompt. That is the user's "Ctrl-Alt-F3 shows a
-  # blinking cursor", and it also meant no console login existed at all.
-  # The wizard on tty1 hid it until first boot finished.
-  #
-  # So: find the real agetty in the tree, and make /sbin/agetty point at it.
-  # If there is no agetty anywhere, fail the stage -- a machine whose every
-  # getty restarts forever is not a bootable desktop, and shipping it silently
-  # is how this defect reached a user.
+# getty units exec /sbin/agetty, but Debian installs /usr/sbin/agetty and Copper is not merged-usr;
+# without the link every getty restarts forever with no login prompt. Find the binary, link /sbin/agetty
+# to it, or fail the stage rather than shipping a machine with no console login.
   local agetty=""
   for c in usr/sbin/agetty usr/bin/agetty sbin/agetty bin/agetty; do
     if [ -f "$TGT/$c" ] && [ -x "$TGT/$c" ]; then agetty=$c; break; fi
@@ -3309,21 +2511,8 @@ build_systemd() {
            "$TGT/etc/systemd/system/getty.target.wants/getty@$vt.service"
   done
 
-  # ---- ldconfig: mask a unit that cannot succeed here ----------------------
-  # systemd ships ldconfig.service as ExecStart=/sbin/ldconfig -X, and this
-  # image has no ldconfig at all -- the gui and niri closures never brought one,
-  # and there is no DEB postinst on this build to run it. On the booted ISO it
-  # therefore failed every time, and it was one of the two entries in
-  # `systemctl --failed`. A live image with no /etc/ld.so.cache and no ldconfig
-  # has nothing for the unit to do, so mask it: /dev/null at the unit's name is
-  # systemd's own way of saying "this exists and must not run", which is truer
-  # than a unit that is enabled and broken. Masking is idempotent.
-  #
-  # The mask points at systemd's unit directory, and it has to. The name is
-  # resolved through /usr/lib/systemd/system (where the deb put ldconfig.service)
-  # and through /etc/systemd/system (which wins) -- so the link is made in /etc,
-  # where an administrator's own unmask is a rm away, and it shadows the vendor
-  # copy without touching it.
+# Mask ldconfig.service with /dev/null in /etc: this image has no ldconfig, so the unit failed every boot
+# and showed in `systemctl --failed`. /etc shadows the vendor unit and an administrator can rm the mask.
   ln -sf /dev/null "$TGT/etc/systemd/system/ldconfig.service"
 
   # ---- gates --------------------------------------------------------------
@@ -3338,19 +2527,9 @@ build_systemd() {
     echo "systemd: sbin/init does not point at /lib/systemd/systemd" >&2
     exit 1
   fi
-  # PID 1 is a glibc ELF with an absolute interpreter, and the kernel resolves
-  # it before the first instruction runs. Prove the loader is where the ELF
-  # says to look, in the tree, without running anything.
-  #
-  # `readelf | sed | head` is the obvious way to read the interpreter out and it
-  # is wrong here: build.sh runs under `set -o pipefail`, readelf can print more
-  # than one line matching the pattern, head exits after the first and closes
-  # the pipe, and the resulting SIGPIPE on sed makes the whole pipeline
-  # non-zero -- which aborts the stage under `set -e`. That was not theoretical:
-  # it killed this stage the first time the gate ran it with build.sh's own
-  # shell flags, with `local interp` as the last line of the trace. sed alone,
-  # with no head and a pattern anchored so it cannot escape, has no pipe to
-  # break and no early exit to signal.
+# Prove PID 1's absolute interpreter exists in the tree. Avoid `readelf | sed | head`: head closes the
+# pipe, sed takes SIGPIPE, and `set -o pipefail` aborts the stage; use one anchored sed and take its
+# first line instead.
   local interp=""
   interp=$(readelf -l "$TGT/lib/systemd/systemd" 2>/dev/null \
            | sed -n 's/.*interpreter: \(.*\)\]$/\1/p' | sed -n '1p' || true)
@@ -3395,15 +2574,8 @@ build_systemd() {
       exit 1
     fi
   done
-  # The seat is part of the migration, not a nicety: copper-seatd.service is
-  # wanted by copper.target, and the two ways it can be broken are both silent.
-  # The binary must be at a path the unit actually searches -- the unit's own
-  # ExecStart lists /usr/bin/seatd and /usr/sbin/seatd -- and the _seatd group
-  # must exist, or seatd exits before it binds the socket. A boot found the
-  # first of these wrong (the unit named /usr/bin/seatd; noble installs
-  # /usr/sbin/seatd) and the second missing (build_rootfs overwrote /etc/group
-  # after build_niri had appended it). Neither was caught here, so both are
-  # asserted here now.
+# The seat is part of the migration: copper-seatd.service is wanted by copper.target and fails silently if
+# seatd sits at the other path or _seatd is missing. A boot found both wrong, so both are asserted here.
   if [ ! -x "$TGT/usr/bin/seatd" ] && [ ! -x "$TGT/usr/sbin/seatd" ]; then
     echo "systemd: no seatd binary at /usr/bin/seatd or /usr/sbin/seatd;" >&2
     echo "          copper-seatd.service would exec a path that does not exist" >&2
@@ -3422,12 +2594,8 @@ build_systemd() {
     echo "          the unit would fail on every boot (it did, on the first boot)" >&2
     exit 1
   fi
-  # (An ExecStart-path sweep was tried here and removed: the units legitimately
-  # name shell expressions -- copper-seatd.service runs
-  # `/bin/sh -c '… exec /usr/sbin/seatd; done; …'` -- and runtime paths such as
-  # /run/udhcpc.eth0.pid, so a parser that reads "every absolute word after
-  # ExecStart" rejects correct units. The assertions just above say what the
-  # boot actually proved, without guessing at shell syntax.)
+# No ExecStart-path sweep: units legitimately use shell expressions and runtime paths, so a naive parser
+# rejects correct units. The explicit assertions above check what the boot actually proved.
 
   # The mode too, not just the presence. A unit that installed 0777 is a unit
   # systemd reads with a warning, and the source tree is 777 on Windows, so
@@ -3440,23 +2608,10 @@ build_systemd() {
     fi
   done
 
-  # ---- the shutdown bounds ------------------------------------------------
-  # These are one-line gates for a property that is invisible until a machine
-  # is asked to power off, and each one has a failure mode that is silent:
-  #
-  #   - DefaultDependencies=no also opts a unit OUT of shutdown.target's
-  #     implicit Conflicts=/Before= edges, so a unit with that setting has no
-  #     stop job at all. copper-zram.service without the explicit pair would
-  #     never run its ExecStop, systemd-shutdown would find /dev/zram0 still
-  #     in /proc/swaps, and its own swapoff is unbounded -- the exact ten
-  #     minutes this work exists to remove. The same pair is what makes the
-  #     plymouth daemon quit before systemd-shutdown has to kill it.
-  #   - The drop-in is the manager-wide 10 s cap. Installed one directory too
-  #     high it would be a file nobody reads, which looks identical to a file
-  #     that works until the next wedged stop.
-  #   - TimeoutStopSec on the console is the per-unit bound; KillMode=mixed is
-  #     what lets the five seconds be a bound on the whole cgroup rather than
-  #     a wait for a compositor to notice SIGTERM.
+# ---- the shutdown bounds ------------------------------------------------
+# DefaultDependencies=no removes stop edges, so zram and plymouth need explicit Conflicts/Before=
+# shutdown.target or their ExecStop never runs and systemd-shutdown's unbounded swapoff waits ten
+# minutes. Check the system.conf.d 10 s cap and the console's 5 s KillMode=mixed bound.
   if [ ! -f "$TGT/etc/systemd/system.conf.d/copper-shutdown.conf" ]; then
     echo "systemd: the system.conf.d drop-in did not install; every stop falls" >&2
     echo "          back to the 90 s default it exists to replace" >&2
@@ -3503,22 +2658,9 @@ build_systemd() {
     echo "systemd: /usr/bin/copper-init is missing; copper-console.service needs it" >&2
     exit 1
   fi
-  # Every other command the units name has to be in the tree too, for the same
-  # reason. Each of these is an ExecStart or ExecStop, or something one of them
-  # runs:
-  #
-  #   /usr/bin/copper-dhcp       copper-network.service's ExecStart
-  #   /sbin/udhcpc               what copper-dhcp execs
-  #   /bin/sh                    copper-seatd.service's ExecStart (/bin/sh -c '…')
-  #   /usr/bin/copper-zram-stop  copper-zram.service's ExecStop
-  #
-  # The unit verify below cannot see these on its own: it runs chrooted, but
-  # its filter treats "Command X is not executable" as host noise, because the
-  # SAME expression runs against the build host, where that shape really is
-  # noise. In the chroot the tree IS the machine, so the shape is a real
-  # defect there -- the image is missing a binary a Copper unit names, and
-  # that unit can never start. That is the seatd bug again, one unit over:
-  # the unit named a path the image did not have, and nothing here said so.
+# Assert every command the Copper units name (copper-dhcp, udhcpc, /bin/sh, zram-stop, plymouth): unit
+# verify runs chrooted but filters "Command X is not executable" as host noise, so a binary missing from
+# the image would never be reported.
   for cmd in usr/bin/copper-dhcp sbin/udhcpc bin/sh usr/sbin/plymouthd usr/bin/plymouth usr/bin/copper-zram usr/bin/copper-zram-stop; do
     if [ ! -x "$TGT/$cmd" ]; then
       echo "systemd: $cmd is missing or not executable; a Copper unit names it" >&2
@@ -3595,23 +2737,9 @@ build_systemd() {
       echo "  (systemd-analyze does not run in the staged tree; unit verify skipped)"
     fi
     if [ "$canrun" = 1 ]; then
-      # ---- one transaction, not one unit at a time -------------------------
-      #
-      # An ORDERING CYCLE only exists in a transaction: it is a loop between
-      # units, so systemd-analyze has to be given all of them at once to see
-      # it. Verified one unit at a time, every unit in the loop looks perfect
-      # on its own -- which is exactly how copper-tty-clear.service shipped
-      # with `After=sysinit.target` AND `Before=systemd-udevd.service` while
-      # systemd's own udevd unit carries `Before=sysinit.target`:
-      #
-      #     sysinit.target -> copper-tty-clear.service -> systemd-udevd.service
-      #                    -> sysinit.target
-      #
-      # That is a cycle, and it is on sysinit.target, so the boot's initial
-      # transaction fails outright: not a degraded boot, no boot. The check
-      # below is the build-time version of that, and it is deliberately not
-      # scoped to a unit name -- systemd decides which job it drops when it
-      # breaks a cycle, so the message can name any unit in the loop.
+# Verify all units in ONE transaction: systemd's own udevd unit carries `Before=sysinit.target`;
+# copper-tty-clear's `After=sysinit.target` and `Before=systemd-udevd.service` then close the loop:
+# the initial transaction fails outright, not a degraded boot.
       local vlist=""
       for ul in copper-console.service copper-firstboot.service \
                 copper-network.service copper-seatd.service \
@@ -3637,32 +2765,9 @@ build_systemd() {
                 copper-tty-clear.service copper-plymouth.service \
                 copper-plymouth-quit.service copper-zram.service; do
         out=$(chroot "$TGT" "$sa" verify "/etc/systemd/system/$ul" 2>&1 || true)
-        # A message counts only if it is ABOUT this unit AND is a real defect.
-        #
-        # Two independent problems with the obvious "keep lines naming the
-        # unit, drop known noise" filter:
-        #
-        #   - systemd-analyze pulls in every dependency (the base system
-        #     units) and reports those too. Lines that name our unit can still
-        #     be the host's packaging -- "Command X is not executable" is the
-        #     HOST failing to resolve an ExecStart that only exists in the
-        #     image once chrooted (the chroot removes most of that, but a
-        #     missing dependency unit still reports against the unit that
-        #     wanted it).
-        #   - a BLACKLIST of known noise is one new wording away from hiding a
-        #     real error, and systemd changes its wording between releases:
-        #     255 says "Unknown key name 'X' in section 'Service'", 256+ says
-        #     "Unknown key 'X'". A deny-list tuned on one version goes red on
-        #     the other -- which is exactly what happened: this step passed on
-        #     the dev box's systemd 261 and failed the CI runner's 255.
-        #
-        # So it is an allow-list. Only a key systemd does not know, a key in
-        # the wrong section, a parse error, or a missing ExecStart can fail a
-        # Copper unit -- all answered by the unit's own text, none of them
-        # dependent on what the build host happens to have installed. A
-        # message that is not one of those shapes is the host talking about
-        # itself, and the gates above already prove the units installed, are
-        # wired, and are mode 644.
+# Only parse/directive errors about THIS unit fail the build; host dependency noise is filtered out. Use
+# an allow-list, not a blacklist: systemd 255 says "Unknown key name" and 256+ drops "name", so a
+# deny-list went red on one runner and green on another.
         left=$(printf '%s\n' "$out" \
           | grep -E "Unknown (key|lvalue|section)|Failed to parse|Empty (ExecStart|section)|not a valid" \
           | grep -F "$ul" \
@@ -3673,14 +2778,8 @@ build_systemd() {
           while IFS= read -r f; do [ -n "$f" ] && rm -f "$TGT$f"; done < "$added"
           exit 1
         fi
-        # In the chroot the tree IS the machine, so "Command X is not
-        # executable" is not host noise here: it means the image is missing a
-        # binary this unit names, and the unit can never start. The allow-list
-        # above is deliberately silent about that shape, because the SAME
-        # expression has to run against the build host as well -- that is where
-        # the gate's parse check uses it, and there the shape really is noise,
-        # because the host has none of Copper's binaries. So the chroot gets
-        # its own, narrower rule.
+# In the chroot the tree IS the machine: "Command X is not executable" means a real missing binary there,
+# while the same shape is host noise on the build host, so the chroot gets its own narrower rule.
         gone=$(printf '%s\n' "$out" \
           | grep -E "$notexec" \
           | grep -F "$ul" \
@@ -3711,19 +2810,8 @@ build_systemd() {
 # ---------------------------------------------------------------
 # 6j. the unified image: systemd's payload, copper-init's default
 # ---------------------------------------------------------------
-# One ISO ships BOTH inits. The default boot is copper-init (what the image has
-# always done); the GRUB menu's "systemd init" entry passes
-# copper.init=systemd, and /init reads that switch from the kernel command line
-# (falling back to /etc/copper-init, the wizard's saved answer) before it
-# switch_roots.
-#
-# build_systemd is what stages everything systemd: the packages, the Copper
-# units, agetty, the merged-usr bridge. This stage keeps all of it and takes
-# the DEFAULT back to copper-init. It deliberately does NOT call
-# default_flavour(): that helper drops the /lib/systemd bridge on the way back,
-# and the bridge is exactly what makes /lib/systemd/systemd reachable inside
-# the merged root after /init hands over. The payload stays readable at
-# /usr/lib/systemd either way; only the name the kernel execs needs the bridge.
+# One ISO ships both inits; the "systemd init" menu entry or saved /etc/copper-init picks at boot. Keep the
+# payload and the /lib bridge (default_flavour would drop it), but point /sbin/init back at copper-init
 build_unified() {
   build_systemd
 
@@ -3833,38 +2921,17 @@ build_iso() {
   # copy_stage_in, which takes the bridge off. Put it back before the tree
   # hash, so what is packaged has it. No-op on a tree with no systemd payload.
   make_merged_usr_bridge "$TGT"
-  # Packaging hygiene, pinned here and before the tree hash so it is part of
-  # the stamped tree. -r used to force uid/gid 0 and flatten every mode, which
-  # hid two things the tree had wrong; -R carries the real values to the disc,
-  # so they have to be right here.
-  #
-  # Ownership: the workflow restores iso/work through actions/cache as the
-  # unprivileged runner, so every restored file comes back owned by uid 1000;
-  # the stages whose stamps then match are skipped and leave those files that
-  # way. It shipped /etc/shadow owned by a normal user. The image has only ever
-  # run root-owned -- that is what -r enforced -- so pin it. Only entries that
-  # are not already root:root are touched, because chown clears setuid on
-  # regular files and sudo (4755, root:root) has to keep its bit.
-  #
-  # -h because the closure is full of symlinks -- icon themes, the doc and man
-  # alternates, firmware -- and this chown runs on the host, not in the chroot.
-  # A dangling link fails with "cannot dereference", and an absolute one would
-  # chown the matching path on the RUNNER instead of the tree; -h changes the
-  # link itself and never leaves $TGT. A failing -exec also makes find exit
-  # non-zero, which is how this took the iso stage down on a warm cache.
+# Pin ownership and modes before the tree hash so packaging hygiene is part of the stamped tree.
+# actions/cache restores iso/work as uid 1000; use chown -h so links are not followed off the tree, and
+# touch only non-root entries so setuid bits survive.
   find "$TGT" \( ! -uid 0 -o ! -gid 0 \) -exec chown -h 0:0 {} +
   # chown clears setuid/setgid on regular files even when the owner does not
   # change (measured). The find above only touches non-root entries, so sudo is
   # not among them -- but re-assert it anyway: build_sudo set this bit earlier
   # and a silent drop here is exactly the failure this function exists to stop.
   chmod 4755 "$TGT/usr/bin/sudo"
-  # su is shadow's binary and has to be setuid root to change uid, exactly like
-  # sudo -- it shipped 0755, so it could not work even with a valid PAM stack.
-  # The stack itself is four files in the overlay: the base rootfs has
-  # /etc/pam.d/su but not the common-* files it includes, so pam_start() failed
-  # with "su: Critical error - immediate abort" before a password was read.
-  # Re-assert the mode here for the same cache reason as sudo, and prove the
-  # stack loads: as root, pam_rootok satisfies auth and su runs the command.
+# su needs 4755 to change uid; its PAM common-* includes come from the overlay, or pam_start aborts
+# before a password is read.
   if [ -e "$TGT/usr/bin/su" ]; then
     chown 0:0 "$TGT/usr/bin/su"
     chmod 4755 "$TGT/usr/bin/su"
@@ -3905,25 +2972,9 @@ build_iso() {
   mkdir -p "$TGT/tmp"
   chmod 1777 "$TGT/tmp"
 
-  # GSettings schemas are the third postinst artifact this build has to run
-  # by hand (mime above, icon caches in gui and niri, and this). The debs
-  # stage 46 *.gschema.xml files under /usr/share/glib-2.0/schemas/ and
-  # nothing ever compiles them: dpkg runs glib-compile-schemas as a trigger
-  # at install time, and this image is assembled with dpkg-deb -x, which
-  # runs no triggers. On the booted image every GSettings user then aborted
-  # on the missing cache -- Firefox with "GLib-GIO-ERROR: No GSettings
-  # schemas are installed on the system", xdg-desktop-portal and gvfs'
-  # UDisks2VolumeMonitor with SIGTRAP (signal 5), and xfsettingsd before it
-  # could hand the session its XSETTINGS, which is half of the cursor bug
-  # below. Compile here, after every stage that can stage a schema (gui and
-  # niri both do), so what the disc carries is what an installed system
-  # would have.
-  #
-  # The compiler is the build HOST's, not the image's: nothing on the image
-  # ships it, and the cache it writes is what the image's glib reads at
-  # runtime -- a file format that has not moved since GSettings exists, so
-  # a host glib newer than the image's is fine. It runs over the staged
-  # tree directly: it reads xml and writes one file, it needs no chroot.
+# No dpkg triggers run, so compile the 46 staged schemas with the host glib-compile-schemas into
+# gschemas.compiled. Without it Firefox aborts with "No GSettings schemas are installed on the system",
+# the portal and gvfs SIGTRAP, and xfsettingsd never hands out XSETTINGS. The cache format is stable.
   local gcs gsc
   gcs=$(command -v glib-compile-schemas) || {
     echo "iso: glib-compile-schemas is not on the build host" >&2
@@ -3952,18 +3003,9 @@ build_iso() {
   # would carry that to the disc.
   chown 0:0 "$gsc"; chmod 0644 "$gsc"
 
-  # /usr/share/icons/default is an empty directory in this tree, and that is
-  # the other half of the Firefox symptoms. GTK falls back to the cursor
-  # theme named "default" when nothing else says one -- xfsettingsd, which
-  # would say one, is among the crashers above -- and Debian's
-  # dmz-cursor-theme turns that empty directory into a selection by making
-  # /usr/share/icons/default/index.theme an update-alternatives symlink to
-  # DMZ-White's cursor.theme in its postinst, which no dpkg-deb -x ever
-  # runs. So every cursor lookup failed and Firefox logged "Unable to load
-  # pointer from the cursor theme" for its whole life. A real file, not a
-  # symlink: the alternatives machinery that would keep one honest is not
-  # on the image, and the bytes are DMZ-White's own cursor.theme verbatim,
-  # which is exactly what the symlink would point at.
+# Debian's dmz-cursor-theme postinst makes /usr/share/icons/default/index.theme an alternatives symlink;
+# none runs here, so GTK's fallback to "default" found an empty dir and Firefox logged "Unable to load
+# pointer from the cursor theme". Copy DMZ-White's cursor.theme as a real file with the same bytes.
   if [ ! -f "$TGT/usr/share/icons/DMZ-White/cursor.theme" ]; then
     echo "iso: DMZ-White/cursor.theme is not staged; the default cursor theme cannot inherit it" >&2
     exit 1
@@ -4147,24 +3189,10 @@ build_iso() {
   fi
   echo "  iso: gschemas.compiled and the default cursor theme are on the disc"
 
-  # The power commands, read back off the disc -- bug 29 in one check. PATH
-  # (copper-init's setenv, /etc/profile) and sudo's secure_path all search
-  # /usr/sbin before /sbin, so a `reboot` there pointing at ../bin/systemctl
-  # beats the busybox link in /sbin and `sudo reboot` dies with "System has
-  # not been booted with systemd". The 2026-10-17 fix relinked /sbin only, and
-  # the ISO CI built from it still shipped systemd-sysv's copies in /usr/sbin
-  # -- found by inspecting that artifact, so the same inspection is what this
-  # gate automates. Same readback discipline as sudo's mode above.
-  #
-  # All four power names are the wrapper on BOTH halves of the unified image;
-  # sbin/init is read back anyway so a cached tree cannot sneak a different
-  # PID 1 onto the disc underneath them. The wrapper decides at call time from
-  # /proc/1/comm: systemd gets `systemctl --no-block <mode>`, copper-init gets
-  # the busybox applet. A direct systemctl link waits in the unit the shutdown
-  # is about to stop, gets SIGTERMed, cancels its own job, and hands the prompt
-  # back -- the "sudo reboot stops halfway" report. A direct busybox link on a
-  # systemd boot signals a convention nothing there reads. Both runtime halves
-  # are covered in tests/shutdown-gate.sh with a bound fake comm file.
+# Read power links off the disc: /usr/sbin is searched first, so a leftover ../bin/systemctl there beats
+# /sbin's busybox link and `sudo reboot` answers "System has not been booted with systemd" (bug 29).
+# Both halves use the wrapper, which reads /proc/1/comm; a blocking systemctl would be SIGTERMed by its
+# own shutdown, cancel its own job, and hand the prompt back. tests/shutdown-gate.sh covers both branches.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /sbin "$ex/sbin" >/dev/null 2>&1 || true
   xorriso -osirrox on -indev "$OUT/copper.iso" \
@@ -4232,12 +3260,8 @@ build_iso() {
     fi
     echo "  iso: systemd is PID 1, power commands are right, and agetty is on the disc"
   else
-    # The busybox half of the unified image. Every power name is Copper's
-    # wrapper in BOTH directories, not a busybox applet link: one disc boots
-    # either init, so the links cannot be flavour-specific, and the wrapper
-    # reads the running init and execs the applet when copper-init is PID 1.
-    # A link straight to /bin/busybox here is the old single-flavour shape and
-    # would signal systemd a convention it does not read.
+# On the busybox half every power name is still the wrapper in both dirs; a direct /bin/busybox link is
+# the old single-flavour shape and signals a PID 1 convention systemd does not read.
     for cmd in reboot poweroff halt; do
       for d in "$ex/sbin" "$ex/usr-sbin"; do
         pt=$(readlink "$d/$cmd" 2>/dev/null || echo missing)
@@ -4270,15 +3294,9 @@ build_iso() {
     bootloader_check "$OUT/copper.iso" "$ex"
   fi
 
-  # The niri skeleton, read back off the disc. Same readback discipline as
-  # sudo's mode above -- check the artifact that actually shipped, not the tree
-  # the build believes it produced. Bug 26 was a skeleton missing files its own
-  # config needed: an empty-file sweep in build_rootfs matched nothing because
-  # its guards were written for `find .` against a tree named by an absolute
-  # path, the desktop stage's stamp then said "already staged", and every home
-  # seeded from the disc came up half-loaded. The niri tree carries no empty
-  # files, but the stage unpacks it from a pinned tarball and a re-pin can
-  # change the layout, so the files the session reads are named here.
+# Read the niri skeleton off the disc: bug 26 shipped a config tree missing files its own config required
+# after an absolute-path empty-file sweep and a matching stamp skipped the fix. A re-pin can move files,
+# so name what the session reads.
   xorriso -osirrox on -indev "$OUT/copper.iso" \
       -extract /usr/share/copper/niri-skel/.config \
       "$ex/niri-config" >/dev/null 2>&1 || true
@@ -4319,29 +3337,9 @@ full() {
   build_iso
 }
 
-# The DEFAULT flavour's chains take the tree back from the systemd flavour
-# if that is what they find.
-#
-# The staged tree outlives any one build.sh run: iso/work is cached between
-# runs, and a cached tree can hold either flavour. A default build that
-# inherited the systemd flavour's state would ship an image that boots systemd
-# while calling itself the default one -- the half-done swap
-# SYSTEMD-MIGRATION.md warns about -- and would fail to copy the niri
-# packages into the tree at all.
-#
-# The `iso` chain is deliberately NOT in this list: the CI builds the default
-# ISO and the systemd ISO with the same command, and the tree's own state is
-# what says which flavour is being packaged.
-#
-# The `systemd` chain IS in it, and it is the one that has to be: that stage
-# is what puts the swap in place, so it has to do the swap from a KNOWN
-# default tree rather than from whatever it found. Two reasons, both real:
-# build_copper asserts that sbin/init is copper-init, and it runs before
-# build_systemd in that chain, so a tree that came in systemd-flavoured would
-# stop the stage dead; and the swap itself is supposed to be the ONLY thing
-# that makes a tree systemd-flavoured. Normalising first also makes the stage
-# re-runnable: running it twice leaves the same tree, not a tree that has been
-# swapped twice.
+# Default chains normalise a cached systemd tree back to copper-init; `iso` deliberately does not (the
+# tree's own state says which flavour to package), while `systemd` does so build_copper's init assertion
+# and the swap itself both start from a known default tree.
 case "$STAGE" in
   rootfs|gui|niri|plymouth|sudo|initramfs|copper|systemd|unified|all|"")
     default_flavour ;;
@@ -4357,14 +3355,8 @@ case "$STAGE" in
   niri)       build_rootfs; build_gui; build_niri ;;
   plymouth)   build_rootfs; build_gui; build_niri; build_plymouth ;;
   sudo)       build_rootfs; build_gui; build_niri; build_plymouth; build_sudo ;;
-  # build_musl and build_busybox lead every stage that compiles or links
-  # Copper's own binaries, because build_musl is what exports $CC/$CFLAGS/PATH.
-  # This line did not, and CI proved the cost: `bash iso/build.sh systemd` on a
-  # runner reaches build_copper with CC unset, and `set -u` kills the build at
-  # `$CC $CFLAGS ... copper-sh` with "line 638: CC: unbound variable". The
-  # default `all`/`full` path never showed it because full() runs build_musl
-  # first; the opt-in stage has to say so itself. It is why this stage is
-  # spelled like initramfs/iso and not like sudo.
+# build_musl must precede any stage that compiles Copper's own binaries: without it CC was unset and
+# `bash iso/build.sh systemd` died at `line 638: CC: unbound variable`.
   systemd)    build_musl; build_busybox; build_rootfs; build_gui; build_niri; build_plymouth; build_sudo; build_copper; build_systemd ;;
   # One image, both inits. build_systemd stages the systemd payload and makes
   # it PID 1; build_unified then takes the DEFAULT back to copper-init and

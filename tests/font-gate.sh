@@ -1,46 +1,13 @@
 #!/usr/bin/env bash
 # Gate for the console font, and for the glyphs the tools actually print.
-#
-# Why this exists
-# ---------------
-# Copper's console showed a screen of question marks where fastfetch's
-# separators -- and every other non-ASCII glyph -- should have been. It was
-# not the locale this time: the kernel console draws from ONE bitmap font with
-# no per-glyph fallback, so a codepoint the font does not carry is printed as a
-# literal "?". xfce4-terminal never shows that bug, because VTE asks fontconfig
-# for each missing glyph and the console cannot.
-#
-# The fix is a 512-glyph console font (Uni2-VGA16) loaded by copper-init through
-# the busybox setfont applet, plus the terminal fonts and a fontconfig fallback
-# chain for the GUI half. Every one of those pieces is a file that can go
-# missing in a cleanup or a rebase and nothing else would notice until somebody
-# booted the image and looked at the screen -- so this gate reads the shipped
-# files and fails if any of them stops doing its job.
-#
-# What it asserts
-# ---------------
-#   * the font in the overlay is a PSF1 with a 512-glyph unicode table (the
-#     form busybox setfont reads without CONFIG_FEATURE_LOADFONT_PSF2), and it
-#     carries box drawing, blocks, shades, arrows and the solid shapes;
-#   * every non-ASCII codepoint the shipped fastfetch config prints is in that
-#     font -- including the colors module's symbol, which is resolved from its
-#     config name rather than hard-coded;
-#   * copper-init loads the font in run_session() BEFORE the wizard can draw;
-#   * the build enables and asserts the setfont applet, and stages the extra
-#     terminal fonts + fontconfig;
-#   * fontconfig prefers a monospace face that exists and keeps the symbol
-#     fonts as fallbacks;
-#   * the font's provenance note ships with it (it is public domain, but the
-#     image should say where a binary blob came from).
-#
-# It also proves the font parser is not vacuous: a copy with a smashed magic
-# number must be rejected, and a copy with one glyph removed must be reported
-# as missing that glyph.
-#
-#
-# Ten kilobytes of public-domain font, one afternoon of "why is every dash a
-# question mark", and the kernel still cannot fall back per glyph. Worth it.
-#
+# The console has one bitmap font with no per-glyph fallback, so any codepoint
+# it lacks prints as "?" even when xfce4-terminal renders fine. The fix is a
+# 512-glyph PSF1 font, setfont in copper-init before the wizard draws, plus
+# GUI fontconfig fallbacks -- each a file that can vanish unnoticed.
+# The shipped fastfetch config's non-ASCII codepoints must all be in the font,
+# and the parser must reject a smashed magic or a removed glyph.
+# Ten kilobytes of public-domain font and one afternoon of "why is every dash
+# a question mark"; the kernel still cannot fall back per glyph.
 # Run: bash tests/font-gate.sh   (no root needed; needs python3)
 
 set -u
@@ -62,10 +29,8 @@ bad() { echo "  FAIL  $1${2:+ -- $2}"; fail=$((fail + 1)); }
 [ -f "$BUILD" ] || { bad "build.sh is missing" "$BUILD"; exit 1; }
 [ -f "$INIT" ] || { bad "copper-init.c is missing" "$INIT"; exit 1; }
 
-# ---------------------------------------------------------------------------
-# The font itself, and the characters the shipped fastfetch config can print.
-# python3 does the binary parsing; it reports in the same ok/FAIL shape as the
-# shell so branch-gate can count it without knowing which language failed.
+# The font itself and the characters fastfetch can print. python3 parses the
+# binary and reports in the same ok/FAIL shape branch-gate counts.
 python3 - "$FONT" "$FFCONF" "$OVERLAY/usr/share/copper/fastfetch-logo.txt" "$CONF" <<'PY'
 import re
 import struct
@@ -299,8 +264,7 @@ if [ "$rc" -ne 0 ]; then
     fail=$((fail + 1))
 fi
 
-# ---------------------------------------------------------------------------
-# copper-init loads it, early enough to matter.
+# copper-init loads it before the wizard can draw.
 if grep -q '^static void load_console_font(void)' "$INIT"; then
     ok "copper-init has load_console_font()"
 else
@@ -324,8 +288,7 @@ else
     bad "load_console_font() is called after the wizard" "line ${call_line:-?} vs ${wiz_line:-?}"
 fi
 
-# ---------------------------------------------------------------------------
-# The build keeps the applet and the packages.
+# The build keeps the setfont applet and the font packages.
 if grep -q 'SETFONT' "$BUILD" && grep -q 'set_bb_config SETFONT' "$BUILD"; then
     ok "build.sh enables and asserts CONFIG_SETFONT"
 else
@@ -339,9 +302,7 @@ for pkg in fonts-hack fonts-jetbrains-mono fonts-firacode \
         bad "build.sh does not stage $pkg"
     fi
 done
-# fonts-noto-extra is 334 MB installed and fonts-liberation2 is a transitional
-# dummy package: both look like an upgrade and are one line away from doubling
-# the ISO, so their absence is a check too.
+# fonts-noto-extra is 334 MB and liberation2 is a dummy: both are checks.
 if grep -q 'fonts-noto-extra' "$BUILD"; then
     bad "build.sh stages fonts-noto-extra" "334 MB installed; fonts-noto-core already has the symbols"
 else
@@ -353,7 +314,6 @@ else
     ok "build.sh names the real liberation package, not the transitional one"
 fi
 
-# ---------------------------------------------------------------------------
 # The fontconfig fallback chain.
 for want in 'DejaVu Sans Mono' 'Noto Color Emoji' 'Symbola' 'braille'; do
     if grep -qi "$want" "$CONF" 2>/dev/null; then
@@ -368,7 +328,6 @@ else
     bad "fontconfig file is not closed" "$CONF"
 fi
 
-# ---------------------------------------------------------------------------
 # The provenance note.
 if grep -qi 'public domain' "$NOTE" 2>/dev/null; then
     ok "the font ships with its licence note"

@@ -1,48 +1,24 @@
 #!/bin/sh
-# Copper Linux -- find the interface worth handing to DHCP, and run the client
-# on it.
+# Copper Linux -- find the interface worth handing to DHCP, and run the client on it.
+# The systemd counterpart of copper-init's bring_up_network(): ask sysfs which
+# interface is real, then start udhcpc on it. Wired only -- no wireless stack.
 #
-# This is the systemd flavour's answer to copper-init's bring_up_network()
-# (iso/src-init/copper-init.c), which does the same job for the busybox image:
-# work out which interface is real, and start udhcpc on it.
-#
-# Why a helper, and not a literal in the unit: the unit used to say
-#
+# Why a helper, not a literal in the unit: the unit used to say
 #     ExecStart=/sbin/udhcpc -i eth0 -b -p /run/udhcpc.eth0.pid
+# and eth0 is a NAME, not a fact (only the first NIC the kernel enumerates).
+# A box with no wired NIC had no eth0, udhcpc exited non-zero, and with no Restart=
+# [FAILED] landed on the tty the wizard was drawing its form on (bug 47).
 #
-# and eth0 is a NAME, not a fact. The kernel names interfaces eth0, eth1, ...
-# only for as long as eth0 is the first NIC it enumerates. A box with no wired
-# NIC at all -- a thin client, a guest whose NIC turns up late -- has
-# no eth0 to find, and udhcpc on a missing interface exits non-zero with
-# "can't open '/dev/eth0'". The unit had no Restart=, so that was the end of
-# it: the machine booted with no network and no explanation, and the unit's
-# [FAILED] landed on the tty the first-boot wizard was drawing its form on --
-# which is the same corruption bug 47 was about, one unit over.
-#
-# The busybox image never had this problem, because copper-init asked sysfs
-# which interface was real instead of assuming a name. So the rule here is the
-# rule copper-init uses: ask sysfs what the interface actually is, and only
-# take something with a real link layer. Wired only -- this image ships no
-# wireless stack.
-#
-# The link-layer types are the ARPHRD_* numbers from linux/if_arp.h, and they
-# are ABI: /sys/class/net/<if>/type prints that number in decimal.
-#
-# POSIX sh, not bash: this runs under busybox ash on the live image, where
-# `local`, arrays and [[ ]] do not exist. See assert_shell_scripts_parse() in
-# iso/build.sh, which checks this file against a POSIX shell.
+# Link-layer types are the ARPHRD_* numbers from linux/if_arp.h: ABI, printed in
+# decimal by /sys/class/net/<if>/type. POSIX sh, not bash: busybox ash has no
+# local, arrays or [[ ]] (see assert_shell_scripts_parse() in iso/build.sh).
 
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
 export PATH
 
-# To the screen, and to the serial port when there is one -- the same two
-# places the boot scripts elsewhere in this image speak to.
-#
-# The screen half is muted when the kernel command line says quiet (the normal
-# splash entry does): the boot report there is systemd's [ OK ] block, and a
-# stray "copper-dhcp:" line either lands behind the animation or pushes the
-# wizard's form down. The serial log keeps every line either way, which is
-# where a post-mortem looks.
+# To the screen and serial port. Quiet (the normal splash entry) mutes the screen
+# half so a stray line cannot land behind the animation or push the wizard's form
+# down; the serial log keeps every line for a post-mortem.
 QUIET=0
 if read -r cmdline < /proc/cmdline 2>/dev/null; then
     case " $cmdline " in
@@ -64,13 +40,9 @@ iface_type() {
     cat "/sys/class/net/$1/type" 2>/dev/null
 }
 
-# The first interface with the wanted link-layer type.
-#
-# Not simply the first name in the directory: with MODULES=n every driver is
-# built into this kernel, and several of them invent an interface at boot
-# before the real NIC has finished probing. The sit module's sit0 is one, and
-# handing DHCP a tunnel means broadcasting DISCOVER into nowhere. So the type
-# is what decides, exactly as it does in copper-init.c.
+# The first interface with the wanted link-layer type -- not the first name:
+# built-in drivers invent sit0-like tunnels before the real NIC probes, and DHCP
+# on a tunnel broadcasts DISCOVER into nowhere. The type decides, as in copper-init.c.
 find_iface() {
     want_type=$1
     for d in /sys/class/net/*; do
@@ -89,16 +61,9 @@ pick_iface() {
     find_iface "$ether_type"
 }
 
-# The kernel is done probing before systemd starts this unit, but a freshly
-# attached NIC can land a moment later. Give the bus a couple of seconds
-# before deciding this machine has no network -- the same window
-# copper-init's bring_up_network() waits out, for the same reason (a VMware
-# guest's NIC can arrive after the kernel has started).
-#
-# busybox's sleep counts whole seconds -- its duration parser truncates a
-# fraction rather than rounding it -- so the window is taken in two whole
-# second steps instead of twenty tenths. Same two seconds, and no dependency
-# on a fractional sleep existing.
+# A freshly attached NIC can land a moment after systemd starts, so wait two
+# whole seconds (busybox sleep truncates fractions) like copper-init does -- a
+# VMware guest's NIC can arrive late.
 tries_left=2
 while [ "$tries_left" -gt 0 ]; do
     ifname=$(pick_iface) || ifname=""
@@ -108,45 +73,24 @@ while [ "$tries_left" -gt 0 ]; do
     [ "$tries_left" -gt 0 ] && sleep 1
 done
 
-# No interface is not a failure. copper-init says "no network interface,
-# skipping DHCP" and carries on, and so does this: a box with no NIC yet is
-# a box to keep booting, and a failed unit here would print [FAILED] onto the
-# tty the wizard is drawing on.
+# No interface is not a failure: keep booting, and keep [FAILED] off the wizard's tty.
 if [ -z "$ifname" ]; then
     say "no network interface, skipping DHCP"
     exit 0
 fi
 
-# There used to be a device-node existence test on the interface here, and it
-# was wrong in a way that silently disabled DHCP on every systemd boot: network
-# interfaces are not character or block devices, so devtmpfs never creates
-# /dev/eth0. The test was always false, the helper said "has no device node
-# yet" and exited 0, and the unit looked healthy while the machine came up
-# offline. Found on the booted green ISO's serial log, after a user had to run
-# `udhcpc -i eth0` by hand. An interface is reachable through sockets, not a
-# /dev path; nothing here should ever look for one.
+# No /dev/eth0 test here: network interfaces are sockets, not devtmpfs nodes. The
+# old always-false test silently disabled DHCP on every systemd boot.
 
-# Raise the link before the client tries to use it, the way copper-init's
-# link_up() does. Best effort: the lease script's deconfig branch runs
-# `ip link set dev <if> up` too, so this is belt and braces rather than the
-# only thing doing it. A failure here is not fatal -- udhcpc raises the link
-# itself -- so it is not worth failing the boot over.
+# Raise the link before the client, best effort: the lease script's deconfig
+# branch does it too, and udhcpc does itself, so failure is not fatal.
 ip link set dev "$ifname" up 2>/dev/null || true
 
 say "$ifname is up, asking DHCP for an address"
 
-# exec, so this process IS udhcpc: the unit tracks the client, and a signal
-# to the unit reaches the client rather than a shell wrapper.
-#
-# -f is load-bearing, and is the one place this helper deliberately differs
-# from copper-init's start_dhcp() in the busybox image. There, -b lets udhcpc
-# daemonise and the forked child outlives its parent because copper-init does
-# not own a cgroup for it. Under systemd it does: Type=simple tracks THIS
-# process, and when the -b parent exits after handing the daemon its lease,
-# systemd treats the unit as finished and, with the default KillMode=
-# control-group, kills everything left in that cgroup -- including the client
-# that was supposed to keep renewing the lease. -f keeps udhcpc in the
-# foreground for the life of the boot, so the unit IS the client, the lease
-# keeps renewing, and a machine that had no cable at boot picks one up later.
+# exec so the unit IS udhcpc and signals reach the client. -f is load-bearing:
+# under systemd, -b's parent exits after the lease and KillMode=control-group
+# kills the daemonised child, so renewal stops. -f keeps the client in the
+# foreground for the boot, so a cable plugged in later still gets a lease.
 exec /sbin/udhcpc -i "$ifname" -s /usr/share/udhcpc/default.script \
     -f -p "/run/udhcpc.$ifname.pid"

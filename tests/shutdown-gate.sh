@@ -1,43 +1,10 @@
 #!/bin/sh
-# Gate for iso/shutdown.sh (bugs 18 and 33, and the live-ISO "sudo reboot stops
-# halfway" report).
-#
-# busybox ships halt, poweroff and reboot but no `shutdown`, so Copper ships
-# its own. The wrapper's whole job is to map the usual flags onto one of those
-# applets -- and the mapping is the risk: `shutdown -r now` must not power the
-# machine off, and `shutdown -h now` must not reboot it.
-#
-# It is also installed under the other power-command names: power_links makes
-# /sbin/reboot, /sbin/poweroff and /sbin/halt symlinks to it, so `sudo reboot`
-# reaches this file with argv[0]="reboot". The NAME has to pick the mode, or
-# `sudo reboot` powers the machine off. That half is checked here by invoking
-# the wrapper through real symlinks.
-#
-# On the systemd image the wrapper must run `systemctl --no-block`. A blocking
-# systemctl waits for a transaction that stops the very unit the caller's shell
-# belongs to; systemd SIGTERMs the client, the client cancels its own job, and
-# the machine returns a half-stopped prompt instead of rebooting. That is the
-# path `sudo reboot` takes on the shipped ISO, so it is checked here too, with
-# systemctl stubbed.
-#
-# The rejection path (bug 33): an argument the wrapper does not understand used
-# to fall through the flag loop and power the machine off immediately --
-# `shutdown +10` powered off at once -- so every rejected form must exit
-# non-zero AND never reach an applet.
-#
-# The wrapper execs an absolute /sbin path, so to observe which one it picks
-# without shutting anything down, this replaces /sbin inside a private mount
-# namespace with stubs that print their own name. The mount is chained with
-# `&&`, so if the namespace is unavailable the wrapper never runs at all --
-# this test can never reach the real poweroff.
-#
-# COPPER_INIT forces the branch in the main table below. The wrapper's real
-# detector reads /proc/1/comm, and the host running this gate is not the image
-# being tested, so most cases set the override. The last group binds a fake
-# comm file over /proc/1/comm and leaves COPPER_INIT empty, exercising the
-# production path: "copper-init" there must win over a baked /run/systemd/
-# system directory, which is the live-ISO failure this gate now prevents.
-#
+# Gate for iso/shutdown.sh (bugs 18 and 33, and the live-ISO reboot report).
+# Copper ships a wrapper: flags map to busybox applets, argv[0] picks the mode
+# for `sudo reboot`, systemd uses --no-block, and unknown arguments must exit
+# non-zero without reaching an applet.
+# /sbin is bound to stubs in a mount namespace so nothing is really shut down;
+# COPPER_INIT forces the branch except in the final real-detector group.
 # Root only (mount namespace). Run: sudo tests/shutdown-gate.sh
 # updated by farcrowx, bug 33, tests/shutdown-gate.sh
 
@@ -62,9 +29,8 @@ trap 'rm -rf "$TMP"' EXIT
 
 NS_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 
-# The busybox tree: power applets print their own name, and /sbin/init is a
-# REGULAR FILE, so `readlink /sbin/init` prints nothing and the wrapper must
-# take the applet branch.
+# The busybox tree: applets print their name; /sbin/init is a regular file,
+# so readlink finds nothing and the wrapper takes the applet branch.
 mkdir -p "$TMP/sbin"
 for n in reboot poweroff halt; do
     printf '#!/bin/sh\necho %s\n' "$n" > "$TMP/sbin/$n"
@@ -72,10 +38,8 @@ for n in reboot poweroff halt; do
 done
 : > "$TMP/sbin/init"
 
-# The systemd tree: /sbin/init is the link systemd installs, and systemctl is a
-# stub. The applet stubs are still there, printing "<name>-applet", so a wrapper
-# that wrongly falls through to /sbin/poweroff is visible as the wrong answer
-# instead of quietly shutting the test machine down.
+# The systemd tree: /sbin/init is the real link and stubs print "<name>-applet",
+# so a wrong fall-through is visible instead of shutting the machine down.
 mkdir -p "$TMP/sysbin"
 ln -sf /lib/systemd/systemd "$TMP/sysbin/init"
 printf '#!/bin/sh\necho systemctl "$@"\n' > "$TMP/sysbin/systemctl"
@@ -91,15 +55,9 @@ for n in shutdown reboot poweroff halt; do
     ln -sf "$WRAP" "$TMP/links/$n"
 done
 
-# Run <program> with /sbin replaced by <stubdir>. `&&` is deliberate: no mount,
-# no run. PATH starts with the stub dir so a stubbed systemctl wins over the
-# host's real one; readlink and sync still resolve from the usual places.
-#
-# COPPER_INIT forces the wrapper's branch. Without it the wrapper asks the
-# RUNNING system (/proc/1/comm), and the test host is neither of the inits in
-# this image -- so the table below would be testing the runner, not the disc.
-# It defaults to busybox; the systemd cases set it explicitly, and the final
-# group below binds a fake comm file to exercise the unoverridden path.
+# Run with /sbin replaced by the stub dir; `&&` means no mount, no run, and
+# PATH prefers stubbed systemctl. COPPER_INIT forces the branch because the
+# test host is not the image; the last group binds a fake comm file instead.
 ns_run() {   # ns_run <stubdir> <program> [args...]
     d=$1; p=$2; shift 2
     unshare -m sh -c "mount --bind '$d' /sbin && PATH='$d:$NS_PATH' COPPER_INIT='${COPPER_INIT:-busybox}' '$p' $*" 2>/dev/null
@@ -159,21 +117,15 @@ check "$TMP/sbin" "$TMP/links/shutdown" halt     -H now
 check "$TMP/sbin" "$TMP/links/shutdown" poweroff          # no args: poweroff
 check "$TMP/sbin" "$TMP/links/shutdown" reboot   -r -r now # repeated flag is ok
 
-# ---- argv[0] picks the mode (power_links installs these links) ---------------
-# Without the name logic, `sudo reboot` -- which is a symlink to this file --
-# would power the machine off.
+# argv[0] picks the mode: `sudo reboot` would otherwise power off.
 check "$TMP/sbin" "$TMP/links/reboot"   reboot
 check "$TMP/sbin" "$TMP/links/poweroff" poweroff
 check "$TMP/sbin" "$TMP/links/halt"     halt
 # A flag still wins over the name: `poweroff -r` means reboot.
 check "$TMP/sbin" "$TMP/links/poweroff" reboot -r now
 
-# ---- the systemd image: systemctl --no-block --------------------------------
-# The request must be handed to PID 1 and returned, not waited on. --no-block
-# is what stops the shutdown from cancelling itself by stopping the caller.
-# The branch is forced: the wrapper reads the running PID 1, and the host
-# running this gate is not the image under test, so without COPPER_INIT these
-# cases would test the runner's init instead of the wrapper's systemd path.
+# --no-block hands the request to PID 1 and returns instead of letting the
+# shutdown stop the caller's own unit. COPPER_INIT forces this branch.
 COPPER_INIT=systemd
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block poweroff" now
 check "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block reboot"   -r now
@@ -182,11 +134,8 @@ check "$TMP/sysbin" "$TMP/links/reboot"   "systemctl --no-block reboot"
 check "$TMP/sysbin" "$TMP/links/poweroff" "systemctl --no-block poweroff"
 COPPER_INIT=busybox
 
-# ---- the running-PID-1 detector, with no override ---------------------------
-# This gate host has /run/systemd/system, and the shipped busybox ISO bakes the
-# same directory into the tree. A wrapper that still trusted that directory
-# would send BOTH of these to systemctl; the kernel's comm for PID 1 is the
-# answer that has to win. COPPER_INIT is deliberately empty in comm_run.
+# /run/systemd/system exists on both the host and the busybox ISO, so it must
+# not win over PID 1's comm; comm_run leaves COPPER_INIT empty on purpose.
 if [ "$(comm_probe)" = probe ]; then
     check_comm copper-init "$TMP/sbin"  "$TMP/links/shutdown" reboot -r now
     check_comm systemd     "$TMP/sysbin" "$TMP/links/shutdown" "systemctl --no-block reboot" -r now
@@ -194,10 +143,8 @@ else
     echo "skip: cannot bind-mount /proc/1/comm; runtime detector not exercised"
 fi
 
-# The recursion guard: if /sbin/init ever fails to read as systemd on a systemd
-# machine, the link /sbin/poweroff -> this wrapper would exec itself forever.
-# The guard turns that into an error. Its stub tree is the busybox branch with
-# /sbin/poweroff pointing back at the wrapper, which is exactly that shape.
+# If /sbin/init fails to read as systemd, /sbin/poweroff -> wrapper would
+# recurse forever; the guard turns that into an error.
 mkdir -p "$TMP/loopbin"
 : > "$TMP/loopbin/init"
 ln -sf "$WRAP" "$TMP/loopbin/poweroff"
@@ -212,11 +159,8 @@ else
     fail=1
 fi
 
-# ---- the rejection path (bug 33) ---------------------------------------
-# Same namespace, but the wrapper must refuse BEFORE exec: non-zero exit and
-# no applet's name on stdout/stderr. run_err merges stderr so the refusal
-# message is visible; the stubs only ever print their own bare name (or
-# "systemctl ..."), so a line that IS a stub name means an applet ran.
+# Rejections must exit non-zero before any exec; stderr is merged so a bare
+# stub name on either stream proves an applet ran.
 reject() {
     out=$(ns_err "$TMP/sbin" "$TMP/links/shutdown" "$@"); rc=$?
     if [ "$rc" -eq 0 ]; then

@@ -1,44 +1,10 @@
 /*
- * xprobe -- connect to an X server and read its geometry, with no X client
- * library at all.
- *
- * Why not xdpyinfo: proving the server works means proving a client can do the
- * X11 handshake and read state back. xdpyinfo would do that, but it lives in
- * x11-utils, which is not in this image and is another build to trust. This
- * speaks the wire protocol directly, so the thing under test is the server and
- * nothing else: no Xlib, no libX11, no xcb. The only library it needs is libc.
- *
- * The handshake is the part that matters. A server that started and printed
- * "listening on /tmp/.X11-unix/X7" has told you almost nothing -- it opens that
- * socket before it has a driver. A completed ConnectionSetup reply carries the
- * protocol version, the vendor string, the resource-id base and mask, and the
- * screen list with its root window and dimensions. You cannot get that without
- * the server having a real output.
- *
- * Output is one line per fact, "name=value", so a test can grep for a value
- * rather than match prose.
- *
- * Exit codes -- a contract with startxfce, which decides what is safe to do
- * next from them. Everything used to be 1, which threw away the one
- * distinction that matters on a machine whose /tmp persists: whether the
- * socket refused the connection (it is stale and may be cleared) or was
- * reached but would not answer (it may be a server still starting, or one we
- * are not permitted to talk to, and must be left alone).
- *
- *   0  live       the handshake and the GetGeometry round trip both completed.
- *   1  not live   no socket, or the connection was refused / the peer closed
- *                 without answering. Positive evidence nothing usable is
- *                 listening; a stale socket file.
- *   2  usage      a bad or missing DISPLAY, or an unknown option. Never
- *                 produced by startxfce, which always passes ":$DISPLAY_NUM".
- *   3  unknown    something was reached but the answer did not arrive or did
- *                 not parse: a timeout, a permission or authorisation refusal,
- *                 a malformed reply. NOT proof the socket is stale.
- *
- * Every socket operation is bounded by SO_RCVTIMEO/SO_SNDTIMEO, so a listener
- * that accepts the connection and then says nothing returns "unknown" after
- * XPROBE_TIMEOUT seconds instead of hanging the caller forever.
- */
+ * xprobe -- X11 handshake and geometry over the wire protocol, no X client library.
+ * A listening socket is not proof: only a completed ConnectionSetup and getgeometry
+ * reply is. Exit codes are a contract with startxfce: 0 live, 1 not live (no socket
+ * or refused/closed), 2 usage (bad DISPLAY or option), 3 unknown (reached but no
+ * answer: timeout, permission, malformed -- NOT proof the socket is stale).
+ * Output is name=value lines; every socket op is bounded by SO_RCVTIMEO/SO_SNDTIMEO. */
 
 #include <errno.h>
 #include <stdint.h>
@@ -50,11 +16,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-/* X11 core protocol, little-endian, from Xproto.h. Only the fields read here. */
 
 #define X_TCP_PORT 6000
 
-/* Exit codes, restated here so the code reads the same as the header. */
 #define XP_LIVE     0
 #define XP_NOTLIVE  1
 #define XP_USAGE    2

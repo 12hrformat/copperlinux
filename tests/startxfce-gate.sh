@@ -1,32 +1,13 @@
 #!/bin/sh
-# Prove startxfce does the right thing, and fails the right way.
-#
-# The desktop is in the image now, so the launcher's daily job is the component
-# offer and the happy launch -- but the failure paths carried the exit-code
-# contract, and a test that stopped checking them would let one drift silently.
-# Every missing piece therefore gets a case here, with the exact exit code
-# asserted -- the codes are a contract, and a script branching on them is broken
-# silently if one of them changes.
-#
-# The X server and the XFCE session are stubbed. That is not a shortcut: the
-# real Xorg is a 13MB binary linked against 21 glibc libraries, and this image
-# is static musl, so it cannot run here no matter what. What is under test is
-# the launcher -- the ordering, the wait, the codes, and the hand-off of
-# DISPLAY to the session.
-#
+# Prove iso/startxfce.sh's ordering, waits, exit codes and DISPLAY hand-off; Xorg/XFCE are stubbed because the real X stack is glibc and cannot run here.
+# Every missing piece gets a case with its exact exit code: the codes are a contract and a drift would break callers silently.
 # Run: sh tests/startxfce-gate.sh
 
 set -u
 
-# The stubs must not see this machine's desktop.
-#
-# WSLg runs a real X server on :0 and exports DISPLAY=:0 and
-# WAYLAND_DISPLAY=wayland-0. A backgrounded stub that inherits those makes
-# WSLg try to start a notification daemon, which is a popup on the desktop of
-# whoever happens to be running the test. The stubs exist to be an X server for
-# startxfce to find, and nothing else, so they get an environment with no
-# desktop in it. This also keeps the test off the real /tmp/.X11-unix, which
-# belongs to that server.
+# Unset this host's WSLg desktop: stubs inheriting DISPLAY/WAYLAND make it start notification daemons on a real desktop.
+# Also keeps the test off the real /tmp/.X11-unix, which belongs to that server.
+# The stubs exist only to be an X server for startxfce to find, nothing else.
 unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE XDG_SESSION_DESKTOP \
       XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 
@@ -35,24 +16,17 @@ SUT="$REPO/iso/startxfce.sh"
 LOCK=/tmp/startxfce-gate.lock
 fails=0
 
-# One run at a time, and a private directory per run.
-#
-# A fixed scratch directory is shared by every copy of this script, so two
-# copies -- an interrupted one still alive, and the next one -- delete and
-# recreate each other's sockets mid-case. Both were observed blocked for eight
-# minutes with no children, which is what a command substitution does while
-# something still holds the write end of its pipe. Which process held it was not
-# established, so rather than guess at it: a unique directory removes the shared
-# state entirely, and the lock stops a second copy racing in the first place.
+# Private scratch dir plus lock: a shared dir let interrupted runs delete each other's sockets and block for minutes.
+# Both copies were observed blocked for eight minutes with no children: a command substitution waiting on a pipe.
+# A private dir removes the shared state; the lock stops a second copy racing in.
 if ! mkdir "$LOCK" 2>/dev/null; then
     echo "another startxfce-gate.sh is running (lock: $LOCK)"
     echo "if that is wrong, remove it and re-run"
     exit 1
 fi
-# Anything that exits without reaching the end -- a Ctrl-C, a killed tool call,
-# a failing assertion -- still takes the children and the directory with it.
-# An earlier version had no trap at all, which is how an interrupted run left
-# a live instance behind to collide with the next one.
+# Trap cleans children and both dirs on early exit; an earlier run left a live instance behind.
+# A Ctrl-C, a killed tool call or a failing assertion must still take the children with it.
+# An earlier version had no trap and left a live instance to collide with the next run.
 TMP=$(mktemp -d /tmp/startxfce-gate.XXXXXX) || exit 1
 cleanup() {
     pkill -P $$ 2>/dev/null
@@ -82,52 +56,26 @@ hasnt() {
 
 [ -f "$SUT" ] || { echo "  FAIL  $SUT does not exist"; exit 1; }
 
-# --- isolation -------------------------------------------------------------
-#
-# Every case runs through run_sut, which forces a private socket directory and
-# a probe that does not exist. Without that, this host's own /tmp/.X11-unix/X0
-# is a live display, startxfce correctly decides a server is already running,
-# and every case goes down the "reuse the existing server" path -- 13 checks
-# failing against a launcher that was working. The socket directory has to be
-# empty for cases 1, 2 and 7, where "is a server already there" must be false.
+# run_sut forces an empty private socket dir: a live /tmp/.X11-unix/X0 sends every case down the reuse path.
+# Without it this host's live /tmp/.X11-unix/X0 makes startxfce decide a server is already running.
+# Thirteen checks then fail against a launcher that was working.
 PROBE=$TMP/no-such-xdpyinfo
 
-# A socket directory of its own for the probe-driven cases (16 onward). See case
-# 16 for why: a stub's python child can keep an unlinked socket's pathname
-# listed in /proc/net/unix, and the socket-table fallback would then read a path
-# another case bound as still live.
+# Probe cases get their own socket dir: an unlinked socket can stay in /proc/net/unix and read as live.
+# See case 16 for the python child that keeps an unlinked socket's path listed.
 PSOCK="$TMP/probe-cases/.X11-unix"
 
 run_sut() {
-    # The three settings are saved before the shift, because shift renumbers the
-    # positional parameters and they are gone afterwards.
-    #
-    # shift comes first, on its own line. A trailing backslash on the line above
-    # would join the assignments to shift instead, and what an assignment prefixes
-    # is the command on the NEXT line -- so they would configure shift, and the
-    # launcher would be invoked with none of them. Measured, not read:
-    #
-    #     with the assignments prefixing shift:       child sees MYVAR=[<unset>]
-    #     with the assignments prefixing the command: child sees MYVAR=[what was set]
-    #
-    # With the environment silently absent the launcher used its defaults, and
-    # its default XSOCKDIR is the real /tmp/.X11-unix. So the test drove the
-    # machine's actual X display instead of its own, which is both why every case
-    # failed and why running it started notification daemons on a desktop.
-    #
-    # COPPER_SESSIONLOG and COPPER_XLOG are forced into TMP for the same reason
-    # as the socket directory: their defaults (/tmp/session.log, /tmp/xorg.log)
-    # are fixed names in the shared /tmp, and a file left there by an unrelated
-    # or earlier run -- owned by another user -- makes the exec's redirection
-    # fail with exit 2 and the case report a bug that is not there.
+# Save the settings before `shift 3` and keep shift on its own line: a trailing backslash makes the assignments prefix shift, so the launcher sees none of them and falls back to the real /tmp/.X11-unix.
+# Logs go to TMP too: fixed /tmp/session.log or /tmp/xorg.log owned by another user makes exec fail with exit 2.
+# Measured: with assignments prefixing shift the child saw MYVAR unset; on the command it saw the value.
     xorg=$1
     session=$2
     tries=$3
     shift 3
-    # The trailing "$@" carries options like --check through to the launcher.
-    # COPPER_XFCE_APPS and COPPER_INGOT are driven by globals so the component
-    # cases can point the launcher at a manifest and a stub installer; anything
-    # else sees a manifest path that does not exist, which disables the offer.
+# "$@" forwards --check/--yes; manifest and ingot globals let component cases point at stubs.
+# COPPER_XFCE_APPS and COPPER_INGOT are globals so component cases can point at a manifest and stub installer.
+# Anything else sees a missing manifest, which disables the offer.
     APPS_MANIFEST=${APPS_MANIFEST:-}
     INGOT_STUB=${INGOT_STUB:-}
     COPPER_XORG="$xorg" COPPER_STARTXFCE4="$session" COPPER_XLOG="$TMP/xorg.log" \
@@ -142,14 +90,9 @@ run_sut() {
 
 reset() { rm -rf "$TMP"; mkdir -p "$TMP/.X11-unix"; }
 
-# A real listening unix socket, because startxfce tests for a socket with -S and
-# a regular file would not do. python3 is used only to bind one; the launcher
-# under test never talks to it.
-#
-# stdout and stderr are closed deliberately. Backgrounded, this process would
-# otherwise inherit whatever the caller had open, and hold the write end of that
-# pipe for as long as it sleeps -- long enough for a shell waiting on end-of-file
-# to block indefinitely instead of returning the command substitution's result.
+# A real listening socket is needed (-S); close stdout/stderr so the sleeping child cannot hold a pipe and hang command substitution.
+# python3 is used only to bind it; the launcher under test never talks to it.
+# Inheriting the caller's open pipe would block a shell waiting for end-of-file.
 open_socket() {
     python3 - "$TMP/.X11-unix/X0" >/dev/null 2>&1 <<'PY' &
 import socket, sys, time
@@ -161,10 +104,9 @@ PY
 }
 
 echo "=== it has to parse as POSIX sh, not just as bash ==="
-# The live image's shell is busybox ash. A bashism here works on the build host
-# and dies on the machine, so the parse check is against /bin/sh explicitly.
-# The error file lives in TMP, not /tmp: a fixed /tmp/sfg.err owned by another
-# user turns a clean parse into "Permission denied" and a false FAIL.
+# Parse under /bin/sh: busybox ash dies on bashisms that work here. Error file in TMP avoids a foreign /tmp/sfg.err faking a FAIL.
+# A bashism works on the build host and dies on the machine.
+# The error file is in TMP because a fixed /tmp/sfg.err owned by another user turns a clean parse into FAIL.
 if sh -n "$SUT" 2>"$TMP/sfg.err"; then
     ok "parses under /bin/sh"
 else
@@ -177,17 +119,16 @@ echo "=== case 1: nothing installed at all ==="
 reset
 out=$(run_sut "$TMP/nope/Xorg" "$TMP/nope/startxfce4" 40); rc=$?
 eq "  exit code is 20 (no X server)" 20 "$rc"
-# The whole path, not a fragment of it. "no/Xorg" was here before and could never
-# match: the path ends "nope/Xorg", and no is followed by pe rather than by the
-# slash. The assertion was wrong, not the launcher -- it failed identically on CI
-# and here while exit 20 and the rest of the message were correct.
+# Assert the full path: "no/Xorg" could never match "nope/Xorg" -- the assertion was wrong, not the launcher.
+# The path ends 'nope/Xorg', and no is followed by pe rather than a slash.
+# The assertion failed identically on CI and here while exit 20 and the rest were correct.
 has "  names the X server it looked for" "$TMP/nope/Xorg" "$out"
 has "  says the X stack is not built yet" "not in this image yet" "$out"
 
 echo
 echo "=== case 2: Xorg present, XFCE absent ==="
-# Someone installs the X stack first and tries. The error must be about XFCE
-# and not about X, or the next hour of work is spent in the wrong place.
+# Blame XFCE, not X, or the next hour goes to the wrong component.
+# The error must name the missing piece or the next hour is spent in the wrong place.
 reset
 printf '#!/bin/sh\necho "must not be reached"\n' > "$TMP/Xorg"; chmod +x "$TMP/Xorg"
 out=$(run_sut "$TMP/Xorg" "$TMP/nope/startxfce4" 40); rc=$?
@@ -198,8 +139,8 @@ hasnt "  does not claim X is missing" "there is no X server" "$out"
 
 echo
 echo "=== case 3: Xorg dies while starting ==="
-# The common real failure: the server rejects the card or finds no mode and
-# exits. A launcher that only waits on the socket hangs the boot here.
+# A server that exits on a bad card must be caught, not waited on forever.
+# A launcher that only waits on the socket hangs the boot here.
 reset
 printf '#!/bin/sh\necho "(EE) fbdev: cannot open /dev/fb0"\nexit 1\n' > "$TMP/Xorg"
 chmod +x "$TMP/Xorg"
@@ -210,8 +151,8 @@ has "  shows the server's own log" "cannot open /dev/fb0" "$out"
 
 echo
 echo "=== case 4: Xorg stays up but never opens a display ==="
-# Alive, and useless. Must time out and say so rather than hang or hand
-# DISPLAY to a session with nothing to talk to.
+# Alive but no display: bound timeout, not a hang or a bogus DISPLAY hand-off.
+# It must time out and say so rather than hand DISPLAY to a session with nothing to talk to.
 reset
 printf '#!/bin/sh\necho "(WW) running, but no screen"\nwhile : ; do sleep 1; done\n' > "$TMP/Xorg"
 chmod +x "$TMP/Xorg"
@@ -223,9 +164,9 @@ has "  says it never opened the display" "never opened" "$out"
 
 echo
 echo "=== case 5: both present, the server opens the display ==="
-# The happy path, with stubs for the pieces that cannot exist here. Proves the
-# ordering and the hand-off: Xorg is started, waited for, DISPLAY is exported,
-# and the session is exec'd so it inherits the environment rather than a guess.
+# Happy path: assert ordering, the DISPLAY hand-off and the session exec.
+# The real Xorg is 13MB linked against 21 glibc libraries and this image is static musl.
+# What is under test is the launcher: ordering, wait, codes and the DISPLAY hand-off.
 reset
 cat > "$TMP/Xorg" <<EOF
 #!/bin/sh
@@ -258,17 +199,17 @@ if [ -s "$TMP/session.env" ]; then
 else
     bad "  the session actually ran" "no session.env, so startxfce4 was never exec'd"
 fi
-# The input line and the config are contract: a machine whose devices match
-# nothing ahead of the login still has to tell its user that, and the config
-# file has to exist so the server is pinned away from udev even when empty.
+# Input line and config are contract: even with no matching device the user is told, and xorg.conf pins the server away from udev.
+# A machine whose devices match nothing ahead of the login still has to tell its user.
+# The config has to exist so the server is pinned away from udev even when empty.
 has "  reports what it found (or found nothing)" "input devices:" "$out"
 if [ -f "$TMP/xorg.conf" ]; then
     ok "  the input config was written"
 else
     bad "  the input config was written" "no $TMP/xorg.conf"
 fi
-# The non-root VT flags must NOT appear as root: the image booted for months on
-# this exact root invocation, and the fix must not quietly change it.
+# Root must not pass the non-root VT flags: the image has booted for months on this invocation.
+# The image booted for months on this exact root invocation; the fix must not quietly change it.
 if [ -f "$TMP/xorg.args" ] && grep -q -- '-keeptty' "$TMP/xorg.args"; then
     bad "  root does not pass the non-root VT flags" \
         "-keeptty was passed while running as root: $(cat "$TMP/xorg.args")"
@@ -278,13 +219,9 @@ fi
 
 echo
 echo "=== case 5b: a non-root session keeps the console VT ==="
-# The session runs as the wizard user now, and a non-root Xorg cannot grab or
-# switch the VT without logind (there is none here). -sharevts is the flag that
-# actually skips the grab: xf86OpenConsole()'s VT_ACTIVATE path is guarded by
-# `if (!xf86Info.ShareVTs)`, so -novtswitch alone does not avoid it and a real
-# boot died on "xf86OpenConsole: Switching VT failed". It must also keep the
-# controlling terminal it was started from and not switch VTs. id is stubbed so
-# this exercises the non-root branch while the test itself runs as root.
+# Non-root Xorg needs -sharevts to skip the VT grab (xf86OpenConsole guards VT_ACTIVATE on ShareVTs); -novtswitch alone is not enough.
+# It also needs -keeptty and no VT switching; id is stubbed to exercise that branch while the test runs as root.
+# A real boot died on 'xf86OpenConsole: Switching VT failed' with -novtswitch alone.
 reset
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/id" <<EOF
@@ -319,18 +256,9 @@ has "  the server still gets the display" ":0" "$args"
 
 echo
 echo "=== case 5c: an unwritable input-config path does not kill the launcher ==="
-# Bug 44. `: > file` runs the `:` special builtin, and POSIX makes a
-# non-interactive shell *exit* when a special builtin's redirection fails. So
-# the launcher died on the first candidate -- /etc/X11/xorg.conf, which is
-# root's and not writable by the session user `sudo startxfce` drops to -- and
-# never reached its /tmp fallback. On the real boot that was
-#
-#     /usr/bin/startxfce: line 487: can't create /etc/X11/xorg.conf: Permission denied
-#
-# and straight back to the prompt. The first candidate here is a directory,
-# which no user can redirect onto, so it exercises the same path without
-# needing to be non-root. COPPER_XORGCONF_FALLBACK keeps the fallback out of
-# the shared /tmp so an unrelated file there cannot fail the case.
+# Bug 44: a failed `: > file` redirection exits POSIX shells, so an unwritable first xorg.conf candidate killed the launcher before its /tmp fallback.
+# Use a directory here and keep the fallback out of shared /tmp.
+# COPPER_XORGCONF_FALLBACK keeps the fallback out of the shared /tmp.
 reset
 mkdir -p "$TMP/adir"
 cat > "$TMP/Xorg" <<EOF
@@ -352,8 +280,9 @@ out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
       COPPER_XORGCONF="$TMP/adir" COPPER_XORGCONF_FALLBACK="$TMP/xorg.conf" \
       XSOCKDIR="$TMP/.X11-unix" WAIT_TRIES=80 sh "$SUT" 2>&1); rc=$?
 pkill -f "$TMP/Xorg" 2>/dev/null
-# The abort was exit 1 with the input step never reached; both are asserted,
-# because a launcher that survived but wrote nothing would still be broken.
+# Assert both exit 0 and the carried-on input step: surviving with no config is still broken.
+# The abort was exit 1 with the input step never reached.
+# A launcher that survived but wrote nothing would still be broken.
 eq "  exit code is 0, not the shell's" 0 "$rc"
 hasnt "  the failed candidate did not print a shell error" "can't create" "$out"
 has "  it fell back to the second path" "input config written: $TMP/xorg.conf" "$out"
@@ -366,9 +295,9 @@ fi
 
 echo
 echo "=== case 6: a live X server on the display is reused, not replaced ==="
-# Starting a second server on a live display is how a client ends up talking to
-# whichever of the two won the race. A real listening socket is used, because
-# the launcher checks for a socket and a plain file would not be one.
+# A second server on a live display races clients; a real socket is needed because -S is the check.
+# Starting a second server on a live display is how a client ends up talking to whichever won the race.
+# The launcher checks -S, so a regular file would not do.
 reset
 open_socket &
 spid=$!
@@ -390,12 +319,9 @@ fi
 
 echo
 echo "=== case 6b: a live server but no XFCE is still a clear failure ==="
-# The installation check has to run before the "server already running" branch,
-# not inside the branch that starts a server. Xorg up and XFCE absent gives
-#
-#     sh: /usr/bin/startxfce4: not found
-#
-# and exit 127, naming no missing piece. A running server is not a desktop.
+# The install check must precede the reuse branch, or Xorg up/XFCE absent gives a raw 127 naming nothing.
+# The check has to run before the reuse branch, not inside the branch that starts a server.
+# Otherwise Xorg up and XFCE absent gives raw exit 127 naming no missing piece.
 reset
 open_socket &
 spid=$!
@@ -411,14 +337,13 @@ hasnt "  did not try to exec it anyway" "not found" "$out"
 
 echo
 echo "=== case 7: a stale socket is NOT treated as a live server ==="
-# X does not remove its socket on exit, so a session that did not end cleanly
-# leaves /tmp/.X11-unix/X0 behind. A startxfce that trusts the file alone starts
-# XFCE against a server that is gone, and it hangs with nothing to show for it.
-# With a probe present the socket is only believed if the display answers.
+# X leaves stale sockets; with a probe the file is believed only if the display answers.
+# X does not remove its socket on exit, so an unclean session leaves X0 behind.
+# A startxfce that trusts the file alone starts XFCE against a server that is gone.
 reset
-# Bind, then close, in one process: the socket file survives and nothing is
-# listening. Leaving the binder running instead holds the address, and the stub
-# server below then dies with EADDRINUSE for a reason unrelated to this case.
+# Bind then close so the path survives with no listener; a live binder would give the new stub EADDRINUSE.
+# Leaving the binder running holds the address, so the stub below dies with EADDRINUSE.
+# That failure would be unrelated to the case.
 python3 -c "import socket,sys
 s = socket.socket(socket.AF_UNIX)
 s.bind('$TMP/.X11-unix/X0')
@@ -442,18 +367,9 @@ time.sleep(60)"
 EOF
 chmod +x "$TMP/Xorg"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
-# A probe that always fails is not a stand-in for xdpyinfo. display_live() also
-# runs the probe after starting a server, to decide the display came up, so a
-# probe stuck at exit 1 reports a healthy display as dead and the wait loop can
-# never succeed. Measured against a real listening socket:
-#
-#     state          exit 1     connects
-#     live              1            0
-#     stale file        1            1
-#     no socket         1            1
-#
-# Connecting is what xdpyinfo does, and it is what distinguishes the two states a
-# socket file cannot: a listener accepts, a leftover file refuses.
+# A probe stuck at exit 1 makes a healthy display look dead: it is also used after start, so the wait can never succeed.
+# Connecting is what distinguishes a listener from a leftover file; measured states 1/0 vs 1/1.
+# Measured states: live 1/connects, stale file 1/refuses, no socket 1/refuses.
 cat > "$TMP/probe" <<'PROBE_EOF'
 #!/usr/bin/env python3
 import os, socket, sys
@@ -501,10 +417,9 @@ has "  --help lists exit 25" "25 no way to ask" "$out"
 
 echo
 echo "=== case 10: the PS/2 mouse wins the pointer over a USB tablet ==="
-# Measured on the machine (blocking dd): the emulated ImPS/2 mouse delivers
-# events on VMware, the "Virtual USB Mouse" tablet delivers none (vmmouse is
-# retired from the archive). The matcher must prefer the PS/2 device even though
-# it sorts before the tablet in sysfs.
+# Measured: the PS/2 mouse delivers events on VMware, the USB tablet does not; prefer PS/2 though sysfs sorts it first.
+# The emulated ImPS/2 mouse delivers events on VMware; the Virtual USB Mouse tablet delivers none.
+# vmmouse is retired from the archive, so the matcher must prefer PS/2 though it sorts first.
 reset
 mkdir -p "$TMP/sys/class/input/event1/device" \
          "$TMP/sys/class/input/event2/device" \
@@ -547,8 +462,8 @@ fi
 
 echo
 echo "=== case 11: no PS/2 device, a plain USB mouse is still the pointer ==="
-# The preference is a preference, not a requirement: a machine whose only
-# mouse is generic still has to end up with a pointer.
+# Preference, not requirement: a generic USB mouse must still become the pointer.
+# A machine whose only mouse is generic still has to end up with a pointer.
 reset
 mkdir -p "$TMP/sys/class/input/event1/device" \
          "$TMP/sys/class/input/event3/device"
@@ -578,9 +493,9 @@ has "  the generic mouse won the pointer" "pointer=event3" "$out"
 
 echo
 echo "=== case 12: a component is missing, nothing to ask on, no --yes/--no ==="
-# The manifest names an ingot component whose probe does not exist. The test
-# has no terminal behind its command substitution, so the question cannot be
-# answered: startxfce must stop with exit 25 instead of silently guessing.
+# No TTY behind command substitution: exit 25 instead of silently guessing.
+# The manifest names an ingot component whose probe does not exist.
+# The command substitution has no terminal, so the question cannot be answered.
 reset
 printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
 cat > "$TMP/apps" <<EOF
@@ -644,20 +559,9 @@ hasnt "  never asked about components" "do you want to install" "$out"
 
 echo
 echo "=== case 16: a stale socket with NO probe is still not trusted (socket table) ==="
-# The image ships with xprobe built in, but an older image -- or a rootfs that
-# failed to stage it -- has neither xprobe nor xdpyinfo. A missing probe must
-# not silently turn a stale socket into a live server, so the kernel's socket
-# table is asked instead: /proc/net/unix lists a socket a process is bound to
-# and forgets one whose process is gone. COPPER_XPROBE is deliberately left
-# pointing at a binary that does not exist, and a bound-then-closed socket must
-# read as dead, be cleared, and be replaced.
-#
-# These probe cases use a socket path of their own. A stub's python child can
-# outlive the stub shell it was launched from, and the kernel keeps listing an
-# unlinked-but-open socket's pathname in /proc/net/unix -- so a path an earlier
-# case bound would make this case's socket-table answer read "live" for a file
-# that refuses connections. A directory nothing else has touched keeps the
-# fallback honest.
+# With no probe (older image or failed staging) ask /proc/net/unix instead; a missing probe must not make a stale socket live.
+# Probe cases use their own socket dir: an unlinked-but-open socket keeps its path in the table and would make another case's socket read live.
+# COPPER_XPROBE points at a nonexistent binary so the fallback is exercised.
 reset
 mkdir -p "$PSOCK"
 python3 -c "import socket,sys
@@ -696,9 +600,9 @@ has "  the display came up (so the stale socket was cleared)" "X server is up" "
 
 echo
 echo "=== case 17: a probe that answers live reuses the display ==="
-# The probe's exit codes are the whole contract: 0 means live. With a real
-# listener present and a probe saying "live", the launcher reuses the display
-# instead of starting a second server that would fight for the socket.
+# Probe exit 0 means live: reuse the display instead of fighting a second server for the socket.
+# The probe's exit codes are the whole contract: 0 means live.
+# Starting a second server would fight for the same socket.
 reset
 mkdir -p "$PSOCK"
 python3 -c "import socket,time
@@ -733,10 +637,9 @@ fi
 
 echo
 echo "=== case 18: an unanswered ('unknown') probe does NOT clear the socket ==="
-# Exit 3 is the contract for "something is there but will not answer": a server
-# still starting, one this user may not speak to, or a kernel that will not
-# report. None of that is proof the socket is stale, so the launcher leaves the
-# file alone and gives a fresh server its chance anyway.
+# Exit 3 means "there but not answering"; no proof of staleness, so leave the socket and let a fresh server try.
+# That could be a server still starting, one this user may not speak to, or a kernel that will not report.
+# None of it proves the socket is stale, so the launcher leaves the file alone.
 reset
 mkdir -p "$PSOCK"
 python3 -c "import socket,sys
@@ -748,8 +651,8 @@ cat > "$TMP/probe" <<'PROBE_EOF'
 exit 3
 PROBE_EOF
 chmod +x "$TMP/probe"
-# The stub server dies immediately. The launcher must not have deleted the
-# socket before starting it: the "unknown" answer forbids that.
+# The stub exits immediately: a clean failure proves the unknown answer did not let the launcher delete the socket.
+# The 'unknown' answer forbids deleting the socket before starting a fresh server.
 printf '#!/bin/sh\nexit 0\n' > "$TMP/Xorg"; chmod +x "$TMP/Xorg"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/startxfce4"; chmod +x "$TMP/startxfce4"
 out=$(COPPER_XORG="$TMP/Xorg" COPPER_STARTXFCE4="$TMP/startxfce4" \
@@ -767,10 +670,9 @@ fi
 
 echo
 echo "=== case 19: a server that never answers times out instead of hanging ==="
-# The server holds the socket but its handshake never completes -- the 'mute'
-# state xprobe reports as exit 3. The launcher must neither hang nor claim
-# success: it polls, the probe keeps saying unknown, and the bounded wait runs
-# out with exit 22 naming the display.
+# A mute (exit 3) display must be bounded and named, not hang or false-success.
+# The handshake never completes -- the 'mute' state xprobe reports as exit 3.
+# It polls, the probe keeps saying unknown, and the bounded wait runs out with exit 22 naming the display.
 reset
 mkdir -p "$PSOCK"
 python3 -c "import socket,sys
@@ -805,9 +707,9 @@ has "  still kept the socket for the unknown display" "leaving it in place" "$ou
 
 echo
 echo "=== case 20: XPROBE_TIMEOUT reaches the probe ==="
-# display_state runs the probe with the caller's XPROBE_TIMEOUT. The probe
-# records what it was given; if it saw the default 5 instead of 7, the wiring
-# is wrong and the bounded-wait guarantee silently returns to the default.
+# The probe must receive XPROBE_TIMEOUT=7, or the bounded-wait guarantee silently reverts to the default.
+# display_state runs the probe with the caller's XPROBE_TIMEOUT.
+# If it saw the default 5 instead of 7, the bounded-wait guarantee silently reverts.
 reset
 mkdir -p "$PSOCK"
 python3 -c "import socket,time
@@ -842,11 +744,9 @@ fi
 
 echo
 echo "=== case 21: a probe stuck at 'not live' cannot wedge the launcher ==="
-# A probe that answers 1 to everything reports a healthy server as dead. The
-# launcher must not hang, must not claim success, and must end with a nonzero
-# exit naming the display. The Xorg stub binds without unlinking: reaching exit
-# 22 also proves the stale socket was cleared (a leftover file would make the
-# bind fail and the run end as exit 23 instead).
+# A probe answering 1 to everything reports a live server as dead; reaching 22 also proves the stale socket was cleared (else 23).
+# It reports a healthy server as dead; the launcher must not hang or claim success.
+# The Xorg stub binds without unlinking: reaching 22 proves the stale socket was cleared.
 reset
 mkdir -p "$PSOCK"
 python3 -c "import socket,sys
@@ -877,18 +777,9 @@ pkill -f "$TMP/Xorg" 2>/dev/null; pkill -f "$PSOCK" 2>/dev/null
 eq "  the wait ends, with a nonzero exit" 22 "$rc"
 has "  says the display never opened" "never opened" "$out"
 
-# --- 23: reaching for sudo does not make the desktop root's -----------------
-#
-# The wizard's account owns the session (copper-init drops the console shell to
-# it, see tests/init-session.c), so the launcher has to agree -- otherwise
-# `sudo startxfce`, which is what a person types when the plain one did not
-# work, gives an XFCE that writes everything to /root while the real account
-# sits unused. That is the state this check exists to end.
-#
-# The account comes from /etc/copper-firstboot.done, read the way copper-init
-# reads it; COPPER_USER_MARKER points at one of our own so the gate does not
-# depend on the host having a wizard. sudo is a stub that records what it was
-# asked to do: the decision is under test, not sudo.
+# sudo startxfce must drop to the wizard's account from /etc/copper-firstboot.done, or the desktop writes to /root while the account sits unused.
+# COPPER_USER_MARKER and a sudo stub keep the decision under test without depending on the host.
+# The account comes from /etc/copper-firstboot.done, read the way copper-init reads it.
 reset
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/sudo" <<EOF
@@ -940,11 +831,9 @@ else
     fi
 fi
 
-# ---- the default backdrop ----------------------------------------------
-# xfdesktop reads system defaults from /etc/xdg/xfce4, and a home that has never
-# chosen a wallpaper gets what is written there. A default that names a path the
-# disc does not carry is a grey gradient with extra steps, so check both halves:
-# the channel points at Copper's picture and that picture is a real PNG.
+# A default wallpaper naming a path not on the disc is a grey gradient; check both the xfconf value and the real PNG.
+# xfdesktop reads system defaults from /etc/xdg/xfce4, and a home that never chose a wallpaper gets them.
+# A default naming a path the disc does not carry is a grey gradient with extra steps.
 XDG_DESKTOP="$REPO/iso/rootfs-overlay/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"
 WALLPAPER="$REPO/iso/rootfs-overlay/usr/share/copper/wallpapers/copper-default.png"
 if [ -f "$XDG_DESKTOP" ] \

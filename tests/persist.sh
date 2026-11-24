@@ -1,38 +1,13 @@
 #!/bin/sh
-# Persistence: which disks does the wizard take, does it format the right one
-# with the label /init looks for, and does it ever touch a disk it must not?
-#
+# Persistence: which disks does the wizard take, does it format the right one,
+# and does it ever touch a disk it must not?
 # Run as root:  sudo tests/persist.sh
-#
-# The bug this guards against
-# ---------------------------
-# Copper ran entirely from RAM, so every reboot threw the session away. The fix
-# is a disk labelled COPPER: the wizard writes that label on first boot and
-# /init mounts it as the overlay's writable layer. That makes the wizard's disk
-# choice a destructive operation, so the thing worth testing is not that it
-# formats -- it is that it takes the right disk and refuses the rest:
-#
-#   - one blank spare disk is taken automatically, with no question to answer
-#     (the ordinary first boot), but only after the countdown said which disk
-#     and offered the way out;
-#   - anything else -- two candidates, or one that already holds files -- goes
-#     back to the list, and a disk is only wiped there once it was printed and
-#     ERASE was typed at it;
-#   - it never offers the disc it booted from, anything already mounted, or the
-#     disk /init has attached as the writable layer (the marker's upper=).
-#
-# Running it safely
-# -----------------
-# Nothing real is ever formatted, and the machine is never rebooted. In a mount
-# namespace this gives the wizard a fake /sys/block (whole disks and a disc), a
-# fake /etc, /home and /mnt, and the live marker /init leaves, and it puts stub
-# mkfs.ext4 and blkid first on PATH. The stubs record what they were handed and
-# touch no device at all -- so the assertions are about the decisions, and the
-# machine underneath is untouched.
-#
-# COPPER_PERSIST_NO_REBOOT is not optional here. The wizard reboots by itself
-# once the disk is ready, which is the point of the change -- and that would
-# reboot the machine running the tests.
+# A disk labelled COPPER is the writable layer, so the wizard's disk choice is
+# destructive. One blank spare is taken automatically, anything else returns
+# to a list where ERASE must be typed, and the boot medium, mounted disks and
+# the disk in upper= are never offered.
+# The gate runs in a mount namespace with stub mkfs/blkid and a fake /sys/block;
+# COPPER_PERSIST_NO_REBOOT keeps the wizard from rebooting the test machine.
 
 set -u
 
@@ -74,10 +49,8 @@ printf 'root:x:0:0:root:/root:/bin/sh\n'   > "$ROOT/etc/passwd"
 printf 'root:x:0:\n'                         > "$ROOT/etc/group"
 printf 'root:!:19000:0:99999:7:::\n'         > "$ROOT/etc/shadow"
 
-# The marker /init writes. media=/dev/sdz1 says the medium is a partition of
-# sdz, so sdz is the disk this machine booted from and must never be offered,
-# however its label may look. upper=ram says nothing is attached as the
-# writable layer yet.
+# media=/dev/sdz1 means sdz is the boot medium and is never a candidate;
+# upper=ram means no writable layer is attached yet.
 printf 'media=/dev/sdz1\nupper=ram\n' > "$ROOT/var/lib/copper/live-boot"
 
 # Whole disks and the disc. Sizes are 512-byte sectors, the unit sysfs uses.
@@ -85,8 +58,7 @@ echo 41943040 > "$ROOT/sys/block/sdy/size"   # 20 GiB, spare: the one to offer
 echo 83886080 > "$ROOT/sys/block/sdz/size"   # 40 GiB, but it is the medium
 echo 1048576  > "$ROOT/sys/block/sr0/size"   # the disc; never a disk to offer
 
-# Stub mkfs.ext4. It records the whole command line and formats nothing, so the
-# test can assert what the wizard *would* have run without risking a device.
+# Stub mkfs records its command line; no device is ever formatted.
 cat > "$ROOT/bin/mkfs.ext4" <<EOF
 #!/bin/sh
 echo "\$@" >> "$ROOT/calls/mkfs"
@@ -94,13 +66,8 @@ exit 0
 EOF
 chmod +x "$ROOT/bin/mkfs.ext4"
 
-# Stub blkid, the probe that decides whether a disk still has files on it and
-# whether those files are Copper's own. A disk named in $ROOT/has-fs reports a
-# filesystem; every other disk reports nothing, which is what an empty disk
-# does. A disk named in $ROOT/is-copper reports the COPPER label -- the two
-# files are separate because the wizard now asks two different questions of the
-# same output ("is there a filesystem" and "is it Copper's"), and case 9 needs a
-# disk that answers yes to one and no to the other.
+# Stub blkid distinguishes "has a filesystem" from "is Copper's": case 9 needs
+# a disk that answers yes to one and no to the other.
 cat > "$ROOT/bin/blkid" <<EOF
 #!/bin/sh
 if [ -f "$ROOT/is-copper" ] && grep -qx "\$1" "$ROOT/is-copper"; then
@@ -112,11 +79,8 @@ exit 0
 EOF
 chmod +x "$ROOT/bin/blkid"
 
-# Run the driver from inside the sandbox directory rather than from the repo.
-# The wizard runs with a private /home (see below), and on a CI runner the repo
-# lives *under* /home -- so calling "$REPO/tests/firstboot-drive.py" would have
-# that path disappear the moment /home is bound, and python3 would report the
-# script missing. The copy is in $ROOT under /tmp, which nothing here shadows.
+# Run the driver from $ROOT under /tmp: the private /home bind would hide a
+# driver living in the repo on CI runners.
 cp "$DRIVER" "$ROOT/driver.py"
 
 # run_wizard [prompt|answer ...]
@@ -141,9 +105,8 @@ run_wizard() {
 
 show() { printf '%s\n' "$out" | tail -25 | sed 's/^/      /'; }
 
-# -------------------------------------------- 1. one empty disk: automatic
-# No disk is named and no ERASE is typed: this is the whole point of the change.
-# The only prompt answered is main()'s closing hold.
+# 1. one blank disk is taken without a question; only main()'s closing hold
+# is answered.
 run_wizard "Press Enter to continue|"
 if [ "$rc" -eq 0 ]; then
     ok "wizard finished the automatic run"
@@ -212,9 +175,7 @@ else
     ok "nothing was formatted when the countdown was stopped"
 fi
 
-# --------------------------------- 3. a disk that already has files on it
-# Same single disk, but not empty: that is not a decision to make by counting,
-# so the list comes back and nothing happens on Enter alone.
+# 3. a disk with files is not a counting decision: the list comes back.
 echo /dev/sdy > "$ROOT/has-fs"
 run_wizard "Disk to keep files on|" \
            "Press Enter to continue|"
@@ -282,16 +243,9 @@ else
 fi
 rm -rf "$ROOT/sys/block/sdw"
 
-# ----------------------------- 7. the disk /init already attached is not free
-# upper= names the writable layer. It is the disk whose whole purpose is holding
-# this machine's files, so it is never a candidate -- even when it is the only
-# spare-looking disk there is. This is the bug 35 case, where the disk showed up
-# in the list because /proc/mounts alone did not rule it out.
-#
-# With upper= set to a real disk, persistence is *already on*: this is every
-# boot after the first one. The page must say so and stop, and it must not print
-# the "nothing is saved" text -- that line sent people looking for a problem
-# that did not exist, immediately after the reboot that turned persistence on.
+# 7. upper= names the disk holding this machine's files: never a candidate.
+# With a real disk there persistence is already on, so the page must say so,
+# print no "nothing is saved", and name upper= as a device path.
 printf 'media=/dev/sdz1\nupper=/dev/sdy\n' > "$ROOT/var/lib/copper/live-boot"
 run_wizard "Press Enter to continue|"
 if printf '%s' "$out" | grep -q 'Already on'; then
@@ -306,9 +260,7 @@ if printf '%s' "$out" | grep -q 'nothing is saved'; then
 else
     ok "no 'nothing is saved' text when persistence was already on"
 fi
-# The marker stores upper= as a device path (/dev/sdy here, /dev/nvme0n1 on the
-# owner's machine), so the page must print it back as one. The rest of the wizard
-# says "/dev/%s" everywhere; a bare "sdy" reads like a name it invented.
+# upper= is a device path, so print it back as one, not a bare name.
 if printf '%s' "$out" | grep -q 'kept on /dev/sdy'; then
     ok "the disk already in use was named as a device path"
 else
@@ -328,9 +280,7 @@ else
 fi
 printf 'media=/dev/sdz1\nupper=ram\n' > "$ROOT/var/lib/copper/live-boot"
 
-# ------------------------------------------------- 8. not a live Copper boot
-# Without /init's marker the page must not appear at all: that is what keeps a
-# test bench -- which has a spare disk of its own -- from being offered a format.
+# 8. without /init's marker the persistence page must not appear at all.
 mv "$ROOT/var/lib/copper/live-boot" "$ROOT/var/lib/copper/live-boot.off"
 run_wizard
 if printf '%s' "$out" | grep -q 'Keeping your files'; then
@@ -346,18 +296,9 @@ else
 fi
 mv "$ROOT/var/lib/copper/live-boot.off" "$ROOT/var/lib/copper/live-boot"
 
-# -------------------------- 9. one disk that is already Copper's own (COPPER)
-# The feature this gate gained. A VM that Copper has booted on once has a disk
-# labelled COPPER and a filesystem on it; before this change that fell through
-# to the ERASE prompt, because "has a filesystem" was treated as "has somebody's
-# data". It is not: /init mounts exactly this label as the writable layer, so a
-# COPPER disk is already a persistence disk and is reused, never formatted and
-# never offered for erasure.
-#
-# upper=ram, so persistence is NOT already on -- this is the first boot against
-# a disk that happens to be Copper's from a previous run, which is precisely the
-# re-run-a-VM case. The disk must be claimed silently: no list, no countdown, no
-# ERASE, and above all no mkfs.
+# 9. a COPPER-labelled disk is already a persistence disk: reuse it silently,
+# with no list, countdown or mkfs, even though upper=ram says persistence is
+# not on yet. That is the re-run-a-VM case.
 echo /dev/sdy > "$ROOT/is-copper"
 run_wizard "Press Enter to continue|"
 rm -f "$ROOT/is-copper"
@@ -391,12 +332,8 @@ else
     show
 fi
 
-# ---------------------- 10. a foreign filesystem is still not taken silently
-# The line that must not move: COPPER is reusable, somebody else's data is not.
-# Same single disk, same filesystem, but no COPPER label -- so it is the ERASE
-# prompt and nothing else. This is the case 3 assertion re-stated next to case 9
-# so the contrast is in one place: the label, not the presence of a filesystem,
-# is what decides.
+# 10. a foreign filesystem is still not taken silently: the label, not the
+# presence of a filesystem, decides whether ERASE is required.
 echo /dev/sdy > "$ROOT/has-fs"
 run_wizard "Disk to keep files on|" \
            "Press Enter to continue|"
@@ -413,13 +350,8 @@ else
     ok "nothing was formatted when the disk held foreign data"
 fi
 
-# -------------------------- 11. an IDE spare is offered like any other class
-# The user report this guards: persistence only ever landed on NVMe, so the
-# candidate predicate stopped at sd/vd/nvme/mmcblk and never looked at the
-# ATA/IDE class, whose disks enumerate as /dev/hdX rather than sd*. With hd*
-# missing, an IDE spare was invisible to the wizard and never reached the
-# format; /init's find_upper had the same hole, so even a hand-made labelled
-# IDE disk could not become the writable layer.
+# 11. IDE disks enumerate as /dev/hdX; the candidate predicate and /init's
+# find_upper used to stop at sd/vd/nvme/mmcblk and miss them.
 mkdir -p "$ROOT/sys/block/hda"
 echo 20971520 > "$ROOT/sys/block/hda/size"   # 10 GiB, IDE spare
 run_wizard "Disk to keep files on|hda" \

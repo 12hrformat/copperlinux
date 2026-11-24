@@ -1,27 +1,6 @@
 #!/bin/sh
-# Prove starthyprland does the right thing, and fails the right way.
-#
-# Hyprland is a Wayland compositor: there is no second process to hand a display
-# to, so the launcher's whole job is the preparation around the compositor --
-# seed the config, make the runtime directory, start the session bus, notice
-# whether the seat is there, choose a renderer -- and then the exit-code
-# contract when one of those cannot be done or the compositor dies on the way
-# up. Every one of those gets a case here, with the exact exit code asserted:
-# the codes are a contract, and a script branching on them breaks silently when
-# one moves.
-#
-# The compositor is stubbed. The real Hyprland is a glibc binary linked against
-# the PPA's Wayland/DRM stack, which this image is not, so it cannot run here no
-# matter what. What is under test is the launcher: the ordering, the
-# preparation, the codes, the report --check prints, and the environment the
-# compositor is handed.
-#
-# The stub answers two ways, because Hyprland itself is both binaries:
-# the compositor takes no arguments, and hyprctl is the liveness probe the
-# launcher runs against the instance directory. The socket is a plain file
-# inside a directory whose name is the stub's pid -- which is the pid the
-# launcher backgrounds and goes looking for.
-#
+# Prove iso/starthyprland.sh's preparation, ordering, exit codes, --check report and environment; the real compositor is glibc and cannot run here.
+# Both binaries are stubbed (compositor and hyprctl probe) with a pid-named instance dir, matching the real layout.
 # Run: sh tests/starthyprland-gate.sh
 
 set -u
@@ -59,13 +38,9 @@ has() {
     esac
 }
 
-# ---------------------------------------------------------------------------
-# fixture: a private, writable world for the launcher to act in.
-#
-# The launcher reads its configuration from the environment. Defaults are
-# exported once, here; a case overrides one by assigning it before calling
-# run_launcher, and that assignment reaches the launcher unchanged.
-# ---------------------------------------------------------------------------
+# The launcher reads its config from the environment; defaults are exported once here and cases override one before run_launcher.
+# The launcher reads its configuration from the environment, not a file.
+# Defaults are exported once, here; a case overrides one by assigning it before run_launcher.
 
 # A stub compositor, in the two roles the real binary plays.
 cat > "$TMP/hyprland" <<'EOF'
@@ -114,10 +89,9 @@ EOF
     chmod +x "$TMP/$u"
 done
 
-# A seatd socket, so the "seatd present" branch is exercised. It has to be a
-# real unix socket, not a regular file: the launcher tests [ -S ], and a plain
-# file would make the "seatd present" case a lie. python3 binds it; without
-# python3 that one case is skipped rather than faked.
+# A real [ -S ] seatd socket is needed; a plain file would fake "present". Skip the case without python3.
+# python3 binds it; without python3 the one case is skipped rather than faked.
+# A plain file would make the "seatd present" case a lie.
 mkdir -p "$TMP/run"
 rm -f "$TMP/run/seatd.sock"
 SEATD_SOCK_PID=
@@ -138,8 +112,8 @@ PY
     sleep 0.3
 fi
 
-# A libudev record tree: PID 1 writes these at boot, and libinput drops any
-# device whose record has no ID_INPUT_* tag.
+# libudev drops devices without ID_INPUT_* tags; this tree supplies one.
+# PID 1 writes these at boot and libinput drops any device without an ID_INPUT_* tag.
 mkdir -p "$TMP/sys/class/input/input0" "$TMP/run/udev/data"
 printf 'stub keyboard\n' > "$TMP/sys/class/input/input0/name"
 mkdir -p "$TMP/sys/class/input/input0/event0"
@@ -153,16 +127,16 @@ printf '{}\n' > "$TMP/skel/.config/waybar/config.jsonc"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/skel/.config/waybar/scripts/workspaces.sh"
 chmod +x "$TMP/skel/.config/waybar/scripts/workspaces.sh"
 
-# The component manifest the launcher reads. By default every component is
-# present, so a plain launch never stops to ask about installing anything.
+# Default manifest has every component present so a plain launch never prompts.
+# The launcher reads it at launch, so a missing component would otherwise stop the plain case.
 {
     printf 'waybar          %s/waybar          image\n' "$TMP"
     printf 'fuzzel          %s/fuzzel          ingot\n' "$TMP"
 } > "$TMP/hyprland-apps"
 
-# A second manifest with two components that are genuinely missing, one of
-# which the installer refuses -- to prove an install failure does not abort a
-# session that has already been told to install the rest.
+# Second manifest has a missing component the installer refuses, to prove a failed install does not abort a told-to-install session.
+# One component is missing and the installer refuses it.
+# That proves an install failure does not abort a session already told to install the rest.
 {
     printf 'fuzzel          /usr/bin/fuzzel          ingot\n'
     printf 'nmap            /usr/bin/nmap            ingot\n'
@@ -179,9 +153,9 @@ exit 0
 EOF
 chmod +x "$TMP/ingot"
 
-# Defaults, exported once. A case that needs something else assigns it before
-# calling run_launcher; the assignment lands in run_launcher's environment and
-# is not replaced here, which is why the launcher sees the case's value.
+# Case assignments land in run_launcher's environment; they are not replaced here, so the launcher sees the case's value.
+# HOME and PATH are exported once; the COPPER_* defaults are set with : ${VAR:=}.
+# A case's assignment lands in run_launcher's environment and is not replaced here.
 HOME="$TMP/home";                         export HOME
 PATH="$TMP:$PATH";                        export PATH
 : "${COPPER_HYPRLAND:=$TMP/hyprland}";     export COPPER_HYPRLAND
@@ -196,13 +170,12 @@ PATH="$TMP:$PATH";                        export PATH
 : "${COPPER_UDEV_DATA:=$TMP/run/udev/data}"; export COPPER_UDEV_DATA
 # No sudo: the gate must exercise the install path without a password prompt.
 : "${COPPER_SUDO=}";                       export COPPER_SUDO
-# The library stash the launcher restores from. Empty by default so an ordinary
-# case never touches the real /usr/lib on the machine running the gate; the
-# restore case below points both at throwaway trees.
+# Empty stash by default so an ordinary case never touches the real /usr/lib.
+# The restore case points both at throwaway trees.
 : "${COPPER_LIBSTASH=}";                   export COPPER_LIBSTASH
 : "${COPPER_LIBDIR=$TMP/usr-lib}";         export COPPER_LIBDIR
-# Keep the wait loop short: the "no answering socket" case would otherwise
-# spend its full budget before falling through.
+# Short wait budget: the "no answering socket" case would otherwise run the full loop.
+# The 'no answering socket' case would otherwise spend its full budget before falling through.
 : "${WAIT_TRIES=20}";                      export WAIT_TRIES
 # Both stubs talk through this file so hyprctl can tell the live instance's
 # signature from a stale socket left by a dead one.
@@ -210,9 +183,7 @@ HYP_SIGFILE="$TMP/hypr-signature";           export HYP_SIGFILE
 
 run_launcher() { "$SUT" "$@"; }
 
-# ---------------------------------------------------------------------------
 # cases
-# ---------------------------------------------------------------------------
 
 # Usage and argument handling.
 out=$(run_launcher --help 2>&1); rc=$?
@@ -230,10 +201,9 @@ out=$(COPPER_HYPRLAND=/nonexistent/hyprland run_launcher 2>&1); rc=$?
 eq "compositor missing exits 20" 20 "$rc"
 has "compositor missing names the path" "/nonexistent/hyprland" "$out"
 
-# With --yes the launcher runs `ingot install hyprland` itself when the install
-# stub actually puts a compositor in place. This is the first-launch path on a
-# fresh image: the launcher arrives from the payload, but a half-installed or
-# later-clobbered tree has to be repairable without a second manual step.
+# --yes installs a missing compositor on a fresh or clobbered tree without a second manual step.
+# A half-installed or later-clobbered tree has to be repairable without a second manual step.
+# The install stub actually puts a compositor in place when asked.
 cat > "$TMP/ingot-installs" <<EOF
 #!/bin/sh
 [ "\${1:-}" = install ] || exit 0
@@ -248,8 +218,9 @@ out=$(COPPER_HYPRLAND="$TMP/installed-hyprland" COPPER_INGOT="$TMP/ingot-install
 eq "--yes installs a missing compositor and starts it" 0 "$rc"
 has "the on-demand install is announced" "installing hyprland with ingot" "$out"
 
-# --check on the same machine reports it and still exits 0: a report is not a
-# launch, and a unit that runs it must not read a nonzero as "the session died".
+# --check is a report, not a launch: exit 0 even with the compositor missing so units don't read it as a dead session.
+# --check reports the compositor and still exits 0: a report is not a launch.
+# A unit running it must not read a nonzero as 'the session died'.
 out=$(COPPER_HYPRLAND=/nonexistent/hyprland run_launcher --check 2>&1); rc=$?
 eq "--check exits 0 even when the compositor is missing" 0 "$rc"
 has "--check says NOT INSTALLED" "NOT INSTALLED" "$out"
@@ -276,10 +247,9 @@ else
 fi
 
 out=$(COPPER_SEATD_SOCK="$TMP/run/absent.sock" run_launcher --check 2>&1)
-# The wording of this line depends on the host: without logind the launcher says
-# "NO seatd socket", with logind it says "logind present (no seatd socket at
-# ...)". Both name the path it looked at and both deny that it is live, which is
-# what is actually under test here.
+# Logind wording differs by host; both forms name the path and deny a live socket, so only those are asserted.
+# Without logind it says 'NO seatd socket'; with logind 'logind present (no seatd socket at ...)'.
+# Both name the path checked and deny that it is live, which is what is under test.
 has "--check names the absent seatd socket it checked" "absent.sock" "$out"
 case "$out" in
     *"seatd socket present"*)
@@ -297,8 +267,9 @@ has "--check reports the Wayland utilities" "utility waybar:" "$out"
 has "--check reports the runtime environment" "runtime:" "$out"
 has "--check reports the session bus" "session bus:" "$out"
 
-# --check must not prepare anything: with a private runtime directory it
-# creates no compositor socket there.
+# --check must not prepare: no instance socket may appear in a private runtime dir.
+# With a private runtime directory --check creates no compositor socket there.
+# Preparing anything in a report would leave a false instance behind.
 mkdir -p "$TMP/rt-check"
 out=$(COPPER_RUNTIME_DIR="$TMP/rt-check" run_launcher --check 2>&1); rc=$?
 eq "--check on a complete tree exits 0" 0 "$rc"
@@ -313,9 +284,9 @@ out=$(run_launcher 2>&1); rc=$?
 eq "session start exits 0" 0 "$rc"
 has "session start says the compositor came up" "hyprland is up" "$out"
 
-# A socket left behind by an earlier, dead instance must not satisfy the
-# probe: the launcher has to find the live instance's signature and hyprctl
-# has to answer for it, not merely see a socket file.
+# A stale socket must not satisfy the probe; hyprctl must answer for the live signature.
+# hyprctl must answer for the instance signature, not merely see a socket file.
+# A deadbeef socket left by an earlier instance must not satisfy the probe.
 mkdir -p "$TMP/rt-stale/hypr/deadbeef"
 : > "$TMP/rt-stale/hypr/deadbeef/deadbeef.0.sock"
 out=$(COPPER_RUNTIME_DIR="$TMP/rt-stale" run_launcher 2>&1); rc=$?
@@ -327,15 +298,16 @@ out=$(HYP_FAIL=1 run_launcher 2>&1); rc=$?
 eq "compositor failing at startup exits 23" 23 "$rc"
 has "startup failure prints the reason" "exited while starting up" "$out"
 
-# A component that cannot be installed does not abort a session that has
-# already been told to install the rest.
+# An install that fails must not abort a session already told to install the rest.
+# The installer stub refuses nmap while installing the rest.
+# A failed install is reported, not swallowed, and the session still starts.
 out=$(COPPER_HYPRLAND_APPS="$TMP/hyprland-apps-missing" run_launcher --yes 2>&1); rc=$?
 eq "install failure still starts the session" 0 "$rc"
 has "install failure is reported, not swallowed" "could not install nmap" "$out"
 
-# Nothing Hyprland-specific is baked into the ISO now. The compositor, the Lua
-# config tree and the launcher all come from the ingot payload; the launcher
-# lives in this repo only so the payload can be built and this gate can test it.
+# Nothing Hyprland-specific is baked into the ISO: the payload supplies compositor, config and launcher; only the repo copy is gated.
+# The compositor, Lua config tree and launcher all come from the ingot payload.
+# The launcher lives in this repo only so the payload can be built and this gate can test it.
 if [ -e "$REPO/iso/rootfs-overlay/usr/share/copper/hyprland-skel" ]; then
     bad "no Hyprland skeleton is baked into the image" \
         "the tree still carries a stale copy"
@@ -351,11 +323,9 @@ fi
 has "the launcher names the payload install" "sudo ingot install hyprland" \
     "$(cat "$SUT")"
 
-# ingot payloads are self-contained: xarchiver's tarball carries noble's
-# libxkbcommon, and unpacking it replaces the image's newer library, which makes
-# Hyprland die at launch with "version `V_1.11.0' not found". The installer stub
-# here clobbers the tree exactly the way such a payload does; the launcher must
-# put the libraries back before starting the compositor.
+# ingot payloads can replace noble's libxkbcommon with an older one and kill launch with a version error; the launcher must restore the stashed libraries.
+# The stub clobbers the tree the way such a payload does, replacing the newer library.
+# The launcher must put the libraries back before starting the compositor.
 rm -rf "$TMP/libstash" "$TMP/libdir"
 mkdir -p "$TMP/libstash" "$TMP/libdir"
 printf 'LIBINPUT_1.30\n' > "$TMP/libstash/libinput.so.10"
@@ -384,8 +354,8 @@ else
     bad "both libraries were put back in the tree" "still the payload's copies"
 fi
 
-# Without a stash there is nothing to restore from, so the launcher must say so
-# plainly instead of handing the compositor a library it cannot link against.
+# With no stash there is nothing to restore; say so plainly rather than linking a broken library.
+# Handing the compositor a library it cannot link against is the failure this names.
 rm -rf "$TMP/libdir2"; mkdir -p "$TMP/libdir2"
 printf 'no symbol here\n' > "$TMP/libdir2/libinput.so.10"
 printf 'no symbol here\n' > "$TMP/libdir2/libxkbcommon.so.0"

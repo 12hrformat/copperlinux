@@ -1,0 +1,26 @@
+## Copper's PulseAudio graph.
+##
+## The stock /etc/pulse/default.pa loads the detector that needs a running udev
+## daemon. Copper's default init runs no udev, so that detector finds no card and
+## every client -- firefox, mpv, cava -- is handed auto_null: cava draws bars
+## from that sink's monitor while the video is silent, and Discord sees no
+## microphone because there is no capture source at all.
+##
+## module-detect reads /proc/asound/devices instead, which the kernel fills in
+## whether or not userspace has udev. It creates a sink for every playback device
+## and a source for every capture device. That is the detector this image needs.
+
+load-module module-native-protocol-unix
+
+## A machine with no card must still have a graph for clients to attach to.
+load-module module-null-sink sink_name=copper_null sink_properties=device.description="Copper Null (no sound card)"
+
+.nofail
+load-module module-detect
+.fail
+
+## Start on the null devices until copper-audio has seen which real ones
+## module-detect created and repointed the defaults with pactl. Both launchers
+## call copper-audio init as soon as the server is up.
+set-default-sink copper_null
+set-default-source copper_null.monitor

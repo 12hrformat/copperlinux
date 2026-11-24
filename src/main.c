@@ -82,8 +82,6 @@ const struct builtin *builtin_lookup(const char *name) {
     return NULL;
 }
 
-/* ---------------------------------------------------------------- */
-/*  line editor                                                       */
 
 static char edit_buf[EDIT_BUF_SIZE];
 static int edit_len = 0;
@@ -111,16 +109,12 @@ static int enable_raw_mode(void) {
 }
 
 static void refresh_line(const char *prompt) {
-    /* \r\033[K: go to col 0, clear line. Print prompt+buf, then
-       reposition cursor at prompt_len + edit_pos. */
+/* \r\033[K homes and clears; then place the cursor after the prompt. */
     char seq[EDIT_BUF_SIZE + 128];
     int n = snprintf(seq, sizeof seq, "\r\033[K%s%s\r\033[%dC",
                      prompt, edit_buf,
                      (int)(strlen(prompt) + edit_pos));
-    /* snprintf returns the length it *would* have written, which exceeds
-       sizeof seq when prompt+edit_buf overflow the buffer. write() with that
-       value reads past the end of seq (a stack overread: the prompt alone can
-       reach PATH_MAX + user + host). Clamp to what the buffer really holds. */
+/* Clamp snprintf's would-be length before write(), or a long prompt overreads seq. */
     if (n > 0) {
         size_t w = (size_t)n;
         if (w > sizeof seq) w = sizeof seq;
@@ -191,11 +185,7 @@ static void edit_hist_next(void) {
     }
 }
 
-/*
- * Read a line with full editing. Returns 1 if a line was read,
- * 0 on EOF (Ctrl-D on empty line, or read error).
- * Falls back to getline() when stdin is not a tty.
- */
+/* Read a line with full editing: 1 on a line, 0 on EOF/error; getline() off a tty. */
 static int read_line_edited(char *buf, size_t cap, const char *prompt) {
     if (!raw_mode) {
         printf("%s", prompt);
@@ -256,7 +246,6 @@ static int read_line_edited(char *buf, size_t cap, const char *prompt) {
         } else if (c >= 32 && c < 127) {       /* printable ASCII */
             edit_insert(c);
         }
-        /* other control chars ignored */
 
         refresh_line(prompt);
     }
@@ -265,23 +254,13 @@ static int read_line_edited(char *buf, size_t cap, const char *prompt) {
     return 1;
 }
 
-/* ---------------------------------------------------------------- */
 
-/* Who the prompt should say you are. Both were hardcoded as "copper", which
-   meant the prompt still read copper@copper after the first-boot wizard had
-   made a real account and handed over to it. Ask the system, and fall back to
-   the old strings when the lookup fails (no passwd entry, restricted /etc). */
+/* Ask the system for the prompt identity: hardcoded "copper" survived the wizard. */
 static char prompt_user[64] = "copper";
 static char prompt_host[64] = "copper";
 
-/* The login name the wizard created, or "" if there isn't one.
-
-   /etc/copper-firstboot.done is written by copper-firstboot, line 1 being the
-   username and line 2 the display name. It is read here rather than guessed
-   because the shell genuinely does run as root: copper-init execs it directly,
-   there is no su and no login, so getuid() is 0 and getpwuid(0) says "root".
-   That is why the prompt said root@copper on a machine where the first-boot
-   wizard had just made an account and announced "Done -- welcome, <name>". */
+/* The shell really runs as root (no su or login), so getuid() cannot name the user;
+   read line 1 of the done-marker instead. */
 static void firstboot_user(char *buf, size_t cap) {
     buf[0] = '\0';
     FILE *m = fopen("/etc/copper-firstboot.done", "r");
@@ -302,7 +281,6 @@ static void resolve_prompt_identity(void) {
     if (who[0]) {
         snprintf(prompt_user, sizeof prompt_user, "%s", who);
     } else {
-        /* No wizard has run. Fall back to the account actually running us. */
         struct passwd *pw = getpwuid(getuid());
         if (pw && pw->pw_name && pw->pw_name[0])
             snprintf(prompt_user, sizeof prompt_user, "%s", pw->pw_name);
@@ -318,7 +296,6 @@ static void resolve_prompt_identity(void) {
     }
 }
 
-/* cwd for the prompt, replacing $HOME with ~ */
 static char *short_pwd(char *buf, size_t n) {
     if (!getcwd(buf, n)) { snprintf(buf, n, "?"); return buf; }
     const char *home = getenv("HOME");
@@ -333,34 +310,16 @@ static char *short_pwd(char *buf, size_t n) {
     return buf;
 }
 
-/*
- * Split a line into argv. Handles single/double quotes and
- * backslash-escapes (enough for echo "hello world" to work).
- *
- * Tokens are written into `out` rather than back into `line`. That is what
- * makes tilde expansion possible: ~ expands to a home directory, which is
- * almost always LONGER than the two characters it replaces, so writing it
- * in place would run past the end of the source buffer. `~/test` is six
- * characters and `/home/alice/test` is sixteen.
- *
- * A leading ~ is expanded only when it starts an unquoted word. That covers
- * ~, ~/x and ~someone/x, and leaves "~ is a tilde" and '~/x' alone, which is
- * what a shell is expected to do.
- *
- * $NAME and ${NAME} expand to environment variables, in unquoted words and
- * inside double quotes, exactly like every other shell. Single quotes keep
- * them literal, which is the one thing people actually rely on: an rc file
- * full of "export PATH=$HOME/bin:$PATH" must survive being written down.
- */
+/* Tokens go to `out`, not back into `line`: ~ expands to a longer home path.
+   A leading ~ expands only unquoted; $NAME/${NAME} expand outside single quotes
+   so an rc file's "export PATH=$HOME/bin:$PATH" survives being written down. */
 static const char *home_for_user(const char *name) {
     if (!name || !*name) return getenv("HOME");
     struct passwd *pw = getpwnam(name);
     return (pw && pw->pw_dir) ? pw->pw_dir : NULL;
 }
 
-/* Expand $NAME or ${NAME} at *srcp into *dstp. Returns 1 when it expanded
-   something (and moves *srcp past the name), 0 when this '$' is just a
-   dollar sign, and -1 when the value does not fit in the buffer. */
+/* Expand $NAME or ${NAME}: 1 if expanded, 0 if a bare '$', -1 if it will not fit. */
 static int expand_at(const char **srcp, char **dstp, char *end) {
     const char *p = *srcp + 1;
     int brace = 0;
@@ -426,13 +385,7 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
             continue;
         }
         if (c == '#' && !inw) break;  /* a comment starts a line, not a word */
-        /* ; && || are operators, not words, and they split out even when the
-           user types them with no spaces around them ("cd /tmp&&ls"). A lone
-           '&' is left alone -- this shell runs no background jobs, so eating it
-           here would silently change what the line means. A quoted or
-           backslash-escaped operator never reaches this test; the quote
-           branches eat their own text, and the '\\;' case is handled after this
-           point. */
+/* Splice out ; && || even without spaces; a lone & is not a job-control operator. */
         if (c == ';' || c == '|' || (c == '&' && src[1] == '&')) {
             if (inw) { PUTC('\0'); inw = 0; }
             if (n >= (int)(sizeof argv / sizeof *argv) - 1) {
@@ -449,9 +402,7 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
             continue;
         }
         if (!inw) {
-            /* argv is a fixed 256-slot array; "a a a ... " fits hundreds of
-               words inside one 4096-byte line, and the unbounded n++ wrote
-               straight past it. One slot stays free for the NULL below. */
+/* Cap words to the fixed argv array before n++ runs past it. */
             if (n >= (int)(sizeof argv / sizeof *argv) - 1) {
                 fprintf(stderr, "copper-sh: too many words on one line\n");
                 *count = 0;
@@ -460,11 +411,7 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
             argv[n++] = dst;
             inw = 1;
             if (c == '~') {
-                /* The user name runs up to the next '/' or up to the end of
-                   the word. Whitespace has to stop it too: for "echo ~ /tmp"
-                   the character after the ~ is a space, and scanning only for
-                   '/' picked up " " as a user name, getpwnam(" ") failed, and
-                   the ~ was left unexpanded. */
+/* Stop the ~ user name at whitespace too, or "echo ~ /tmp" looks up " ". */
                 const char *rest = src + 1;
                 size_t k = 0;
                 while (rest[k] && rest[k] != '/' &&
@@ -479,9 +426,7 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
                     src += k + 1;       /* skip the ~ and the name after it */
                     continue;
                 }
-                /* No such user, or no HOME. Leave the ~ as a literal rather
-                   than expanding to nothing, which would silently change the
-                   meaning of the command. */
+/* Unknown user or HOME: leave ~ literal rather than silently changing the command. */
             }
         }
         if (c == '\\' && src[1]) { PUTC(src[1]); src += 2; continue; }
@@ -527,8 +472,6 @@ static char **tokenize_line(const char *line, char *out, size_t outcap, int *cou
     return argv;
 }
 
-/* ---------------------------------------------------------------- */
-/*  one command segment in a pipeline                                 */
 
 struct cmdseg {
     char **argv;     /* owned copy, NULL-terminated */
@@ -548,15 +491,12 @@ static void free_cmds(struct cmdseg *cmds, int n) {
     free(cmds);
 }
 
-/* Turn tokenized argv into segments, catching pipes and redirects. */
 static int parse_line(char **argv, int n, struct cmdseg **out, int *nsegs) {
     int pipes = 0;
     for (int i = 0; i < n; i++)
         if (!strcmp(argv[i], "|")) pipes++;
 
-    /* god please kill me: a pipe is counted first and cut out afterwards,
-       because the segment sizes are only known once every '|' has been seen.
-       Count twice and you get a heap buffer that is one segment too short. */
+/* Count pipes first, then cut: the segment count is unknown until every '|' is seen. */
     struct cmdseg *cmds = calloc((size_t)(pipes + 1), sizeof(*cmds));
     if (!cmds) { perror("malloc"); return -1; }
 
@@ -600,9 +540,7 @@ static int parse_line(char **argv, int n, struct cmdseg **out, int *nsegs) {
         }
     }
 
-    /* A trailing '|' ("echo hi |") leaves this last segment with no tokens at
-       all. It used to become an argv whose argv[0] is NULL, and the child
-       then crashed in builtin_lookup()'s strcmp. Say so instead. */
+/* A trailing '|' left argv[0] NULL and crashed builtin_lookup(); reject it. */
     if (tn == 0 && cur > 0) {
         fprintf(stderr, "copper-sh: no command after '|'\n");
         free_cmds(cmds, cur + 1);
@@ -625,11 +563,8 @@ static int status_of(int st) {
     return 128 + (WTERMSIG(st) & 0x7f);
 }
 
-/* execvp() already failed. The old one-line "command not found" was true and
-   useless: on a live Copper box the answer to almost every missing command is
-   ingot, and the hint is the difference between a dead end and a fix. A name
-   with a slash is a path, not a package, so it gets the plain message and no
-   install suggestion. */
+/* A missing command is usually an uninstalled one: point at `ingot install`,
+   unless the name is a path. */
 static void exec_failed(const char *name) {
     int e = errno;
     if (e == ENOENT || e == ENOTDIR) {
@@ -641,11 +576,8 @@ static void exec_failed(const char *name) {
     }
 }
 
-/* Run one command (builtin or external) in the current process. */
 static int run_one(char **av) {
-    /* An empty segment is not a crash: `> file` with no command is a legal
-       redirect-only line in every other shell, and the file has already been
-       opened/truncated by the caller. */
+/* `> file` with no command is a legal redirect-only line, not a crash. */
     if (!av || !av[0]) return 0;
     const struct builtin *b = builtin_lookup(av[0]);
     if (b) return b->fn(count_argv(av), av);
@@ -668,7 +600,6 @@ static int run_external(char **argv) {
     return status_of(st);
 }
 
-/* Run the parsed line: plain commands in-process, pipelines via fork. */
 static int run_segments(struct cmdseg *cmds, int n) {
     /* plain single command: keep it in-process so cd/history work */
     if (n == 1 && !cmds[0].in && !cmds[0].out) {
@@ -710,7 +641,6 @@ static int run_segments(struct cmdseg *cmds, int n) {
                 dst = fd;
             }
 
-            /* close every pipe end we didn't keep as our stdio */
             if (pipesd)
                 for (int k = 0; k < n - 1; k++) {
                     if (pipesd[k][0] != src) close(pipesd[k][0]);
@@ -753,8 +683,6 @@ static int run_segments(struct cmdseg *cmds, int n) {
     return last;
 }
 
-/* ---------------------------------------------------------------- */
-/*  chaining: ; runs the next command, && runs it on success, || on failure */
 
 enum chain_mode { CHAIN_ALWAYS, CHAIN_ON_SUCCESS, CHAIN_ON_FAILURE };
 
@@ -762,11 +690,8 @@ static int is_operator(const char *t) {
     return t && (!strcmp(t, ";") || !strcmp(t, "&&") || !strcmp(t, "||"));
 }
 
-/* Walk a tokenized line, running each pipeline off the operator before it.
-   The token array survives the whole call, so parse_line can take a slice of
-   it directly: the redirect file names it stores point back into argv, and
-   nothing here moves or frees them. Returns the status of the last pipeline
-   that ran -- that's what && and || test. */
+/* Run each pipeline off the operator before it; argv is not moved, so redirect
+   names stay valid. The last status is what && and || test. */
 static int run_line(char **argv, int n) {
     int status = 0;
     int start = 0;
@@ -781,7 +706,6 @@ static int run_line(char **argv, int n) {
                 fprintf(stderr, "copper-sh: syntax error near '%s'\n", argv[i]);
                 return 2;
             }
-            /* a trailing ';' is fine; a trailing && or || is not */
             if (start == n && n > 0 && is_operator(argv[n - 1]) &&
                 strcmp(argv[n - 1], ";")) {
                 fprintf(stderr, "copper-sh: syntax error: no command after '%s'\n",
@@ -815,7 +739,6 @@ static int run_line(char **argv, int n) {
     return status;
 }
 
-/* ---------------------------------------------------------------- */
 
 int b_help(int argc, char **argv) {
     (void)argc; (void)argv;
@@ -843,17 +766,9 @@ int b_history(int argc, char **argv) {
     return 0;
 }
 
-/* ---------------------------------------------------------------- */
 
-/*
- * Read one rc file. /etc/copperrc goes first (the distro's defaults, which
- * arrive with the image) and ~/.copperrc after it (the user's, which lives
- * with the home). Both are fed through the same tokenizer and parser as the
- * prompt, so anything you can type works, and nothing has to be taught twice.
- *
- * A missing file is normal: a fresh home has no ~/.copperrc until the wizard
- * seeds one, and older homes were seeded before this existed.
- */
+/* /etc/copperrc (image defaults) then ~/.copperrc (user), through the same
+   tokenizer and parser as the prompt. A missing file is normal. */
 static void read_rc_file(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return;
@@ -892,17 +807,14 @@ static void read_rc(void) {
     }
 }
 
-/* ---------------------------------------------------------------- */
 
 int main(void) {
     signal(SIGINT, SIG_IGN);             /* ctrl-c must not kill the shell */
     resolve_prompt_identity();
     puts("\033[37mWelcome to \033[32mCopper Linux!\033[0m");
 
-    /* Nothing ever set SHELL here, and installers ask the environment which
-       shell to edit -- the OpenCode one then dies on its own `set -u` right
-       after writing the binary, before it can say where it put it. The passwd
-       entry is the truth; overwrite 0 keeps a value from the caller. */
+/* Installers read $SHELL and die under `set -u` when it is unset; use passwd,
+   but keep a caller's value. */
     if (!getenv("SHELL")) {
         struct passwd *pw = getpwuid(getuid());
         setenv("SHELL", (pw && pw->pw_shell && *pw->pw_shell)
@@ -916,7 +828,6 @@ int main(void) {
 
     while (1) {
         char cwd[PATH_MAX];
-        /* room for user@host: plus the full cwd, and the separators between them */
 char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
         snprintf(prompt, sizeof prompt, "%s@%s:%s$ ",
                  prompt_user, prompt_host, short_pwd(cwd, sizeof cwd));
@@ -929,7 +840,6 @@ char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
             break;
         }
 
-        /* session history (the raw line, like any other shell) */
         if (line[0]) {
             if (hist_n < HIST_MAX) {
                 hist[hist_n++] = strdup(line);
@@ -941,9 +851,7 @@ char prompt[PATH_MAX + sizeof prompt_user + sizeof prompt_host + 8];
         }
 
         int argc;
-        /* Two buffers: `line` is what was typed, `toks` is where the tokens
-           land. They must be separate because ~ expands to something longer
-           than itself -- see tokenize_line(). */
+/* Keep `line` and `toks` separate: ~ expands past the length it replaces. */
         char *toks = malloc(EDIT_BUF_SIZE * 2);
         if (!toks) { perror("malloc"); free(line); break; }
         char **argv = tokenize_line(line, toks, EDIT_BUF_SIZE * 2, &argc);

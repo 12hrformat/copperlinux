@@ -1,49 +1,20 @@
 #!/bin/sh
 # startxfce -- start the X server, then XFCE on it.
 #
-# The desktop lives in the image: Xorg and XFCE (thunar, xfce4-terminal) are
-# baked by the gui stage. The apps on top -- firefox, mousepad, ristretto,
-# xfce4-taskmanager, xarchiver -- are ingot packages, and before anything
-# starts this asks whether to install the missing ones (manifest at
-# /etc/copper/xfce-apps). What is genuinely absent still gets its own exit
-# code and its own sentence naming the piece, instead of a bare "not found"
-# that is indistinguishable from a broken PATH or missing library.
+# The desktop (Xorg, XFCE) is baked in; apps on top (firefox, mousepad,
+# ristretto, xfce4-taskmanager, xarchiver) are ingot packages from
+# /etc/copper/xfce-apps. A genuine absence gets a named exit code and
+# sentence, not a bare "not found" that could mean a broken PATH or library.
 #
-# POSIX sh, not bash: the image's shell is busybox ash, and build.sh checks these
-# scripts against /bin/sh. A bashism here is a script that works on the build
-# host and fails on the machine.
+# POSIX sh: the image runs busybox ash and build.sh checks these as /bin/sh;
+# a bashism works on the build host and fails on the machine.
 #
-# Exit codes, which are a contract rather than decoration:
-#
-#   0   startxfce4 ran and exited cleanly
-#   20  no X server in the image
-#   21  XFCE is not in the image
-#   22  the X server started but never opened its display socket
-#   23  the X server exited while starting up
-#   24  usage error
-#   25  a component is missing but there is no terminal to ask on, and
-#       neither --yes nor --no was given, so nothing was decided
-#
-# The X server's log goes to $COPPER_XLOG, else /tmp/xorg.log. When this fails
-# there is nothing on the screen to read, so the log is the only evidence.
-#
-# KNOWN LIMITS. None of these can be observed until the X server is in the
-# image, so they are recorded here rather than left to be found on a machine
-# that has it.
-#
-#   - Only DISPLAY_NUM is ever examined. If Xorg declines :0 because something
-#     else holds it and silently takes :1, the wait below expires and reports
-#     "never opened the display" about a server that is working. Learning which
-#     display the server chose means parsing its log or querying it, and POSIX
-#     sh can do neither.
-#   - The wait loop runs the probe every iteration, so a slow probe adds its
-#     own runtime to each try. The probe is bounded now: xprobe gives up after
-#     XPROBE_TIMEOUT seconds and reports the display unknown instead of
-#     blocking, so the loop always ends -- but a machine where each probe takes
-#     the full timeout still stretches the wait by that much.
-#   - The timeout is 10s where sleep accepts fractions and 100s where it does
-#     not, because of the fallback in the wait loop. Same image, a tenfold
-#     difference in how long a failure appears to hang.
+# Exit codes (a contract): 0 ok, 20 no X, 21 no XFCE, 22 no display socket,
+# 23 X died starting, 24 usage, 25 no way to ask about components.
+# Xorg's log is $COPPER_XLOG or /tmp/xorg.log: with no screen it is the
+# only evidence when startup fails.
+# Known limits: only DISPLAY_NUM is checked; a slow probe stretches the
+# bounded wait; the timeout is 10s with fractional sleep, 100s without.
 
 set -u
 
@@ -55,21 +26,17 @@ XSOCKDIR=${XSOCKDIR:-/tmp/.X11-unix}
 DISPLAY_NUM=${DISPLAY_NUM:-0}
 WAIT_TRIES=${WAIT_TRIES:-100}
 
-# Give Xorg and every GTK client a real, installed cursor theme. Some cursor
-# themes are only inherited by the Xfce settings daemon after it starts, while
-# Xcursor clients can look up their theme before that point, so set both the
-# system-wide xfconf default (xsettings.xml) and the process environment.
+# Set xfconf's default and the process environment: Xfce's settings daemon
+# inherits one late, while Xcursor clients read theirs before that.
 XCURSOR_THEME=${XCURSOR_THEME:-DMZ-White}
 XCURSOR_SIZE=${XCURSOR_SIZE:-24}
 export XCURSOR_THEME XCURSOR_SIZE
 
-# The component manifest and the installer it drives. startxfce only offers
-# components; it does not hardcode which ones.
+# Components come from the manifest, not hardcoded here.
 APPS=${COPPER_XFCE_APPS:-/etc/copper/xfce-apps}
 INGOT=${COPPER_INGOT:-ingot}
 SUDO=${COPPER_SUDO-sudo}
-# Root needs no sudo, and the image may not even have it. "-" (not ":-") so
-# an empty COPPER_SUDO really does disable sudo instead of reviving the default.
+# "-" not ":-": an empty COPPER_SUDO must disable sudo, not revive the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
 say() { printf 'startxfce: %s\n' "$1"; }
@@ -184,8 +151,7 @@ Exit codes: 0 ok, 20 no X server, 21 no XFCE, 22 X gave no display,
 EOF
 }
 
-# What is installed. Echoed as words so --check and the launch path agree, and
-# so there is exactly one place that knows what the image contains.
+# One source of truth so --check and the launch path agree.
 have_xorg=0
 have_xfce=0
 [ -x "$XORG" ] && have_xorg=1
@@ -221,59 +187,29 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# The boot splash, defensively.
-#
-# copper-init starts Plymouth and quits it again before it ever spawns the
-# login shell, so by the time a person runs startxfce there is normally nothing
-# left to quit. This is the safety net for the paths that skip that hand-off:
-# a session started by hand, from a script, or on a machine whose init left the
-# daemon up. A splash still holding the console is why Xorg fails with
-# "Switching VT failed", and why an interactive prompt down this script would
-# be invisible, so it is quit before any of that. The test is a ping, not a
-# blind quit, so a machine built without the splash says nothing and does
-# nothing; and --check, which exits above, never reaches here and never draws
-# on the splash.
+# Quit a live splash before starting X: it holds the console (VT switch
+# fails) and would hide any prompt below. Ping first, so a splashless build
+# stays silent; --check exits above and never reaches here. copper-init
+# normally quits the splash at hand-off, so this is only a safety net for
+# hand-started or scripted sessions.
 if command -v plymouth >/dev/null 2>&1 &&
    plymouth --ping >/dev/null 2>&1; then
     say "quitting the boot splash before starting the desktop"
     plymouth quit >/dev/null 2>&1 || :
 fi
 
-# An X server already on this display is reused rather than replaced. Two
-# servers on one display is a confusing failure: the second refuses the socket,
-# or replaces the first, and the client ends up talking to whichever won.
-#
-# The socket's existence is not sufficient evidence. /tmp/.X11-unix/X0 is left
-# behind by any session that did not exit cleanly, and X does not remove it. A
-# startxfce that trusts the file alone reuses a dead display: XFCE starts,
-# connects to a server that is gone, and hangs with nothing to report. The file
-# records that a display number was once used, not that anything is listening.
-#
-# So ask the display, when there is something that can ask.
-#
-# xprobe is ours: a static musl binary that completes the X11 handshake over the
-# socket and reads the geometry back, needing nothing but libc. xdpyinfo would do
-# the same job but arrives as part of x11-utils, which is another package to
-# build and stage before the display can be checked. Either is accepted, and the
-# probe found first is the one used.
-#
-# xprobe's exit code is part of its contract with this script, because it decides
-# what is safe to do next (the same codes are written down in xprobe.c):
-#
-#   0  live      the display answered the handshake; reuse it
-#   1  not live  no socket, or the connection was refused; the file is stale and
-#                may be cleared before a fresh server starts
-#   2  usage     xprobe was called wrongly; never produced from here
-#   3  unknown   something was reached but would not answer -- a timeout, a
-#                permission or authorisation failure, a malformed reply. NOT
-#                proof the socket is stale, so nothing is removed on this answer
-#
-# When no probe is installed the socket file is still not proof. The kernel's
-# socket table is asked instead: /proc/net/unix lists a socket a process is
-# bound to and forgets one whose process is gone, which is exactly the
-# difference a bare file cannot show. If even that is unreadable the answer is
-# unknown, never live, so a missing probe can never make a stale socket look
-# alive.
+# Reuse a live display: two servers on one display either refuse the socket
+# or replace each other, and the client ends up with whichever won.
+# A socket file is not proof -- X leaves stale ones behind -- so ask the
+# display with xprobe or xdpyinfo, both of which do a real X11 handshake
+# with only libc; xdpyinfo costs another package to build and stage.
+# COPPER_XPROBE overrides the search; the first executable found wins.
+# With no probe, /proc/net/unix lists a socket only while its process lives;
+# if even that is unreadable the answer is unknown, never live.
+# xprobe's exit codes decide what is safe next (also in xprobe.c):
+#   0 live -- reuse; 1 dead -- stale socket may be cleared;
+#   2 usage -- never here; 3 unknown -- timeout, auth or malformed reply:
+#   NOT proof of staleness, so nothing is removed on that answer.
 XPROBE=${COPPER_XPROBE:-}
 if [ -z "$XPROBE" ]; then
     for cand in /usr/bin/xprobe /usr/bin/xdpyinfo; do
@@ -282,24 +218,20 @@ if [ -z "$XPROBE" ]; then
 fi
 XPROBE_TIMEOUT=${XPROBE_TIMEOUT:-5}
 
-# Is a process actually bound to this unix socket path?
-#   0 bound, 1 not bound, 2 cannot tell.
+# 0 bound, 1 not bound, 2 cannot tell.
 socket_bound() {
     [ -r /proc/net/unix ] || return 2
     _sock_want=$1
-    # The path is the eighth column of /proc/net/unix. A line with no path (the
-    # header, or a socket that was never bound to one) leaves _f8 empty and
-    # matches nothing, which is right.
+# The path is the eighth column of /proc/net/unix; an unbound line or the
+# header leaves it empty and matches nothing, which is right.
     while read -r _f1 _f2 _f3 _f4 _f5 _f6 _f7 _f8; do
         [ "$_f8" = "$_sock_want" ] && return 0
     done < /proc/net/unix
     return 1
 }
 
-# The whole liveness decision, in one place, so the reuse check and the wait
-# loop cannot drift apart. Prints exactly one word -- live, dead, or unknown --
-# so callers read it with $(display_state) and no diagnostic can leak into the
-# answer.
+# One liveness decision for the reuse check and the wait loop, printing
+# exactly one word (live/dead/unknown) so no diagnostic leaks into it.
 display_state() {
     _ds_sock="$XSOCKDIR/X$DISPLAY_NUM"
     [ -S "$_ds_sock" ] || { echo dead; return 0; }
@@ -321,21 +253,12 @@ display_state() {
     esac
 }
 
-# What is installed decides this before anything else, and independently of
-# whether a server is already running. The checks cannot live inside the branch
-# that starts a server: a running server is not a desktop, so that path would
-# exec startxfce4 without ever asking whether it exists. Xorg up and XFCE absent
-# then gives
-#
-#     sh: /usr/bin/startxfce4: not found
-#
-# and exit 127, which names no missing piece. That combination is the state of
-# the image as soon as anyone starts a server by hand, and the state of every
-# machine once the X server lands and XFCE has not.
+# Decide installed state before any server branch: a running server is not
+# a desktop, so the reuse path must still refuse a missing startxfce4 rather
+# than exec it and die with an unnamed "not found" / exit 127.
 if [ "$have_xfce" != 1 ]; then
     if [ "$have_xorg" != 1 ]; then
-        # Name both paths. "It is not there" leaves the reader guessing where it
-        # looked; "it is not at /usr/bin/Xorg" does not.
+        # Name both paths: "not there" leaves the reader guessing where it looked.
         report
         say "no X server at $XORG"
         say "the X stack is not in this image yet."
@@ -347,12 +270,9 @@ if [ "$have_xfce" != 1 ]; then
     exit 21
 fi
 
-# Components. The desktop is in the image; the apps on top of it are ingot
-# packages, and only the missing ones are offered. The list lives in the
-# manifest, not here: what is offered, what marks it present, and how it is
-# installed change independently of this script. Components whose 'how' is
-# "image" are expected in the ISO already -- a missing one is a broken image,
-# so it is reported and never turned into an install attempt.
+# Only missing ingot apps are offered; the manifest defines what marks a
+# component present and how it is installed, so those change independently.
+# 'image' components belong to the ISO: report a missing one, never install it.
 missing=
 if [ -r "$APPS" ]; then
     while read -r cname cprobe corigin; do
@@ -402,9 +322,8 @@ if [ -n "$missing" ]; then
                 failed=1
             fi
         done
-        # ingot unpacks .debs but no maintainer script runs, so nothing
-        # regenerates the databases the desktop reads. Rebuild them by hand
-        # or the new .desktop files never show up and launchers stay dead.
+        # ingot runs no maintainer scripts, so rebuild desktop and mime databases or
+        # newly installed .desktop files never appear and launchers stay dead.
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database /usr/share/applications >/dev/null 2>&1 || :
         fi
@@ -419,47 +338,31 @@ if [ -n "$missing" ]; then
     fi
 fi
 
-# If the caller wanted a probe and none is installed, say so once, rather than
-# letting the weaker socket-table fallback pass silently for the life of the
-# image.
+# Say once when no liveness probe exists; otherwise the weaker socket-table
+# fallback passes silently for the life of the image.
 if [ -z "$XPROBE" ] || [ ! -x "$XPROBE" ]; then
     say "no X liveness probe (looked for \$COPPER_XPROBE, /usr/bin/xprobe,"
     say "  /usr/bin/xdpyinfo); checking the kernel's socket table instead."
 fi
 
-# --- who owns the desktop ---------------------------------------------------
-#
-# The account the wizard made owns the session, and copper-init starts the
-# console shell as it already. The way that gets undone is `sudo startxfce`.
-# That is what a person types when the plain one did not work, and sudo makes
-# *this* root: X inherits it, and so does everything the desktop runs -- the
-# panel's settings, each app's config, every file they create. A machine with a
-# real account on it ends up with a root desktop.
-#
-# So when this is root and there is a session account, become it. Everything
-# that needed root already happened above: the splash was quit, and any missing
-# ingot components were installed. The marker is read exactly the way
-# copper-init reads it (iso/src-init/copper-init.c): the first line of
-# /etc/copper-firstboot.done, and only if it names a real account. No marker --
-# a first boot before the wizard -- means root is all there is, and that is
-# what this stays.
-#
+# The wizard's account owns the session; `sudo startxfce` makes *this* root,
+# so XFCE, its settings and every file it writes would land in /root.
+# Once root-only work is done (splash, ingot installs), become that account:
+# read /etc/copper-firstboot.done the way copper-init does (first line only,
+# and only if it names a real account). No marker means first boot: stay root.
 # COPPER_USER names the account explicitly; COPPER_USER=root keeps a root
 # desktop on purpose.
 if [ "$(id -u)" = 0 ]; then
     _as=${COPPER_USER:-}
     if [ -z "$_as" ] && [ -r "${COPPER_USER_MARKER:-/etc/copper-firstboot.done}" ]; then
         _as=$(head -n1 "${COPPER_USER_MARKER:-/etc/copper-firstboot.done}" 2>/dev/null)
-        # the first line is a login name; a stray byte from a hand-edited file
-        # would make it something else, and id would say so
+        # Strip whitespace: the marker's first line must be a plain login name.
         _as=$(printf '%s' "$_as" | tr -d '[:space:]')
     fi
     if [ -n "$_as" ] && [ "$_as" != root ] && id "$_as" >/dev/null 2>&1; then
         _sudo=$(command -v sudo 2>/dev/null) || _sudo=
         if [ -n "$_sudo" ]; then
-            # $0 is "startxfce" when it was typed, and resolved through PATH
-            # here so that what sudo runs is the same script and not its own
-            # guess at a relative path.
+            # Resolve $0 through PATH so sudo re-runs this script, not a relative-path guess.
             _self=$(command -v "$0" 2>/dev/null) || _self=$0
             [ -n "$_self" ] || _self=$0
             say "starting the desktop as $_as, not as root"
@@ -473,8 +376,7 @@ if [ "$(id -u)" = 0 ]; then
     fi
 fi
 
-# Apply the selection after any sudo hand-off so it belongs to the account
-# that owns the XFCE session. Backlight is the default.
+# Apply the choice after any sudo hand-off, so it belongs to the session's owner.
 choose_xfce_theme
 
 disp_state=$(display_state)
@@ -487,15 +389,11 @@ else
     fi
 
     say "starting $XORG on :$DISPLAY_NUM, log in $XLOG"
-    # Clear the socket only when the display is known to be dead. "dead" is
-    # positive evidence -- no socket at all, or a connection that was refused.
-    # "unknown" means something was reached but would not answer, which may be a
-    # server still starting or one this user may not talk to; removing its
-    # socket would break it, so it is left alone and the start proceeds.
+    # Clear the socket only on known death (no socket or refused connection);
+    # "unknown" may be a starting or forbidden server -- leave its socket alone.
     case "$disp_state" in
         dead)
-            # Some servers refuse to bind over a socket file that already
-            # exists, so a socket known to be stale is cleared first.
+            # Some servers refuse to bind over an existing stale socket.
             if [ -S "$XSOCKDIR/X$DISPLAY_NUM" ] && [ -w "$XSOCKDIR" ]; then
                 rm -f "$XSOCKDIR/X$DISPLAY_NUM" 2>/dev/null
             fi
@@ -506,22 +404,14 @@ else
             ;;
     esac
 
-    # Input devices, and the config that names them.
-    #
-    # This image has no udev, which decides how the server gets its keyboard
-    # and mouse. libinput cannot work here even with a device path handed to
-    # it: it builds its view of a device from udev's, and says so ("udev
-    # device never initialized"). evdev opens the node and asks the kernel
-    # what the device can do with plain ioctls, which needs no daemon -- but
-    # neither driver can find the node, so which event node is the keyboard
-    # and which is the mouse is answered here, by name, out of sysfs.
-    #
-    # The config must also declare the two devices the CORE keyboard and
-    # pointer. Without that the server treats them as mere additions and goes
-    # hunting for core devices itself, which ends with it closing the devices
-    # it was just handed while the screen keeps working. AutoAddDevices off
-    # goes with it: hotplug would send it down the same udev path that does
-    # not exist here.
+    # No udev here: evdev opens event nodes with plain ioctls, but libinput
+    # builds its device view from udev and says "udev device never initialized";
+    # sysfs names decide which node is keyboard and which is pointer.
+    # Declare both as core devices, or X treats them as additions and closes
+    # them while hunting for core devices itself. AutoAddDevices off keeps it
+    # from going down the same nonexistent udev path on hotplug.
+    # The config is written even with nothing found: it pins AutoAddDevices
+    # off and makes "found nothing" a visible file, not a missing one.
     xorgconf=${COPPER_XORGCONF:-/etc/X11/xorg.conf}
     sysinput=${COPPER_SYSINPUT:-/sys/class/input}
     kb=
@@ -537,38 +427,24 @@ else
             *Mouse*|*mouse*)                              [ -z "$pt" ] && pt=$n ;;
         esac
     done
-    # The pointer is chosen by how VMware feeds its virtual mice, which was
-    # measured with a blocking read on the machine, not guessed:
-    #
-    #   - ImPS/2 / Explorer / *PS/2* is the emulated PS/2 mouse. VMware feeds
-    #     it relative motion on every Linux guest, tools or not.
-    #   - The "VMware Virtual USB Mouse" is an absolute-pointer tablet. It is
-    #     only fed when the guest speaks the vmmouse protocol, whose X driver
-    #     package was retired from the archive in 2018 (xenial) -- so it will never
-    #     report here. Sorting later in sysfs, its generic "*mouse" name used
-    #     to beat the real mouse under last-match-wins.
-    #
-    # So the PS/2-named device wins the pointer, and a plain USB "*mouse" is
-    # only the answer when no PS/2 device exists. Either way the first match
-    # in its class wins, no matter where it sorts in sysfs.
+    # The pointer is chosen by how VMware feeds virtual mice, measured with a
+    # blocking read: ImPS/2/Explorer/*PS/2* is the emulated PS/2 mouse (always
+    # fed), while "VMware Virtual USB Mouse" is an absolute tablet whose vmmouse
+    # driver was retired in 2018 and used to win by sysfs sort order.
+    # Prefer the PS/2-named device, then the first plain mouse; first match wins.
+    # Sorting in sysfs is not a reliable tie-breaker, so names decide.
     pt=${pt_ps2:-$pt}
-    # The config is written even when nothing was found. An empty config is
-    # still load-bearing: it pins AutoAddDevices off so the server does not
-    # wander down the udev path that does not exist here, and it makes "I
-    # found nothing" a visible file rather than an absent one that looks like
-    # a bug in the writing code. And the summary line is printed either way:
-    # mouse-dead-on-VMware was diagnosed by reading this exact line, and it
-    # simply never printed on a machine where nothing matched.
-    #
-    # Where it goes needs care. The default /etc/X11/xorg.conf is owned by
-    # root, and the login that starts a desktop is not root by design. A
-    # config that cannot be written is the same failure as no devices: X
-    # runs, draws a cursor, and hunts for input through udev, which is not
-    # there. So the write tries the requested path and falls back to
-    # $xorgconf2 (/tmp unless told otherwise), and says which one won. X is
-    # then handed the file explicitly with -config, so it uses what was
-    # written instead of hoping the default search path found it.
-    #
+    # Always write a config, even empty: it pins AutoAddDevices off and makes
+    # "found nothing" a file rather than a missing file that looks like a bug.
+    # /etc/X11 is root-owned while the login that starts a desktop is not, so
+    # try the requested path, fall back to $COPPER_XORGCONF_FALLBACK (/tmp by
+    # default), say which won, and pass it explicitly with -config.
+    # Probe writability in a SUBSHELL. `: > file` runs the `:` special builtin,
+    # and POSIX makes a non-interactive shell exit when its redirection fails;
+    # a plain `{ : > "$cand"; }` killed the launcher at the first unwritable
+    # candidate (bug 42/44, seen as "can't create /etc/X11/xorg.conf"), so the
+    # fallback was never reached. Hang `2>/dev/null` on the subshell: the
+    # builtin's `>` is set up first and fails before its own stderr redirect.
     # The probe that decides writability is a SUBSHELL, and that is not
     # decoration. `: > file` runs the `:` special builtin, and POSIX says a
     # non-interactive shell shall exit when a special builtin's redirection
@@ -634,10 +510,8 @@ else
     fi
     say "input devices: keyboard=${kb:-none} pointer=${pt:-none}"
 
-    # Where the drivers live is a packaging detail that differs between
-    # distributions, so ask the image instead of assuming: -modulepath is
-    # passed only when evdev is actually found in the directory, and the
-    # server's own compiled-in default is the answer when it is not.
+    # Module paths differ by distro: pass -modulepath only when evdev is really
+    # in that directory, otherwise keep the server's compiled-in default.
     modpath=
     for d in /usr/lib/x86_64-linux-gnu/xorg/modules /usr/lib/xorg/modules; do
         if [ -e "$d/input/evdev_drv.so" ]; then
@@ -646,38 +520,23 @@ else
         fi
     done
 
-    # A non-root X server cannot grab the console VT, and getting this wrong
-    # is not subtle: Xorg exits with "Fatal server error: xf86OpenConsole:
-    # Switching VT failed". The grab is in xf86OpenConsole(), which calls
-    # switch_to() -- a VT_ACTIVATE ioctl -- whenever ShareVTs is off:
-    #
-    #     if (!xf86Info.ShareVTs) {
-    #         if (!switch_to(xf86Info.vtno, "xf86OpenConsole"))
-    #             FatalError("xf86OpenConsole: Switching VT failed\n");
-    #
-    # VT_ACTIVATE needs CAP_SYS_TTY_CONFIG, which no ordinary login has, so a
-    # non-root server must never reach that call. -sharevts sets ShareVTs and
-    # is what actually skips it: the server then adopts the VT it is already on
-    # (parse_vt_settings takes the active VT from VT_GETSTATE instead of
-    # hunting for a free one) instead of trying to move to one. -novtswitch is
-    # NOT enough and never was: it only suppresses the switch the server would
-    # do on a reset, and the block above is not guarded by it. This was
-    # measured -- a real boot passed -keeptty -novtswitch and still died on
-    # "xf86OpenConsole: Switching VT failed".
-    #
-    # -keeptty keeps the server from setsid()ing away from the controlling
-    # terminal the login shell already owns, which is what lets it open the
-    # VT it is sharing. As root the VT grab is permitted, so the long-proven
-    # root path is left exactly as it was and none of this applies.
+    # Non-root cannot grab the console VT: VT_ACTIVATE needs CAP_SYS_TTY_CONFIG,
+    # so xf86OpenConsole() dies with "Switching VT failed" at startup.
+    # -sharevts sets ShareVTs and skips that switch (the active VT is adopted via
+    # VT_GETSTATE); -novtswitch is NOT enough -- it only suppresses reset-time
+    # switches, and a real boot with -keeptty -novtswitch still died here.
+    # -keeptty keeps the server from setsid()ing away from the controlling tty
+    # it needs to open that shared VT. These flags are only for non-root; the
+    # root path already has the permission and is left exactly as it was.
+    # The quoted block below is xf86OpenConsole()'s actual guard, kept as the
+    # reason -sharevts, not -novtswitch, is the fix for the non-root launch.
     xflags=
     if [ "$(id -u)" != 0 ]; then
         xflags="-keeptty -sharevts -novtswitch"
     fi
 
-    # -noreset: without it the server resets itself when the last client
-    # disconnects, and that reset closes every input device in the process.
-    # Any gap with no clients -- between sessions, after a probe -- would
-    # leave the next login with no keyboard and no mouse.
+    # -noreset keeps the server from resetting (and closing every input device)
+    # when the last client disconnects, which would leave the next login dead.
     if [ -n "$modpath" ]; then
         "$XORG" ":$DISPLAY_NUM" -noreset $xflags -modulepath "$modpath" \
             ${cfg:+-config "$cfg"} > "$XLOG" 2>&1 &
@@ -687,11 +546,8 @@ else
     fi
     xpid=$!
 
-    # Wait for the socket, which is the only thing that can be checked without
-    # an X client in the image. Bounded, so a server that starts and then
-    # wedges does not leave this hanging forever -- and it checks whether the
-    # process is still alive, because "still starting" and "already died" look
-    # identical if all you do is count to a limit.
+    # Bounded socket wait, with a process check: "still starting" and "already
+    # died" look identical if all you do is count to a limit.
     i=0
     while [ "$i" -lt "$WAIT_TRIES" ]; do
         if [ "$(display_state)" = live ]; then
@@ -715,23 +571,14 @@ else
     say "X server is up on :$DISPLAY_NUM"
 fi
 
-# What the session needs prepared around it. Two directories, neither of
-# which exists on this image until something makes them:
-#
-#   /dev/shm  glibc's shm_open() puts its files here. devtmpfs does not
-#             create the directory on its own -- on a normal system the init
-#             that mounts tmpfs on top of it makes it -- and without it,
-#             shared memory users fall back or fail. It only has to be a
-#             directory; the files are plain files on devtmpfs.
-#
-#   XDG runtime dir  the session bus and the settings daemons expect a
-#             private 0700 directory of the user's own. Nothing here has
-#             logged in through pam, so /run/user was never made for
-#             anybody.
-#
-# Both are best effort: a test run as oneself may find no /run to write to,
-# and a missing runtime directory is a warning inside the session rather
-# than a reason not to start it.
+# /dev/shm: shm_open() puts files here, and devtmpfs does not make the
+# directory itself (a normal init mounts tmpfs on it), so create it.
+# Both are directories only; plain files on devtmpfs are fine for shm.
+# XDG runtime dir: the session bus and settings daemons want a private 0700
+# directory, but nothing here logs in through pam, so /run/user was never
+# made. Create it when possible; both steps are best effort, since a test
+# run may have no /run to write to and a missing runtime dir is only a
+# warning inside the session, not a reason to refuse to start it.
 mkdir -p /dev/shm 2>/dev/null || :
 uid=$(id -u 2>/dev/null) || uid=
 if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -n "$uid" ]; then
@@ -742,13 +589,9 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -n "$uid" ]; then
     fi
 fi
 
-# Caches that a package manager's postinst would have built, but no
-# maintainer script runs on this image, so they are built here instead --
-# once, when absent. Missing they do not stop the session: fonts are looked
-# up slowly and repeatedly, and pixbuf loaders are simply never found, which
-# is how a desktop ends up drawing boxes where icons should be. Both tools
-# are quiet by force: a cache build prints progress that has nothing to say
-# to whoever just asked for a desktop.
+# No maintainer scripts run here, so build missing font and pixbuf caches
+# once; without them glyph lookup is slow and icons never load. Keep quiet:
+# cache builders print progress nobody asking for a desktop wants.
 if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
     if [ -z "$(find /usr/lib -name loaders.cache -print -quit 2>/dev/null)" ]; then
         gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || :
@@ -760,23 +603,17 @@ if command -v fc-cache >/dev/null 2>&1; then
     fi
 fi
 
-# Hand the display over and become XFCE, so that when XFCE exits this command
-# exits with the same status. exec rather than run, so there is one process
-# between the user's keystrokes and the desktop rather than two.
-#
-# The session's output goes to $SESSIONLOG, not to the console. The console
-# is the VT the X server just took over -- anything the session prints there
-# is invisible to a user looking at the screen, and the screen is exactly the
-# thing that is broken when a diagnosis is needed. Inside the X server's VT
-# nothing a session says reaches a human; on the log it does. Redirecting
-# does not cost a process (it is a file descriptor, not a pipe) and it does
-# not touch the exit status.
+# exec makes XFCE this process, so its exit status is ours and there is one
+# process between the keystrokes and the desktop.
+# Session output goes to $SESSIONLOG: the X server owns the console VT, so
+# anything printed there is invisible to the user looking at the screen --
+# exactly when a diagnosis is needed. Redirecting costs no process and
+# does not change the exit status. The log is the only evidence when the
+# screen is the broken thing.
 DISPLAY=":$DISPLAY_NUM"
 export DISPLAY
-# Which audio server /etc/copper.conf asks for. Both are in the image; this
-# file is the switch the first-boot wizard writes and the user can edit. A
-# missing file, an unreadable line or an unknown word is PulseAudio, the server
-# this image has always started.
+# /etc/copper.conf is the wizard's audio switch, editable by the user;
+# missing, unreadable or unknown means pulseaudio, the image's default.
 copper_audio_backend() {
     _conf=${COPPER_CONF:-/etc/copper.conf}
     _word=
@@ -790,18 +627,14 @@ copper_audio_backend() {
     esac
 }
 
-# Audio. The server is a per-user daemon; PulseAudio refuses to run as root
-# without --system, and the desktop's clients expect the server owning this
-# user's session. Started here, once, before the desktop takes the screen.
-# Which one is /etc/copper.conf's answer; both are installed.
-# COPPER_AUDIO=0 skips it (the gate sets that, so a test run does not launch a
-# daemon on the machine running it).
+# Audio is a per-user daemon (PulseAudio refuses root without --system), so
+# start it once here before the desktop; COPPER_AUDIO=0 lets the gate avoid
+# launching a daemon on the machine running the tests.
 if [ "${COPPER_AUDIO:-1}" = 1 ]; then
     case "$(copper_audio_backend)" in
     pipewire)
-        # The graph server, its session manager, and the PulseAudio-protocol
-        # front end. pipewire-pulse does not depend on wireplumber, so all
-        # three are started. The graph socket is the "it came up" signal.
+        # Start the graph server, session manager and Pulse front end: pipewire-pulse
+        # does not pull in wireplumber; the graph socket is the readiness signal.
         _rt=${XDG_RUNTIME_DIR:-/tmp}
         if command -v pipewire >/dev/null 2>&1; then
             if [ ! -S "$_rt/pipewire-0" ]; then
@@ -841,10 +674,8 @@ if [ "${COPPER_AUDIO:-1}" = 1 ]; then
         ;;
     esac
 
-    # A server on a muted card is a silent machine that reports itself healthy:
-    # the codec can come out of reset with its outputs down, and a live image
-    # keeps no mixer state between boots. Raise the controls here, once, after
-    # the server has the device. See iso/rootfs-overlay/usr/bin/copper-audio.
+    # A codec can come out of reset muted and a live image keeps no mixer state,
+    # so raise the controls once after the server starts (see copper-audio).
     if command -v copper-audio >/dev/null 2>&1; then
         copper-audio init >/dev/null 2>&1 || :
     fi

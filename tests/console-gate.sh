@@ -1,28 +1,11 @@
 #!/usr/bin/env bash
 # Gate for the console session's environment: the prompt names the user, and
 # the shell knows what terminal it is on.
-#
-# Why this exists
-# ---------------
-# Two defects shipped together on the live console and neither had a test.
-#
-#   1. The prompt was the literal `copper:\w\$ `, so every login -- root's
-#      included -- looked like the machine with no user on it. The wizard has
-#      always made a real account and copper-init has always dropped the shell
-#      to it; only the prompt kept the fact to itself.
-#
-#   2. Nothing set TERM. Bash invents TERM=dumb when it finds none, and
-#      readline then redraws a dumb terminal: it does not know the right
-#      margin auto-wraps, so a command long enough to reach the edge loses the
-#      character that should have started the next line, and `clear` cannot
-#      repaint the prompt until another Enter. On the console the tell was
-#      `wget -qO-` reaching the shell as `wget -q-`.
-#
-# Both live in startup files no other gate read, so this one reads them. The
-# TERM check is not a grep: it extracts the real block from each file and runs
-# it against a stubbed tty(1), so the "only upgrade a virtual console" rule is
-# exercised rather than asserted in a comment.
-#
+# The prompt was the literal `copper:\w\$ `, so every login including root's
+# looked like a machine with no user. Nothing set TERM, so Bash invented dumb,
+# dropped the character at the right margin and needed a second Enter for clear.
+# Both live in startup files no other gate reads. The TERM check extracts the
+# real block and runs it against a stubbed tty(1), so "VT only" is exercised.
 # Run: bash tests/console-gate.sh   (no root, no network)
 
 set -u
@@ -58,11 +41,8 @@ for f in "$PROFILE" "$BASHRC"; do
     fi
 done
 
-# A literal is not enough: a real Bash has to expand it to something with a
-# user, a host and a colon. PS1 is assigned inside the shell because Bash does
-# not import PS1 from the environment. The trailing prompt character is Bash's
-# own \$-or-# logic -- '#' for root, '$' for everyone else -- so the pattern
-# has to take both; this gate runs under sudo, where the prompt is root's.
+# A real Bash must expand PS1 to user@host:path with a trailing $ or #; this
+# gate can run under sudo, where the prompt is root's.
 p=$(prompt_in "$BASHRC")
 expanded=$(bash -c 'PS1=$1; printf "%s" "${PS1@P}"' _ "$p" 2>/dev/null || true)
 if printf '%s' "$expanded" | grep -Eq '^[^@[:space:]]+@[^:[:space:]]+:.*[$#] $'; then
@@ -71,18 +51,15 @@ else
     bad "Bash does not expand the prompt to user@host:path" "got '$expanded'"
 fi
 
-# skel/.bashrc is what a new home gets; it must keep pointing at the system
-# file, or the prompt fix would stop at the account the wizard just made.
+# skel/.bashrc must keep sourcing the system file for new homes.
 if grep -q '/etc/bash.bashrc' "$SKEL"; then
     ok "the skel .bashrc still sources the system Bash settings"
 else
     bad "skel/.bashrc no longer sources /etc/bash.bashrc"
 fi
 
-# ---- TERM: upgrade bash's invented "dumb" only on a real VT ----------------
-# Extract the real block from the file: from the `case "${TERM:-dumb}"` line
-# through `export TERM`. Running that text is the point; a grep would pass on
-# any block that mentions the right words.
+# Extract the real `case "${TERM:-dumb}"` block through `export TERM`; a grep
+# would pass on any block that merely mentions the right words.
 term_block() {
     awk 'index($0, "case \"${TERM:-dumb}\" in") == 1 { on = 1 }
          on { print }
@@ -162,10 +139,8 @@ else
     bad "build.sh does not assert CLEAR and TTY" "require_bb_config can drift"
 fi
 
-# terminfo is what turns TERM=linux into the capabilities readline and every
-# full-screen tool actually use. ncurses-base owns /usr/share/terminfo/l/linux;
-# it is Essential on paper, and that is exactly why apt's empty-status closure
-# never downloaded it -- the image would ship bash and nano with no entries.
+# ncurses-base owns /usr/share/terminfo/l/linux; apt's empty-status closure
+# shipped bash and nano with no terminfo entries even though it is Essential.
 if grep -q '\bncurses-base\b' "$BUILD"; then
     ok "build.sh stages ncurses-base (the linux terminfo entry)"
 else

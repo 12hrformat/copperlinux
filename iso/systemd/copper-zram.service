@@ -1,57 +1,32 @@
 # Copper Linux -- compressed swap in RAM, set up before anything heavy starts.
-#
-# The live image has no swap. /init's writable overlay is a tmpfs capped at
-# half of RAM, and niri + kitty + a browser want the other half. On a 4 GB
-# machine the first allocation burst makes the kernel reclaim and the session
-# stalls -- reported as "niri froze", and blamed on 8 GB not being enough.
-# copper-zram builds a compressed swap device out of RAM so the same burst has
-# somewhere to go.
-#
-# Why DefaultDependencies=no: the unit has to run INSIDE sysinit, and a normal
-# service gets an implicit After=sysinit.target from the defaults, which would
-# contradict Before=sysinit.target below and is a cycle on the target (the same
-# shape that once made the boot's initial transaction fail). zram is a built-in
-# block device, so nothing has to be loaded first.
-#
-# ConditionPathExists: a kernel built without CONFIG_ZRAM has no zram0, and a
-# live image must still boot. A skipped unit is not a failed one, so this stays
-# off the wizard's tty (bug 47's rule: no [FAILED] lines over the form).
+# The live image has no swap: /init's overlay is half of RAM and the desktop wants
+# the rest, so allocation bursts stall the session ("niri froze" on 4 GB). zram
+# gives the burst somewhere to go. DefaultDependencies=no lets this run INSIDE
+# sysinit (a normal service's implicit After=sysinit.target would cycle with
+# Before=sysinit.target). ConditionPathExists: no CONFIG_ZRAM means no zram0, and
+# a skipped unit stays off the wizard's tty (bug 47: no [FAILED] over the form).
 [Unit]
 Description=Copper compressed swap (zram)
 DefaultDependencies=no
 ConditionPathExists=/sys/block/zram0
 Before=sysinit.target swap.target
 After=systemd-udevd.service
-# DefaultDependencies=no keeps this unit out of the boot's automatic edges --
-# and that also means OUT of shutdown.target's, because those edges are the
-# very ones the default dependencies add. Without the two lines below the
-# unit has no stop job at all on shutdown: systemd would leave it running,
-# PID 1 would exec systemd-shutdown with /dev/zram0 still in /proc/swaps, and
-# systemd-shutdown's own `swapoff_all()` would then do the unbounded swapoff
-# this ExecStop exists to avoid. The whole point of the helper is that it runs
-# inside the stop transaction, where TimeoutStopSec is a real bound, so the
-# unit has to be IN that transaction.
+# DefaultDependencies=no also drops shutdown.target's implicit edges, so without
+# Conflicts=/Before= this unit has no stop job: zram0 stays in /proc/swaps into
+# systemd-shutdown, whose unbounded swapoff_all() is what ExecStop exists to avoid.
 Conflicts=shutdown.target
 Before=shutdown.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# The helper prints one line to the serial log and nothing to the screen. Its
-# exit status is honest: a kernel that has zram0 but cannot swapon is a defect,
-# and the unit should say so in `systemctl --failed` rather than pretend.
+# Honest status: zram0 that cannot swapon is a defect, not a silent pass.
 ExecStart=/usr/bin/copper-zram
-# Deactivate the swap while systemd is still watching, not afterwards. The
-# stop ordering already takes the desktop down first (this unit is
-# Before=sysinit.target, copper-console.service is After= it), so by the time
-# this runs the swap is cheap to drain; copper-zram-stop flushes the page
-# cache first so the pages have somewhere to go back to.
+# Stop inside the stop transaction where TimeoutStopSec bounds the drain; ordering
+# takes the desktop down first, so the swap is cheap. drop_caches helps pages back.
 #
-# TimeoutStopSec is per-unit and overrides the global 10 s default: draining
-# swap is the one stop in this image that can legitimately take longer than a
-# normal unit. It is still a bound, which is the difference that matters.
-# ExecStop=- because a failed drain must not hold the reboot: the helper
-# always exits 0, and the '-' covers the case where it is not there at all.
+# TimeoutStopSec=30s overrides the 10 s global default -- swap drain is slower --
+# but stays bounded. ExecStop=- so a failed drain cannot hold the reboot.
 ExecStop=-/usr/bin/copper-zram-stop
 TimeoutStopSec=30s
 

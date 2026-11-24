@@ -1,79 +1,29 @@
 #!/bin/sh
 # ingot — Copper's own package manager.
-#
-# Packages are NOT binaries on a server with a fancy API. GitHub Pages cannot
-# hold huge files comfortably, so Pages holds only the metadata, and it holds
-# them as plain JSON. Every package is one file at
-#
-#     <repo>/iso/copper/pkg/<category>/<name>
-#
-# whose entire contents are JSON. The JSON carries the REAL download url of
-# the payload (a Release, a CDN, anywhere big files can live) and the sha256
-# the payload must match. Nothing on Pages is a package. That indirection is
-# the whole design, on purpose:
-#
-#   1. <name> is looked up in <repo>/iso/copper/pkg/index.json (name -> category)
-#   2. the package's JSON page is downloaded to /tmp/<name>
-#   3. the real url and the sha256 are read out of that JSON
-#   4. the payload is downloaded from the real url
-#   5. its sha256 is compared to the one in the JSON — mismatch refuses
-#   6. the payload is unpacked into /
-#   7. the JSON in /tmp is deleted
-#
-# The JSON we author, so the layout is fixed and documented here, and the
-# parsers below are written to that exact shape (not to JSON in general).
-#
-# index.json — one entry per line, so a plain sed line can find a name:
-#
-#   {
-#     "nmap": "hacking",
-#     "tree": "tools"
-#   }
-#
-# a package page — one key per line, flat string values:
-#
-#   {
-#     "name": "nmap",
-#     "version": "7.95-1",
-#     "category": "hacking",
-#     "url": "https://<somewhere-big>/nmap-7.95.tar.gz",
-#     "sha256": "0123...",
-#     "depends": ["libpcap"]
-#   }
-#
-# Only `depends` is an array; the rest are strings. Keep it that way when you
-# author packages, or the sed parsers here will be wrong where you are not.
-#
-# Everything here is POSIX sh and runs under busybox ash on the live image.
-# No bashisms, no curl-only flags, no JSON library: the fields above are
-# one-key-per-line in the files we publish, and jget() trims that shape.
+# Pages holds no packages, only flat JSON: index.json maps name -> category and
+# each page gives the real URL plus sha256; the verified payload unpacks into /
+# (or INGOT_ROOT for tests). Only `depends` is an array, every other field a string.
+# POSIX sh / busybox ash: no local, arrays, bashisms or JSON library.
 
-# POSIX sh note: no `local` (dash rejects it), no arrays, no bashisms. This
-# must parse under /bin/sh and run under busybox ash on the live image.
+# POSIX sh only: no `local` or arrays -- dash rejects them; busybox ash runs this.
 
 set -u
 
 # ---- config ---------------------------------------------------------------
-# /etc/ingot.conf may override the repo url; INGOT_REPO beats both. This is
-# how the gate test points ingot at a scratch server, and how a live user
-# points it at an unofficial mirror.
+# /etc/ingot.conf may override the repo URL; INGOT_REPO beats both. This is
+# how the gate points ingot at a scratch server, and how a user picks a mirror.
 DEFAULT_REPO='https://12hrformat.github.io/copper-ingot-repo'
 repo_url=$DEFAULT_REPO
 [ -r /etc/ingot.conf ] && . /etc/ingot.conf
 [ -n "${INGOT_REPO:-}" ] && repo_url=$INGOT_REPO
 
-# Where packages land. Empty means the real /, so a live install writes into
-# the image's writable overlay. Tests set this to a scratch tree and install
-# without touching the host.
+# Where packages land: / by default (the overlay); tests use a scratch tree.
 ROOT=${INGOT_ROOT:-/}
 MAN="$ROOT/var/lib/ingot"
 
 # ---- privilege --------------------------------------------------------------
-# install/remove/update/reinstall write into the target root. On the live
-# system that root is the real /, and a normal user is not root: the elevation
-# contract is `sudo ingot install ...` (sudoers + wheel are staged for exactly
-# this). The gate tests point INGOT_ROOT at a scratch tree and stay rootless by
-# design, so only the real / demands elevation.
+# install/remove/update/reinstall write into the target root, so the real /
+# needs sudo; INGOT_ROOT keeps gate tests rootless in a scratch tree.
 require_root() { # require_root <verb>
   [ "$ROOT" = "/" ] || return 0
   if [ "$(id -u)" -ne 0 ]; then
@@ -85,8 +35,7 @@ require_root() { # require_root <verb>
 
 # ---- helpers --------------------------------------------------------------
 
-# human_mi <bytes> -> "NNN.N" (one decimal, no suffix). Integer math only so
-# it runs in busybox ash on a 120M payload without overflow or a float printf.
+# human_mi: one-decimal MiB in integer math, so a 120M payload works in ash.
 human_mi() { # human_mi <bytes>
   n=${1:-0}
   whole=$(( n / 1048576 ))
@@ -135,17 +84,12 @@ draw_bar() {
     "$pct" "$bar" "$cur" "$tot" "$kib" "$eta" >&2
 }
 
-# download_once <file> <url> <total> -- one wget attempt. On a terminal with a
-# known size it runs wget in the background and repaints a live progress bar
-# from the growing file. Polling uses stat -c %s (busybox and GNU) which is
-# metadata only -- NOT wc -c, which reads the whole payload every second, and
-# NOT wc -c's `SIZE filename` output shape. Off a terminal, or with no size
-# known, it is a plain quiet wget.
+# download_once <file> <url> <total> -- one wget attempt; on a terminal with a
+# known size it polls the growing file with stat -c %s (metadata only, never
+# wc -c) to repaint a bar; otherwise it is a plain quiet wget.
 download_once() { # download_once <file> <url> <total>
   _d_file=$1; _d_url=$2; _d_total=${3:-}
-  # Bar only for real payloads on a real terminal: tiny packages (libpcap 136K,
-  # tcpdump 533K) finish faster than the bar can tick, and logs/scripts are
-  # quiet pipes, not terminals.
+# Tiny packages finish before the bar ticks; logs and pipes are not terminals.
   if [ -t 2 ] && [ -n "$_d_total" ] && [ "$_d_total" -ge 1048576 ]; then
     wget -q -c -O "$_d_file" "$_d_url" &
     wpid=$!
@@ -174,21 +118,10 @@ download_once() { # download_once <file> <url> <total>
 }
 
 # ---- where the bytes come from -------------------------------------------
-# The release CDN behind github.com is what throttles on some networks: the
-# same asset that arrives at 11-24 KB/s directly measured ~1.7 MB/s through a
-# public GitHub mirror, which is the difference between a 120 MB package
-# taking two minutes or two hours. A mirror is a URL PREFIX -- the location is
-#     <prefix>/https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
-# so the mirror fetches exactly the asset the page names.
-#
-# Order matters: mirrors first, the direct URL LAST, so a network where the
-# mirrors are blocked still installs, it is just slow. Only release assets are
-# rewritten. The package pages themselves live on GitHub Pages, which is not
-# the throttled host, and a proxy hop in front of a metadata fetch would add a
-# failure mode for nothing.
-#
-# INGOT_MIRRORS overrides the list (space separated); "none" or empty turns
-# mirrors off, which is what a test does so it exercises one source only.
+# The release CDN throttles, so release assets go through mirror URL PREFIXES
+# first and the direct URL last: <prefix>/https://github.com/<owner>/<repo>/releases/download/<tag>/<file>.
+# Only release assets are rewritten; Pages metadata is not throttled. INGOT_MIRRORS
+# overrides the list ("none" disables it) so tests exercise one source at a time.
 mirror_prefixes() {   # -> the mirrors to try, one per line
   if [ -n "${INGOT_MIRRORS+x}" ]; then
     case "$INGOT_MIRRORS" in
@@ -211,9 +144,8 @@ dl_sources() {   # dl_sources <url> -> candidates, best first, one per line
   printf '%s\n' "$1"
 }
 
-# dl_attempt <file> <url> <total> <sha256|""> -- one source, up to five shots.
-# The file is removed first: --continue against a DIFFERENT source would ask
-# the next server for the tail of bytes it never served.
+# dl_attempt: one source, up to five shots; remove the file first so --continue
+# cannot ask a different server for bytes it never served.
 dl_attempt() {
   _a_file=$1; _a_url=$2; _a_total=${3:-}; _a_want=${4:-}
   rm -f "$_a_file"
@@ -225,10 +157,8 @@ dl_attempt() {
       elif [ "$(sha256sum "$_a_file" | awk '{print $1}')" = "$_a_want" ]; then
         return 0
       else
-        # A mirror can deny service; it cannot inject. The sha256 in the page
-        # is the authority, so bytes that do not match it are thrown away and
-        # the next source is tried instead of failing the install. This is the
-        # case where a proxy answers 200 with its own error page.
+# A mirror can deny service but cannot inject: the page's sha256 is the authority,
+# so a bad payload is discarded and the next source is tried.
         echo "ingot: $_a_url did not serve the payload the page describes" >&2
         rm -f "$_a_file"
         return 1
@@ -241,29 +171,15 @@ dl_attempt() {
   return 1
 }
 
-# fetch url -> file. busybox wget and GNU wget both accept -O and -q.
-# busybox wget's openssl helper path verifies certificates (the image ships
-# openssl since 2026-10-10); only the internal-TLS fallback skips that, and
-# the helper is the path a normal image takes.
+# jget/category_for/depends_of rely on one-key-per-line JSON in the files we author.
 #
-# Say what we are doing before touching the network -- a multi-tens-of-MB
-# payload from the release CDN looks like a hang when the only output line is
-# the trailing "installed". The note goes to stderr, not stdout: fetch_meta
-# ends with `echo "/tmp/$name"` and cmd_install captures ALL of its stdout via
-# `meta=$(fetch_meta ...)` -- a stdout note would land in the package meta and
-# break jget. stderr is the notification channel here.
+# wget -q -c -O works on both busybox and GNU; openssl verifies certs on the
+# normal path. Say what we are doing on stderr BEFORE the network: fetch_meta's
+# stdout ends in "/tmp/$name" and cmd_install captures it all for jget.
 #
-# The release CDN drops long slow transfers ("connection closed prematurely"
-# from busybox, i.e. the server closed the socket before content-length bytes
-# arrived). One wget shot therefore fails most of the time on a 120MB payload;
-# retry a few times on each source with -c so each attempt resumes the bytes
-# already pulled instead of restarting. busybox wget checks that the server
-# honored the Range header and starts over itself when it did not.
-#
-# Every source is tried in turn (see dl_sources above). The variables are all
-# prefixed because this is POSIX sh with no `local`: cmd_install keeps the
-# canonical $url and $want across this call, and a mirror URL leaking into
-# them would be written into the manifest as the package's home.
+# The CDN drops long slow transfers, so retry with -c on each source to resume.
+# Variables are prefixed because POSIX sh has no `local`: a mirror URL must not
+# leak into the manifest's canonical $url/$want.
 dl() { # dl <file> <url> [size] [sha256]
   dl_file=$1; dl_url=$2; dl_total=${3:-}; dl_want=${4:-}
   if [ -n "$dl_total" ]; then
@@ -279,9 +195,7 @@ dl() { # dl <file> <url> [size] [sha256]
   return 1
 }
 
-# jget <key> <json-file> -> the value of "key": value (first match, no \n).
-# Works because our JSON is one key per line with flat values. Accepts both
-# "key": "string" and "key": 123456 (size is an unquoted integer).
+# jget: first value of "key" from our one-key-per-line flat JSON (string or int).
 jget() {
   sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$2" | head -n1
 }
@@ -291,9 +205,7 @@ category_for() { # category_for <name> <index-file>
   sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$2" | head -n1
 }
 
-# the depends line -> names, space separated. "depends": ["a","b"] is an
-# array, so this reaches past jget: strip to the bracket contents, drop
-# quotes, split on commas.
+# depends_of: strip the depends array to bracket contents, drop quotes, split commas.
 depends_of() { # depends_of <json-file> -> names, space separated
   sed -n 's/^[[:space:]]*"depends"[[:space:]]*:[[:space:]]*\[\(.*\)\].*/\1/p' "$1" \
     | head -n1 | tr -d '"' | tr ',' ' '
@@ -323,46 +235,34 @@ cmd_install() { # cmd_install <name> [force] — force installs over an existing
   mkdir -p "$MAN"
 
   meta=$(fetch_meta "$name") || return 1
-  # $meta lives at /tmp/<name> per the design; every exit path below removes
-  # it, so a half-finished install cannot leave a package page behind.
+# $meta lives at /tmp/<name>; every exit path below removes it.
 
   url=$(jget url "$meta")
   [ -n "$url" ] || { echo "ingot: $name metadata has no 'url'" >&2; rm -f "/tmp/$name"; return 1; }
   want=$(jget sha256 "$meta")
   [ -n "$want" ] || { echo "ingot: $name metadata has no 'sha256'; refusing to install an unverified payload" >&2; rm -f "/tmp/$name"; return 1; }
 
-  # Dependencies first, depth-first. Recursion is fine: the index is small
-  # and the already-installed check above stops the loop. The subshell is
-  # load-bearing: POSIX sh here has no `local`, so calling cmd_install inline
-  # would let the dependency's fetch overwrite THIS install's name/url/want/
-  # meta globals and the outer install would silently install the dep again
-  # under the dep's own name. A subshell keeps the outer frame intact --
-  # files churn on disk (fine, that is the point), variables do not.
+# Dependencies first, depth-first; the subshell is load-bearing because POSIX sh
+# has no `local` and an inline call would overwrite THIS install's name/url/want.
   deps=$(depends_of "$meta")
   if [ -n "$deps" ]; then
     echo "ingot: resolving dependencies for $name" >&2
     for dep in $deps; do
       [ -n "$dep" ] || continue
-      # A dependency is never force-installed: force is this call's business,
-      # and the already-installed guard above still has to stop the recursion.
+# A dependency is never forced; the installed guard must still stop recursion.
       ( force=; cmd_install "$dep" ) || { rm -f "/tmp/$name"; return 1; }
     done
   fi
 
-  # The real payload, from the REAL url in the JSON. A size in the page makes
-  # dl draw a live progress bar on a terminal; without it the
-  # same download just runs quietly. The sha256 goes along so each source is
-  # checked as it arrives: a mirror that serves an error page instead of the
-  # asset falls through to the next source here, rather than failing the
-  # install after the last one has been tried.
+# Fetch from the REAL url in the JSON; size draws a bar, sha256 is checked at
+# each source so a mirror serving an error page falls through to the next one.
   payload="/tmp/$name.payload.$$"
   size=$(jget size "$meta")
   version=$(jget version "$meta")
   echo "ingot: installing $name $version" >&2
   dl "$payload" "$url" "$size" "$want" || { rm -f "/tmp/$name" "$payload"; return 1; }
 
-  # The whole point of carrying the hash: a corrupted or replaced download
-  # must not install. Compare before touching the tree.
+# Compare the hash before touching the tree: a corrupted download must not install.
   echo "ingot: verifying $name checksum..." >&2
   got=$(sha256sum "$payload" | awk '{print $1}')
   if [ "$got" != "$want" ]; then
@@ -374,27 +274,21 @@ cmd_install() { # cmd_install <name> [force] — force installs over an existing
   fi
   [ -t 2 ] && echo "ingot: checksum ok" >&2
 
-  # Payload tar paths must stay inside the target root. An absolute path or
-  # a .. entry would walk out of it; refuse before unpacking.
+# Payload paths must stay inside $ROOT; refuse absolute or '..' entries.
   if tar -tzf "$payload" 2>/dev/null | grep -E '(^/|(^|/)\.\.(/|$))' -q; then
     echo "ingot: $name payload contains an absolute or '..' path; refusing" >&2
     rm -f "/tmp/$name" "$payload"
     return 1
   fi
 
-  # Manifest before unpack: the exact file list, plus the record that will
-  # make `remove` possible. Written to a .tmp and renamed so an interrupted
-  # install cannot claim to be installed.
+# Manifest first, via .tmp + rename: interrupted installs must not claim success.
   {
     echo "$name|$(jget version "$meta")|$url|$want"
     tar -tzf "$payload" 2>/dev/null
   } > "$MAN/$name.installed.tmp"
 
-  # A force install (update/reinstall) replaces the package in place. Every step
-  # that can fail -- the page fetch, the download, the sha256 check, the tar
-  # listing just now -- has run before this line and none of them touched the old
-  # tree, so a failed transfer can no longer turn an update into an uninstall.
-  # Keep the old file list to prune whatever the new payload does not ship.
+# Every fallible step ran before this line, so a failed transfer cannot turn an
+# update into an uninstall. Keep the old list to prune files the new payload omits.
   oldmf=
   if [ -n "$force" ] && [ -f "$MAN/$name.installed" ]; then
     oldmf="/tmp/$name.old.$$"
@@ -409,10 +303,8 @@ cmd_install() { # cmd_install <name> [force] — force installs over an existing
 
   mv "$MAN/$name.installed.tmp" "$MAN/$name.installed"
 
-  # Drop files the old version listed and the new one does not, or an update
-  # leaves the previous version's files behind. Directories are left alone, as
-  # `remove` does: another package may still hold files in them. -F and -e keep
-  # a recorded path that starts with '-' a literal, not a grep option.
+# Prune paths the old version shipped but the new one does not; leave directories
+# (-F/-e keep a leading '-' literal) since another package may still use them.
   if [ -n "$oldmf" ]; then
     sed -n '2,$p' "$oldmf" | while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -429,17 +321,9 @@ cmd_install() { # cmd_install <name> [force] — force installs over an existing
 }
 
 # ---- the fastfetch welcome ------------------------------------------------
-#
-# fastfetch carries a logo for the distros it knows and Copper is not one of
-# them, so a fresh install shows a generic penguin. Copper's own logo is a
-# config, not part of the payload, so the offer is made here once the binary
-# is actually on disk: Enter takes the default (Y), a no gets a sulk.
-#
-# The offer only happens when BOTH ends are a terminal. A scripted or piped
-# install -- and the gate test, which captures stdout -- must never block on
-# a read with nobody there to answer it. The files land under $ROOT, so a
-# rootless test that points INGOT_ROOT at a scratch tree writes there and
-# never near the real /etc.
+# Copper's logo is a config, not a payload, so offer it once fastfetch is on disk.
+# Only when BOTH ends are terminals -- scripted installs and the gate must not block.
+# Files land under $ROOT, so a rootless scratch install never touches real /etc.
 fastfetch_branding() { # fastfetch_branding <name>
   [ "$1" = fastfetch ] || return 0
   [ -t 0 ] && [ -t 1 ] || return 0
@@ -462,8 +346,7 @@ fastfetch_branding() { # fastfetch_branding <name>
 
   mkdir -p "$ROOT/etc/fastfetch" "$ROOT/usr/share/copper" || return 0
 
-  # Replace this art with Copper's own; it is the one thing here meant to be
-  # edited, and the config below only points at it.
+# The one file here meant to be edited; the config below just points at it.
   cat > "$ROOT/usr/share/copper/fastfetch-logo.txt" <<'COPPER_LOGO'
          ____________________
        /                      \
@@ -497,10 +380,8 @@ cmd_remove() { # cmd_remove <name>
   require_root remove || return 1
   mf="$MAN/$name.installed"
   [ -f "$mf" ] || { echo "ingot: $name is not installed" >&2; return 1; }
-  # Skip the header line (the first line, name|version|url|sha256); the rest
-  # are payload paths. Reverse purpose: files before the dirs that held them.
-  # tar lists dirs with a trailing slash; those are left, along with any dir
-  # that still has other packages' files in it.
+# Skip the header; reverse order puts files before their dirs. Directories stay:
+# another package may still hold files there.
   sed -n '2,$p' "$mf" | while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in */) continue ;; esac
@@ -520,19 +401,15 @@ cmd_info() { # cmd_info <name> — show the package's JSON then clean /tmp
 
 cmd_search() { # cmd_search <term> — names+groups matching, straight from index.json
   term=$1
-  # A package name is not a pattern: match it literally (-F) and pass it with
-  # -e, so a term that starts with '-' is a search string and not a grep option.
-  # A regex grep also dies on a term like '[' that is not a valid expression,
-  # printing a grep error where a result belongs. The temp name is fixed, so a
-  # term containing '/' cannot steer the path.
+# Match names literally with -F -e: a '-' or '[' term is not a grep option or
+# regex, and the fixed temp path cannot be steered by a '/'.
   tmp="/tmp/.ingot-search.$$"
   dl "$tmp" "$repo_url/iso/copper/pkg/index.json" || return 1
   grep -iF -e "$term" < "$tmp" | sed 's/[{}",:]//g' || true
   rm -f "$tmp"
 }
 
-# Installed manifests record name|version|url|sha256 on their first line, so
-# the recorded version and sha256 come straight out with one sed per field.
+# Manifests record name|version|url|sha256 on line 1; one sed per field.
 mf_ver() { sed -n '1s/^[^|]*|\([^|]*\)|.*$/\1/p' "$1" | head -n1; }
 mf_sha() { sed -n '1s/^[^|]*|[^|]*|[^|]*|\(.*\)$/\1/p' "$1" | head -n1; }
 
@@ -549,10 +426,7 @@ update_one() { # update_one <name> — reinstall if the repo's sha256 changed
     return 0
   fi
   echo "ingot: updating $name"
-  # Install straight over the old tree instead of removing first: cmd_install
-  # fetches and verifies the new payload before it writes anything, so a bad
-  # transfer cannot delete a working install (bug 27). The old version is only
-  # replaced once the new payload is proven and unpacked.
+# Reinstall in place, never remove first: cmd_install verifies before writing.
   cmd_install "$name" force
 }
 
@@ -567,8 +441,7 @@ cmd_update() { # cmd_update [name] — update one installed package, or all
   for mf in "$MAN"/*.installed; do
     [ -e "$mf" ] || continue
     found=1
-    # Keep going after a failure: one package whose page was pulled from the
-    # repo, or one dropped transfer, must not strand every later update.
+# Keep going after a failure: one bad page or transfer must not strand later updates.
     update_one "$(basename "$mf" .installed)" || failed=1
   done
   [ "$found" -eq 1 ] || { echo "ingot: nothing installed"; return 0; }
@@ -579,8 +452,7 @@ cmd_update() { # cmd_update [name] — update one installed package, or all
 cmd_reinstall() { # cmd_reinstall <name> — install again, replacing it in place
   name=$1
   require_root reinstall || return 1
-  # Same safety as update: removing first would leave nothing behind when the
-  # fresh payload cannot be fetched. force installs over the existing tree.
+# Same safety as update: force replaces in place; removing first risks an empty tree.
   cmd_install "$name" force
 }
 
@@ -608,18 +480,10 @@ cmd_list() { # cmd_list — installed packages and their versions
   return 0
 }
 
-# One name or several. `ingot install curl git` is the same as both commands
-# run one after the other, which is what it means to a person typing it: the
-# table in the repo is flat and the index is fetched once per name either way.
-# The loop deliberately does not stop at the first failure -- a typo in the
-# third of five names should still install the other four -- and the exit
-# status is nonzero if any of them failed, so `ingot install a b && ...` still
-# means what it looks like.
-#
-# The variables are prefixed because POSIX sh here has no `local`, and
-# cmd_install is a function that leans on globals (name/url/want/meta) for the
-# package it is installing; a bare `name` in this loop would overwrite the one
-# it is working with.
+# One name or several: `ingot install curl git` is both commands in sequence,
+# with the index fetched per name. The loop does not stop at the first failure
+# (a typo in the third of five still installs the other four) and exits nonzero
+# if any failed. Prefixed vars: cmd_install leans on globals name/url/want/meta.
 bulk() { # bulk <command> <name>...
   bulk_cmd=$1; shift
   bulk_ok=0

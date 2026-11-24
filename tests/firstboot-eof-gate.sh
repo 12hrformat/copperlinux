@@ -1,33 +1,12 @@
 #!/bin/sh
 # Prove the first-boot wizard cannot hot-loop when its stdin runs out.
-#
-# The 2026-10-30 audit found that the EOF guard (stdin_eof) never reached the
-# password prompts or the fancy-mode field editor:
-#
-#   - read_password() loops on a rejected answer, and an empty answer is
-#     always rejected, so a closed stdin printed "Password can't be empty."
-#     / "Those didn't match" at full speed forever
-#   - type_into() returned an empty answer on EOF without recording it, so
-#     collect()'s retry loops (validating fields tight, secret fields every
-#     900ms) re-asked a stdin that would never answer
-#
-# On a real machine that is a wizard spinning at 100% CPU on a boot nobody is
-# watching -- exactly the failure mode the stdin_eof comment at the top of
-# copper-firstboot.c says must never happen.
-#
-# The test compiles the shipped wizard source and runs it with closed stdin
-# AND no controlling terminal (setsid), because getpass() reads /dev/tty and
-# would otherwise block on a real terminal instead of taking the stdin
-# fallback path where the bug lives. It asserts the wizard exits 1 with the
-# "No answers were entered" message instead of running until killed.
-#
-# Safety: the apply path shells out to /bin/busybox (adduser, chpasswd) with
-# absolute paths, which no non-Copper host has, so even a regression that let
-# the wizard past the EOF check cannot change this machine's accounts.
-#
-# Needs a C compiler and setsid; skips cleanly without either, the same
-# contract as xprobe-gate.sh and shell-gate.sh.
-#
+# The EOF guard never reached read_password() or type_into(), so closed stdin
+# printed the reject messages forever and collect()'s retry loops re-asked a
+# stdin that would never answer: 100% CPU on a boot nobody is watching.
+# Compile the shipped source, run with closed stdin and no tty (setsid, since
+# getpass would otherwise block on /dev/tty) and require exit 1 with the right
+# message. /bin/busybox absolute paths keep any regression off this host's
+# accounts; skips cleanly without a compiler or setsid.
 # Run: sh tests/firstboot-eof-gate.sh
 
 set -u
@@ -60,8 +39,7 @@ if ! "$CC" -O2 -o "$TMP/wizard" "$SRC" 2>"$TMP/cc.log"; then
     exit 1
 fi
 
-# Closed stdin, no controlling tty, hard 10s bound. 124 from timeout means it
-# ran until killed: that is the hot loop this gate exists to catch.
+# 124 from timeout means the hot loop is back.
 setsid timeout 10 "$TMP/wizard" </dev/null >"$TMP/out.log" 2>&1
 rc=$?
 
@@ -78,9 +56,7 @@ else
     ok "wizard aborts cleanly on a dead stdin (exit 1, says so, no loop)"
 fi
 
-# The password prompts are the specific loops that were missed: the transcript
-# must show the question was reached (the fallback prints it on stdin) and
-# that the wizard did not print the reject message forever.
+# The transcript must reach the prompt without printing rejects forever.
 n=$(grep -c "Password can't be empty\|Those didn't match" "$TMP/out.log")
 if [ "$n" -gt 2 ]; then
     bad "password prompt stops on EOF" \

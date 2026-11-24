@@ -1,26 +1,7 @@
 #!/bin/sh
 # Prove startniri does the right thing, and fails the right way.
-#
-# niri is a Wayland compositor: there is no second process to hand a display
-# to, so the launcher's whole job is the preparation around the compositor --
-# seed the config, make the runtime directory, start the session bus, notice
-# that the seat is missing, choose a renderer -- and then the exit-code
-# contract when one of those cannot be done or the compositor dies on the way
-# up. Every one of those gets a case here, with the exact exit code asserted:
-# the codes are a contract, and a script branching on them breaks silently
-# when one moves.
-#
-# The compositor is stubbed. The real niri is a glibc binary linked against the
-# PPA's Wayland/DRM stack, which this image is not, so it cannot run here no
-# matter what. What is under test is the launcher: the ordering, the
-# preparation, the codes, and the environment the compositor is handed.
-#
-# The stub answers two ways, because niri itself is both binaries: `--session`
-# is the compositor, and `msg --json version` is the liveness probe that the
-# launcher runs against the instance socket. The socket is a plain file whose
-# name carries the stub's pid and the wayland socket name, which is exactly the
-# name niri uses.
-#
+# The compositor is stubbed: only the launcher, its ordering, environment and
+# exit-code contract are testable here; the exit codes are a contract.
 # Run: sh tests/startniri-gate.sh
 
 set -u
@@ -69,12 +50,8 @@ hasnt() {
 [ -f "$SUT" ] || { echo "  FAIL  $SUT does not exist"; exit 1; }
 
 # --- isolation -------------------------------------------------------------
-#
-# Every case runs through run_sut, which points the launcher at a private home, a
-# private runtime directory, a private skel and a private DRM directory, and sets
-# a dummy DBUS_SESSION_BUS_ADDRESS so it never starts a real bus. Without the
-# private home, the config-seeding step writes into the real $HOME; without the
-# private DRM directory, the renderer choice reads this machine's /dev/dri.
+# Private home/runtime/skel/DRM and a dummy bus keep cases off this host's
+# real $HOME and /dev/dri.
 reset() {
     rm -rf "$TMP"
     mkdir -p "$TMP/home" "$TMP/run" "$TMP/.X11-unix" "$TMP/dri"
@@ -90,21 +67,13 @@ run_sut() {
     SUT_DRM=${SUT_DRM:-$TMP/dri}
     SUT_SEATD=${SUT_SEATD:-$TMP/no-seatd.sock}
     SUT_RUNTIME=${SUT_RUNTIME:-$TMP/run}
-    # Point the input preflight at a tree that does not exist unless a case
-    # builds one: on a Linux host /sys/class/input is real and has devices, and
-    # the preflight would then narrate this machine's own input instead of the
-    # case under test.
+    # Default input tree is absent so the preflight cannot narrate this host.
     SUT_INPUT_SYS=${SUT_INPUT_SYS:-$TMP/no-input}
     SUT_UDEV_DATA=${SUT_UDEV_DATA:-$TMP/no-udevdata}
-    # The renderer choices must not follow this runner's DMI or /dev/dri: by
-    # default VMware detection is off and the software override is auto, so the
-    # cases below say exactly which machine shape they are testing. SUT_HOME can
-    # carry a quote for the KDL-escaping case.
+    # Renderer defaults are fixed here; cases opt into a machine shape.
     SUT_VMWARE=${SUT_VMWARE:-0}
     SUT_HOME=${SUT_HOME:-$TMP/home}
-    # stdin is /dev/null, so the launcher's interactive question is never put
-    # to a terminal here: every case below is deterministic whether or not the
-    # person running the gate has one.
+    # stdin is /dev/null so no case waits on a terminal question.
     HOME="$SUT_HOME" XDG_RUNTIME_DIR="$SUT_RUNTIME" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$TMP/dummy-bus" \
     COPPER_NIRI="$niri" COPPER_NIRI_SKEL="$SKEL" \
@@ -117,9 +86,8 @@ run_sut() {
     WAIT_TRIES="$tries" sh "$SUT" "$@" < /dev/null 2>&1
 }
 
-# A compositor stub that comes up: it records the environment it was handed and
-# leaves the IPC socket the launcher looks for. `msg --json version` answers
-# only when pointed at that socket, which is how the launcher proves liveness.
+# The live stub records its environment and answers the IPC probe only at the
+# socket the launcher expects.
 write_live_stub() {
     cat > "$TMP/niri" <<EOF
 #!/bin/sh
@@ -155,21 +123,15 @@ write_skel() {
     printf '{}\n' > "$TMP/skel/.config/waybar/config.jsonc"
 }
 
-# The input-records cases share one shape: a bare home, a config to seed from, a
-# compositor that comes up, and a fake input tree under $TMP whose records the
-# case decides. The preflight reads /sys/class/input and /run/udev/data for real,
-# which is this host's own input on Linux, so run_sut points it at this tree
-# instead.
+# Shared input setup: the preflight must read the fake tree, not this host's
+# real /sys/class/input and /run/udev/data.
 setup_input_case() {
     reset
     write_skel
     SKEL="$TMP/skel"
     write_live_stub
 
-    # The two devices from the machine this bug was found on: an AT keyboard and
-    # a PS/2 mouse, each with one event node carrying the device number its
-    # record is named after. The mouse's record always names a type, because the
-    # mouse works -- that is what makes the keyboard's silence the bug.
+    # The working mouse has a type record; the keyboard does not.
     mkdir -p "$TMP/input/input0/capabilities" "$TMP/input/input0/event0" \
              "$TMP/input/input1/capabilities" "$TMP/input/input1/event1" \
              "$TMP/udevdata"
@@ -218,8 +180,7 @@ has "  says there is nothing to seed from" "no shipped tree" "$out"
 
 echo
 echo "=== case 4: the shipped tree seeds a bare home, then the session runs ==="
-# The happy path. The stub records the environment it was handed and leaves the
-# IPC socket the launcher's bounded wait probes.
+# The happy path: the stub leaves the IPC socket the bounded wait probes.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -267,8 +228,7 @@ eq "  LIBGL_ALWAYS_SOFTWARE was left unset" "" \
 
 echo
 echo "=== case 7: the compositor dies on the way up ==="
-# With a config in place, so the launch actually reaches the compositor rather
-# than stopping at case 3's early exit.
+# A config is present so the launch reaches the compositor.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -281,8 +241,7 @@ has "  shows the compositor's own log" "cannot open /dev/dri/card0" "$out"
 
 echo
 echo "=== case 8: a missing seat is reported, not fatal ==="
-# No seatd socket: the launcher must say so and still start the compositor,
-# because a machine with a working logind would not need seatd at all.
+# No seatd socket must be reported but not fatal (logind can suffice).
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -317,9 +276,7 @@ hasnt "  --help no longer lists a retired exit 25" "25 no way to ask" "$out"
 
 echo
 echo "=== case 11: a component is missing with no terminal, so it installs ==="
-# This used to be the "nothing to ask on" case, and the answer used to be exit
-# 25. The install is the default now: a first boot with no tty must not stop on
-# a question nobody can see, so it installs and starts.
+# No tty means install by default: a question nobody can see must not block.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -397,9 +354,7 @@ hasnt "  never asked about components" "do you want to install" "$out"
 
 echo
 echo "=== case 15: a seatd socket is reported when one is listening ==="
-# A real launch, not --check: the seat line is printed on the way to the
-# compositor. The socket is a real unix socket, bound by python, because -S is
-# what the launcher tests for.
+# A real launch: -S needs a listening unix socket, so python binds one.
 if ! command -v python3 >/dev/null 2>&1; then
     echo "  skip  no python3 on this host (CI has one)"
 else
@@ -423,9 +378,7 @@ fi
 
 echo
 echo "=== case 16: an unattended first start seeds the config without asking ==="
-# There is no config-question prompt in this launcher: the tree is pinned in the
-# repo, so the shipped copy is simply seeded. The case is still worth asserting:
-# a first boot is often not a terminal, and it must not block or reach for ingot.
+# No config prompt exists; a first boot must seed silently without ingot.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -446,11 +399,7 @@ hasnt "  never puts a config question to a terminal" "config files?" "$out"
 
 echo
 echo "=== case 17: a record with no type is named, per device ==="
-# The shape this was written for: the mouse's record names a type (the pointer
-# works), the keyboard's names only ID_INPUT, so libinput drops it and the
-# session comes up with a pointer that moves and a keyboard that types nowhere.
-# The old preflight asked "does any record carry a type" and went quiet here;
-# it has to name the device instead.
+# A missing type on one device must be named, not hidden by an any-record check.
 setup_input_case
 printf 'I:1\nE:ID_INPUT=1\n' > "$TMP/udevdata/c13:3"
 out=$(run_sut "$TMP/niri" 80); rc=$?
@@ -478,8 +427,7 @@ hasnt "  says nothing about dropping devices" \
 
 echo
 echo "=== case 19: a device with no record at all is named too ==="
-# No event node has a record: the first branch fires, and it must not claim to
-# list devices when it cannot, but it must say what is missing.
+# With no records, report what is missing rather than claiming a device list.
 setup_input_case
 rm -f "$TMP/udevdata"/c*
 out=$(run_sut "$TMP/niri" 80); rc=$?
@@ -489,13 +437,7 @@ has "  says there are no records" "no libudev records under" "$out"
 
 echo
 echo "=== case 20: a partial home is repaired, and the user's files are kept ==="
-# The home a bug-26-era image left behind: config.kdl is there, so the seeding
-# branch never runs again, but the zero-byte include the old config required was
-# dropped by that build's empty-file gate. The old seeding could not have fixed
-# it even if it had run -- busybox's `cp -a -n` skips an existing directory
-# outright -- so this is the shape the repair pass exists for. Two things have
-# to be true at once: the missing file appears, and the file that was already
-# there is not rewritten.
+# A partial home needs repair: missing files appear, existing user files stay.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -537,9 +479,7 @@ eq "  the config is byte-for-byte what it was" "// cfg" \
 
 echo
 echo "=== case 22: a fresh seed carries the exec bits ==="
-# The bar runs its helper scripts by path, and git does not carry the exec bit
-# across platforms; the build restores it, and the seed must preserve it. A seed
-# that drops it gives a session with no workspace chips.
+# Exec bits must survive seeding or the bar's helper scripts never run.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -560,10 +500,7 @@ fi
 
 echo
 echo "=== case 23: a socket that appears but does not answer is not declared up ==="
-# The launcher's liveness test is `niri msg --json version` against the instance
-# socket, not the socket file alone: a stale file from an earlier instance would
-# otherwise read as a live compositor. This stub creates the socket and refuses
-# the probe; the launcher has to say it did not answer and keep waiting.
+# A stale socket file is not liveness: the IPC probe must answer first.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -595,9 +532,7 @@ eq "  exit code is 0" 0 "$rc"
 eq "  session type/desktop reach the compositor" \
    "wayland|niri|niri|niri" "$(sed -n 's/^IDENTITY=//p' "$TMP/niri.env" 2>/dev/null)"
 
-# The bus is where D-Bus-activated services get their environment, and the
-# portal frontend is one. The identity therefore has to be set before dbus
-# starts, and pushed into an inherited bus's activation environment too.
+# Session identity must precede dbus-launch so activated services inherit it.
 ident_line=$(grep -n '^XDG_SESSION_TYPE=wayland' "$SUT" | head -n1 | cut -d: -f1)
 bus_line=$(grep -n 'dbus-launch --sh-syntax' "$SUT" | head -n1 | cut -d: -f1)
 if [ -n "$ident_line" ] && [ -n "$bus_line" ] && [ "$ident_line" -lt "$bus_line" ]; then
@@ -612,10 +547,7 @@ else
     bad "  pushes the identity into the bus activation environment" "no call found"
 fi
 
-# Copper layers its own tweaks over the pinned configuration tree through
-# niri's positional `include`. This checks both halves of that wiring still
-# exist, because either one disappearing leaves the session on upstream defaults
-# with nothing to show why.
+# Both halves of the overlay include must exist or tweaks silently vanish.
 echo
 echo "=== case 25: the copper tweaks overlay is present and wired ==="
 TWEAKS="$REPO/iso/rootfs-overlay/usr/share/copper/niri-overlay/.config/niri/copper-tweaks.kdl"
@@ -648,12 +580,9 @@ else
 fi
 
 echo
-echo "=== case 26: VMware forces software GBM even with a render node ==="
-# VMware with 3D enabled still advertises /dev/dri/renderD128, so the
-# "no render node" heuristic in case 5 never saw it: niri wedged in renderer
-# init right after its EGL warning, before the Wayland socket existed.
-# SUT_VMWARE=1 stands in for the DMI match; the render node is present on
-# purpose, to prove the heuristic alone is not enough.
+echo "=== case 26: VMware with a render node keeps hardware rendering ==="
+# VMware with a render node must keep it: forcing llvmpipe left a live socket
+# with nothing drawn. SUT_VMWARE=1 stands in for the DMI match.
 reset
 write_skel
 SKEL="$TMP/skel"
@@ -664,13 +593,14 @@ write_live_stub
 out=$(run_sut "$TMP/niri" 80); rc=$?
 SKEL=; SUT_DRM=; SUT_VMWARE=
 eq "  exit code is 0" 0 "$rc"
-has "  says it forced the VMware software path" \
-    "VMware virtual GPU: forcing software GBM" "$out"
-eq "  LIBGL_ALWAYS_SOFTWARE reached the compositor" 1 \
+has "  says it kept the 3D render node" \
+    "keeping the 3D render node" "$out"
+hasnt "  does not force software rendering" "forcing software rendering" "$out"
+eq "  LIBGL_ALWAYS_SOFTWARE was left unset" "" \
     "$(sed -n 's/^LIBGL_ALWAYS_SOFTWARE=//p' "$TMP/niri.env" 2>/dev/null)"
-eq "  GBM_ALWAYS_SOFTWARE (Mesa's GBM switch) reached the compositor" 1 \
+eq "  GBM_ALWAYS_SOFTWARE was left unset" "" \
     "$(sed -n 's/^GBM_ALWAYS_SOFTWARE=//p' "$TMP/niri.env" 2>/dev/null)"
-eq "  the Gallium driver is llvmpipe" llvmpipe \
+eq "  GALLIUM_DRIVER was left unset" "" \
     "$(sed -n 's/^GALLIUM_DRIVER=//p' "$TMP/niri.env" 2>/dev/null)"
 vmconfig=$(sed -n 's/^NIRI_CONFIG=//p' "$TMP/niri.env" 2>/dev/null)
 eq "  the wrapper lives in the runtime dir" \
@@ -695,8 +625,7 @@ eq "  the user's config.kdl was not rewritten" "// cfg" \
 
 echo
 echo "=== case 27: a quote in the home path is escaped in the KDL include ==="
-# KDL strings need \" for a literal quote. Without it the generated wrapper is
-# a config error, which would leave a VMware session with no compositor at all.
+# KDL needs an escaped quote or the VMware wrapper is a config error.
 reset
 mkdir -p "$TMP/home\"q"
 write_skel
@@ -711,6 +640,21 @@ vmconfig=$(sed -n 's/^NIRI_CONFIG=//p' "$TMP/niri.env" 2>/dev/null)
 eq "  the include escapes the quote" \
     "include \"$TMP/home\\\"q/.config/niri/config.kdl\"" \
     "$(sed -n '1p' "$vmconfig" 2>/dev/null)"
+
+echo
+echo "=== case 28: VMware with no render node still forces software rendering ==="
+# No render node still forces software rendering, VMware or not.
+reset
+write_skel
+SKEL="$TMP/skel"
+SUT_VMWARE=1
+write_live_stub
+out=$(run_sut "$TMP/niri" 80); rc=$?
+SKEL=; SUT_VMWARE=
+eq "  exit code is 0" 0 "$rc"
+has "  says it forced software rendering" "forcing software rendering" "$out"
+eq "  GBM_ALWAYS_SOFTWARE reached the compositor" 1 \
+    "$(sed -n 's/^GBM_ALWAYS_SOFTWARE=//p' "$TMP/niri.env" 2>/dev/null)"
 
 pkill -f "$TMP" 2>/dev/null
 rm -rf "$TMP"

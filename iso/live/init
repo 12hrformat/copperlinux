@@ -1,20 +1,13 @@
 #!/bin/busybox sh
-# copper live initramfs — find the Copper medium, build a writable overlay
+# copper live initramfs -- find the Copper medium, build a writable overlay
 # on top of the read-only ISO, then hand over to copper-init (our PID 1).
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# /dev/console is whichever console= was last on the kernel command line, and
-# it is the only place userspace output goes. On a box with no serial port that
-# is the screen, which is right; on a VM whose serial port is pointed at a file
-# it means the file gets the kernel's opinion of the boot and none of ours,
-# which is the half nobody wants. So say it in both places. The screen stays
-# authoritative and the log becomes worth having.
-#
-# Whether the screen sees it is decided by the kernel command line: the default
-# splash entry passes "quiet" and the verbose/debug entries do not, so a normal
-# boot keeps the screen for Plymouth and systemd's [ OK ] lines while a
-# debugging boot still gets every line.
+# /dev/console is whichever console= was last, and the only place userspace output
+# goes. On a VM with a file-backed serial port the screen gets none of ours, so
+# say it in both places. "quiet" keeps the screen for Plymouth and [ OK ] lines;
+# verbose/debug entries still print everything.
 QUIET=0
 
 say() {
@@ -24,8 +17,7 @@ say() {
     fi
 }
 
-# Failures are not chatter. They go to the screen even in quiet mode: a machine
-# that will not boot and will not say why is worse than a noisy one.
+# Failures always reach the screen, even in quiet mode: a silent boot is worse.
 notice() {
     echo "copper: $*"
     if [ -c /dev/ttyS0 ]; then
@@ -34,16 +26,12 @@ notice() {
 }
 
 /bin/busybox mount -t proc proc /proc 2>/dev/null
-# The kernel command line, read ONCE, here.
-#
-# Read it with the `read` builtin and keep it in $cmdline: this initramfs has
-# no applets. build_initramfs packs /bin/busybox and this script and nothing
-# else -- no /bin/cat, /bin/grep, /bin/sed symlinks -- so a `$(cat
-# /proc/cmdline)` later in the file finds no `cat` at all, and with its stderr
-# thrown away it just looks like an empty command line. That is exactly how
-# `copper.init=systemd` came to be ignored: /init parsed the args a second
-# time with `cat`, got nothing, and handed over to copper-init on the systemd
-# entry. Anything outside the shell must be spelled /bin/busybox <applet>.
+# The kernel command line is read ONCE here, with the `read` builtin into $cmdline.
+# There are no applets in this initramfs -- only /bin/busybox and this script --
+# so re-reading the command line through an external cat later finds no binary,
+# fails silently and looks like "no arguments"; that is how copper.init=systemd
+# came to be ignored. Anything
+# outside the shell must be spelled /bin/busybox <applet>.
 cmdline=
 read -r cmdline < /proc/cmdline 2>/dev/null || :
 case " $cmdline " in
@@ -51,18 +39,15 @@ case " $cmdline " in
 esac
 /bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
-# AppImages mount through FUSE. FUSE_FS is built into this kernel, so devtmpfs
-# normally publishes /dev/fuse on its own; make the node explicitly if it did
-# not, so a live image can still run an AppImage even on a kernel that exposed
-# the device late. Major 10, minor 229 is the fixed FUSE device number.
+# FUSE is built in, so devtmpfs normally publishes /dev/fuse; make the node
+# explicitly for kernels that expose it late (major 10, minor 229).
 if [ ! -c /dev/fuse ]; then
     /bin/busybox mknod /dev/fuse c 10 229 2>/dev/null || :
 fi
 /bin/busybox mkdir -p /mnt/root /mnt/upper /mnt/merged /run
 
-# Once we're in a shell there's no display, no ssh and no working command line
-# to come back to, so "it didn't boot" is all the report anyone gets. Say
-# which step broke instead.
+# Once in a shell there is no display and no ssh, so name the step that broke
+# instead of leaving "it didn't boot" as the only report.
 rescue() {
     notice ""
     notice "$1"
@@ -77,9 +62,8 @@ find_media() {
                /dev/nvme0n1p[0-9]*; do
         [ -b "$dev" ] || continue
         /bin/busybox mount -t iso9660 -o ro "$dev" /mnt/root 2>/dev/null || continue
-        # The marker is written by build_iso whatever bootloader packaged the
-        # disc. grub.cfg is the fallback for media built before the marker
-        # existed; a systemd-boot or other provider need not carry GRUB at all.
+# The marker is written by build_iso for every bootloader; grub.cfg is a
+# fallback for older media, since a systemd-boot provider need not ship GRUB.
         if [ -f /mnt/root/boot/copper-media ]; then
             MEDIA="$dev"
             return 0
@@ -96,24 +80,13 @@ find_media() {
 find_media || rescue "no Copper medium: looked for an iso9660 filesystem with /boot/copper-media on it"
 say "initramfs up, medium is $MEDIA"
 
-# Writable top layer over the read-only ISO root.
+# Writable top layer over the read-only ISO: RAM, or a disk the user handed over.
+# A disk qualifies only by the COPPER label the wizard writes; no guess touches a
+# disk, and a broken labeled disk falls back to RAM rather than costing a boot.
 #
-# Everything the session does -- a shell, ingot packages, a home directory --
-# lands in an overlay upper on top of the read-only ISO. Where that upper lives
-# is the only question: RAM, or a disk the user handed over on first boot.
-#
-# A disk qualifies by carrying the filesystem label COPPER. The first-boot
-# wizard writes that label when someone picks a spare disk, and nothing here
-# touches a disk on the strength of a guess. No labeled disk, or one that will
-# not mount, and this falls back to RAM exactly as it always did -- a broken
-# persistent disk must never cost anyone a boot.
-#
-# upper/ and work/ are made INSIDE whatever gets mounted. That order is the
-# whole trick: a directory created before something is mounted on top of it is
-# covered by that mount and stops existing, so the overlay then fails with
-# ENOENT on upperdir while the mount underneath looks perfectly healthy.
-# build.sh pre-creates these same two directories in the cpio, and any mount
-# hides those just as thoroughly.
+# upper/ and work/ are made INSIDE whatever gets mounted: a directory created
+# before a mount is covered by it, so the overlay would fail with ENOENT on
+# upperdir even though the mount below looks healthy (build.sh pre-creates them too).
 
 # The device the upper actually landed on. Empty means RAM.
 UPPER_DEV=""
@@ -148,12 +121,9 @@ if find_upper; then
 fi
 
 if [ -z "$UPPER_DEV" ]; then
-    # Size: this layer must hold every ingot install a session can ask for, and
-    # packages are big -- firefox's 120M payload plus its ~450M unpacked tree
-    # coexist in here (the payload is removed only after unpacking), which is
-    # already 570M. A 25% cap is 512M on a 2G VM and dies mid-unpack. 50% is the
-    # live-session balance: enough headroom for firefox-class installs while
-    # leaving the other half of RAM to the running system.
+# Size the tmpfs at 50%: firefox's 120M payload and its ~450M unpacked tree coexist
+# before the payload is removed, so a 25% cap (512M on a 2G VM) dies mid-unpack.
+# The other half stays for the running system.
     if ! /bin/busybox mount -t tmpfs -o size=50% tmpfs /mnt/upper; then
         rescue "cannot mount tmpfs on /mnt/upper (no writable layer for the session)"
     fi
@@ -166,10 +136,8 @@ if ! /bin/busybox mkdir -p /mnt/upper/upper /mnt/upper/work; then
     rescue "cannot create /mnt/upper/upper and /mnt/upper/work in the writable layer"
 fi
 
-# A session that ended without a clean unmount (power cut, reset button) can
-# leave the overlay's workdir dirty, and the overlay then refuses to mount on
-# top of it. work/ is scratch that overlay rebuilds, so clear it; upper/ holds
-# the user's files and is never touched.
+# A power cut leaves overlay work/ dirty and the mount refuses it; work/ is
+# scratch that overlay rebuilds, upper/ holds user files and is never touched.
 if [ -n "$UPPER_DEV" ]; then
     /bin/busybox rm -rf /mnt/upper/work 2>/dev/null
     /bin/busybox mkdir -p /mnt/upper/work
@@ -182,11 +150,9 @@ fi
 /bin/busybox mount -t proc proc /mnt/merged/proc 2>/dev/null
 /bin/busybox mount -t sysfs sysfs /mnt/merged/sys 2>/dev/null
 /bin/busybox mount -t devtmpfs devtmpfs /mnt/merged/dev 2>/dev/null
-# devtmpfs gives device nodes, not a pty pool. Without devpts there is no
-# /dev/pts and nothing that allocates a real pty works: sudo dies with
-# "unable to allocate pty" and every terminal emulator (vte, script, ssh)
-# fails to open one. Mount it on the merged root's /dev, and point /dev/ptmx
-# at the pty pool in case devtmpfs has not created the legacy node.
+# devtmpfs gives device nodes, not ptys: without devpts, sudo dies with "unable to
+# allocate pty" and every terminal emulator fails. Mount it on the merged root's
+# /dev and link /dev/ptmx to pts/ptmx in case the legacy node is missing.
 /bin/busybox mkdir -p /mnt/merged/dev/pts 2>/dev/null
 /bin/busybox mount -t devpts devpts /mnt/merged/dev/pts 2>/dev/null || \
     notice "devpts failed to mount: sudo and terminals will not work"
@@ -194,12 +160,9 @@ fi
 /bin/busybox mkdir -p /mnt/merged/run
 /bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null
 
-# Tell the first-boot wizard what this boot looks like. It runs once, from the
-# merged root, and needs two facts it cannot work out for itself: which disc
-# this machine booted from (so it never offers to wipe the medium it is running
-# from) and where the writable layer ended up. The file goes on the overlay,
-# not in /run, because copper-init mounts a fresh tmpfs over /run a moment
-# later and would bury anything left there.
+# Tell the wizard which disc we booted from and where the writable layer landed.
+# The file goes on the overlay, not /run, because copper-init mounts a fresh
+# tmpfs over /run a moment later and would bury it.
 /bin/busybox mkdir -p /mnt/merged/var/lib/copper
 {
     echo "media=$MEDIA"
@@ -208,17 +171,12 @@ fi
 
 # Which init runs as PID 1.
 
-# The kernel command line wins: the GRUB menu's "systemd init" entry passes
-# copper.init=systemd, and the default entry says nothing. With no word on the
-# command line, /etc/copper-init is the machine's saved answer -- the wizard
-# writes it, and the copy that persistence carried across is readable here
-# because the overlay is already mounted. An image without systemd (the plain
-# busybox build) simply falls back to copper-init and says so.
-#
-# $cmdline is the string read at the top of this file. Do NOT re-read
-# /proc/cmdline with `cat` here: there is no cat in the initramfs (see above),
-# and its failure is silent, which makes it look exactly like "no arguments".
-# Unquoted on purpose: the loop wants word splitting.
+# The kernel command line wins (the systemd entry passes copper.init=systemd);
+# with no word, /etc/copper-init is the wizard's saved answer, carried across by
+# the overlay. An image without systemd falls back to copper-init.
+# $cmdline was read at the top -- do NOT re-read /proc/cmdline with cat: there is
+# no cat here and its silent failure looks exactly like "no arguments". Unquoted
+# on purpose: the loop wants word splitting.
 init_choice=
 for arg in $cmdline; do
     case "$arg" in
@@ -235,14 +193,9 @@ if [ -z "$init_choice" ]; then
     fi
 fi
 
-# switch_root on a root with no init gives one bare "not found" and nothing
-# to go on, so name the file that isn't there.
-# Test the binary, not /sbin/init. That path is a symlink to the absolute
-# /usr/bin/copper-init, and until switch_root does its chroot an absolute
-# symlink resolves against the initramfs root, where there is no /usr/bin at
-# all — so testing the link reports "missing" on an ISO that is perfectly
-# fine. The first version of this check did exactly that and turned a
-# bootable image into a rescue shell.
+# Name the missing file: switch_root on a root with no init gives one bare
+# "not found". Test the binary, not /sbin/init: its absolute symlink resolves
+# against the initramfs root before chroot, where /usr/bin does not exist.
 [ -x /mnt/merged/usr/bin/copper-init ] \
     || rescue "no copper-init in the merged root (it did not get built into the ISO)"
 

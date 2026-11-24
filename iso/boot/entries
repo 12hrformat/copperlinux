@@ -1,25 +1,17 @@
 # Copper Linux boot entries.
+# One list of kernel command lines; each bootloader provider renders its own menu
+# (GRUB's lives in iso/bootloaders/grub/). Nothing in build.sh names an entry.
+# Format, one entry per non-comment line: id|menu title|kernel command line.
 #
-# This is the single list of kernel command lines. A bootloader provider reads
-# it and renders whatever its own menu syntax is; GRUB's provider lives in
-# iso/bootloaders/grub/. Nothing in build.sh names a menu entry any more.
-#
-# Format, one entry per non-comment line:
-#   id|menu title|kernel command line
-#
-# The console order matters more than it looks. The kernel registers every
-# console= it is given, so printk goes to all of them, but /dev/console -- what
-# init and everything after it write to -- is the LAST one listed. ttyS0 last
-# once sent our own messages to a serial port a VM without one does not have,
-# and the screen sat on "Booting up kernel" looking like a hang. tty0 is last.
+# /dev/console follows the LAST console=: ttyS0 last once sent our messages to a
+# serial port a VM lacks and the screen looked hung. tty0 stays last.
 #
 # Flags on the default entry:
-#   splash / plymouth.*  the Copper boot animation; nosplash turns it off
-#   quiet loglevel=3     the screen belongs to the animation, then to systemd
+#   splash / plymouth.*  the Copper animation; nosplash turns it off
+#   quiet loglevel=3     the screen belongs to the animation, then systemd
 #   systemd.show_status=1  without it the splash suppresses the [ OK ] lines
-# The systemd entry adds copper.init=systemd so /init execs systemd instead of
-# the busybox init. No switch on the default entry means /etc/copper-init (the
-# wizard's saved answer) decides.
+# The systemd entry adds copper.init=systemd; no switch on default leaves the
+# wizard's saved /etc/copper-init to decide.
 default|Copper Linux|splash plymouth.ignore-udev plymouth.ignore-serial-consoles quiet loglevel=3 systemd.show_status=1 console=ttyS0,115200 console=tty0
 systemd|Copper Linux (systemd init)|splash plymouth.ignore-udev plymouth.ignore-serial-consoles quiet loglevel=3 systemd.show_status=1 copper.init=systemd console=ttyS0,115200 console=tty0
 verbose|Copper Linux (verbose)|console=ttyS0,115200 console=tty0 panic=10

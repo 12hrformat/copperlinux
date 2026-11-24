@@ -1,26 +1,10 @@
 #!/bin/sh
 # Prove the real xprobe binary makes the liveness decision startxfce relies on,
-# against a synthetic X server that speaks just enough of the wire protocol.
-#
-# xprobe is a static C binary; the image builds it in iso/build.sh with musl-gcc
-# and stages it as /usr/bin/xprobe. This test compiles THE SOURCE with whatever
-# C compiler the host has and drives the resulting binary through every socket
-# state, asserting the exit-code contract described in iso/x11/probe/xprobe.c:
-#
-#   0  live       the display answered the handshake and the geometry query
-#   1  not live   no socket, or the connection was refused
-#   2  usage      the probe was called wrongly
-#   3  unknown    something was reached but would not answer (timeout etc.)
-#
-# The synthetic server is plain python3 with no third-party modules. "reply"
-# completes a real ConnectionSetup + GetGeometry round trip; "mute" accepts the
-# connection and then says nothing -- the exact state that used to hang xprobe
-# forever, because its reads had no timeout at all.
-#
-# Needs: a C compiler (gcc, cc, clang or musl-gcc) and python3. Without a
-# compiler this test SKIPS and says so; it does not fail -- the Windows box
-# this tree is maintained on has no gcc, and the CI image and build VM do.
-#
+# against a synthetic X server speaking just enough of the wire protocol.
+# The test compiles the shipped source and asserts the 0/1/2/3 exit-code
+# contract: live, not live, usage, unknown. The "mute" server accepts but never
+# answers -- the state that used to hang xprobe forever.
+# Needs a C compiler and python3; without a compiler it SKIPS, like shell-gate.
 # Run: sh tests/xprobe-gate.sh
 
 set -u
@@ -226,8 +210,7 @@ rm -f "$SOCK/X0"
 
 echo
 echo "=== case G: iso/build.sh stages the binary built from this source ==="
-# No toolchain needed: this is a static check that the build integration exists,
-# so the fix cannot silently ship as "source changed but the ISO never got it".
+# Static check: the built binary must actually be staged into the ISO.
 if grep -q -- '-o "$TGT/usr/bin/xprobe"' "$BUILD"; then
     ok "  the build compiles it to \$TGT/usr/bin/xprobe"
 else

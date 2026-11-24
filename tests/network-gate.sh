@@ -1,17 +1,10 @@
 #!/bin/sh
 # Prove the DHCP lease script always leaves the box with a working resolver.
-#
-# This exists because a real ISO shipped a lease script that wrote
-# /etc/resolv.conf only when the lease carried a search domain. A normal
-# lease has no domain, so the file stayed as the shipped fallback --
-# 1.1.1.1 and 9.9.9.9 -- and on a network that blocks public DNS every
-# lookup died as "bad address", which is what took `ingot install` down.
-#
-# The script hardcodes /etc/resolv.conf, so the test copies it and rewrites
-# that one line into a scratch directory. `ip` is a stub that records its
-# arguments, which is also how the netmask-to-prefix arithmetic is checked
-# without touching the host's interfaces.
-#
+# A shipped lease script only wrote /etc/resolv.conf when a search domain was
+# present; a normal lease left only public DNS, and a network blocking it made
+# every lookup "bad address" and broke `ingot install`.
+# Copy the script with its resolver path redirected and stub ip(8) to see what
+# it asks for without touching the host's interfaces.
 # Run: sh tests/network-gate.sh
 
 set -u
@@ -33,10 +26,8 @@ mkdir -p "$TMP/bin"
 IPLOG="$TMP/ip.log"
 : > "$IPLOG"
 
-# Stand-in for ip(8): the test cares what the script asked for, not whether
-# this host can configure an interface. `route del` has to fail, or the
-# script's "while ip route del default" loop never ends -- real ip(8) exits
-# non-zero once there is no default route left to delete.
+# `route del` must fail so "while ip route del default" terminates; real ip(8)
+# exits non-zero once no default route is left.
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$IPLOG"
@@ -78,11 +69,8 @@ else
     bad "the public fallbacks are kept alongside it" \
         "$(cat "$TMP/resolv.conf" 2>/dev/null | tr '\n' ' ')"
 fi
-# And in that order: resolv.conf order IS query order, because the resolver
-# library asks the first name and waits out its timeout before trying the
-# next. Public-first made a network that blocks or throttles 1.1.1.1 pay
-# that penalty on every single lookup -- which is what "the network is slow"
-# looks like from a browser or a package fetch.
+# resolv.conf order is query order: a public-first list pays a timeout on every
+# lookup when 1.1.1.1 is blocked or throttled.
 dhcp_at=$(grep -n '^nameserver 10.0.2.3$' "$TMP/resolv.conf" 2>/dev/null | head -n1 | cut -d: -f1)
 pub_at=$(grep -n '^nameserver 1.1.1.1$' "$TMP/resolv.conf" 2>/dev/null | head -n1 | cut -d: -f1)
 if [ -n "$dhcp_at" ] && [ -n "$pub_at" ] && [ "$dhcp_at" -lt "$pub_at" ]; then

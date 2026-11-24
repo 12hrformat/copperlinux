@@ -1,52 +1,26 @@
 # Copper Linux — the console: the wizard's shell, on tty1.
+# copper-init as a service instead of PID 1: the smallest honest migration step.
+# --console keeps the hard, already-right parts: account drop (the shell runs as
+# the wizard's user, or Firefox refuses to start), controlling tty (so /dev/tty
+# works), and the respawn loop (logout returns the same shell/session).
+# Everything a real PID 1 does -- mounts, power, hostname, DHCP, seatd, udev
+# seeding, reaping -- moves to systemd and the units here (see console_main()).
 #
-# This is copper-init running as a service instead of as PID 1, and it is the
-# deliberate centre of phase 1. The migration document's smallest honest step
-# is not "delete the init": it is "stop the init being PID 1". copper-init
-# --console keeps the three things that are genuinely hard and already right
-# here --
-#
-#   - the account drop: the shell runs as the wizard's user, not root, or
-#     Firefox refuses to start in the session it opens;
-#   - the controlling terminal: the shell gets a session and tty1 as its
-#     controlling tty, so /dev/tty works for everything it starts;
-#   - the respawn loop: logging out and back in gives the same shell, and a
-#     session that dies does not take the machine with it.
-#
-# -- and leaves everything a real PID 1 does (mounts, power signals, hostname,
-# DHCP, seatd, the udev seeder, reaping) to systemd and the units in this
-# directory. Read console_main() in iso/src-init/copper-init.c for the exact
-# split.
-#
-# Type=simple and Restart=always: the loop inside --console respawns the
-# SHELL, and systemd respawns --console itself if the process ever exits.
-# That is two layers of the same idea, and they are not redundant: the inner
-# loop keeps the same process (and the same session) across a logout, the
-# outer restart is what happens if the process is what died.
-#
+# Type=simple, Restart=always: the inner loop respawns the SHELL; systemd respawns
+# --console itself only if the process died. Two layers, not redundant.
 [Unit]
 Description=Copper console (login shell on tty1)
-# The wizard has to have finished before there is anything to log in AS, and
-# the seat has to exist before the user can start niri -- but that is
-# ORDERING, and ordering is what After= is for. It is deliberately Wants=, not
-# Requires=, for both: a failed wizard (a disk that could not be formatted, a
-# seatd that would not start) must not take the console with it. On a machine
-# where this unit is the only way in, `Requires=` turns any one of those
-# failures into a black tty with no login and no diagnosis -- the exact
-# "unbootable, not degraded" outcome SYSTEMD-MIGRATION.md warns about.
+# Wants=, not Requires=, for firstboot and seatd: After= does ordering, and a
+# failed wizard or seatd must not take the only way in -- Requires= turns either
+# into a black tty with no login or diagnosis (SYSTEMD-MIGRATION.md).
 Wants=copper-firstboot.service
 After=copper-firstboot.service copper-seatd.service copper-network.service
-# systemd ships getty@tty1.service as the tty1 owner by default. Two things
-# writing the same tty is the two-shells bug in unit form, so this unit claims
-# the console and getty is not wanted from here.
+# Conflicts with getty@tty1: two writers on one tty is the two-shells bug in unit form.
 Conflicts=getty@tty1.service
 Before=getty.target
-# A console that cannot start is a machine with no way in, so the restart
-# burst limit is switched off here, in [Unit] where systemd 255 reads it.
-# (It moved from [Service] to [Unit] in systemd 230; the 255 in the image
-# takes it here only, and a misplaced key is silently ignored -- which for
-# this key means the unit fails after five fast restarts and the tty goes
-# dark.)
+# Switch off the restart burst limit here, in [Unit] where systemd 255 reads it
+# (it moved from [Service] in systemd 230). Misplaced, it is silently ignored and
+# the tty goes dark after five fast restarts.
 StartLimitIntervalSec=0
 
 [Service]
@@ -61,20 +35,11 @@ TTYVHangup=no
 # Do not thrash, but always come back.
 Restart=always
 RestartSec=1s
-# Bound the stop, hard. The desktop lives in this unit's cgroup: the shell is
-# the main process, and niri, kitty and everything they started are its
-# children. The default KillMode=control-group sends SIGTERM to all of them
-# and then waits the FULL default TimeoutStopSec -- 90 s -- for the cgroup to
-# empty, so one compositor or terminal that ignores SIGTERM held the reboot
-# for a minute and a half.
-#
-# KillMode=mixed signals only the main process, then SIGKILLs whatever is
-# left after five seconds. copper-init --console has no SIGTERM handler (its
-# power-signal handlers belong to the PID-1 half; see main() in
-# src-init/copper-init.c), so it exits at once, and a live session has
-# nothing to flush that a graceful compositor shutdown would preserve.
-# SendSIGKILL=yes is the default; it is spelled out so a future global
-# SendSIGKILL=no cannot quietly turn the bound into a wait.
+# Bound the stop hard: the desktop lives in this cgroup, and the default
+# KillMode=control-group SIGTERMs everyone then waits the full 90 s TimeoutStopSec.
+# KillMode=mixed signals only the main process, then SIGKILLs the rest after 5 s.
+# --console has no SIGTERM handler (power handlers belong to PID 1), so it exits
+# at once. SendSIGKILL=yes is spelled out so a global "no" cannot turn bound to wait.
 KillMode=mixed
 SendSIGKILL=yes
 TimeoutStopSec=5s

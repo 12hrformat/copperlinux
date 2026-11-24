@@ -1,54 +1,28 @@
 # Copper Linux — the boot splash, owned by the service manager now.
-#
-# The splash used to be started from PID 1 (copper-init's splash_start) and
-# quit from the same process right before handing the console over. After the
-# systemd swap the half of that code that answered "something else is PID 1"
-# ran only for the console/wizard half -- which is exactly the half that quits
-# the splash -- and the start had no owner left at all. The machine booted to
-# plain text: the splash never drew, and nobody was ever asked to start it.
-#
-# This unit is that owner. It is wanted by sysinit.target rather than by the
-# session target, so it is up before the first status line of any kind, instead
-# of arriving half a boot late.
-#
-# Type=forking: plymouthd daemonises itself and writes the pid file the console
-# half later waits on, so the start job settles once the daemon is up. The
-# pid file lives under /run/plymouth, which RuntimeDirectory= creates -- the
-# console half only ever sees that directory through a running daemon.
-#
-# ExecStartPost is a helper, not `plymouth --show-splash` directly: it stamps
-# /run/plymouth/started with the monotonic clock in the same breath as it asks
-# for the first frame. copper-plymouth-quit then waits out the animation the
-# theme declares, so the splash is not cut off mid-flight (see that unit).
-#
-# The switches are Copper's, not the package's defaults: grub.cfg asks for
-# "splash", plymouth.ignore-udev keeps the daemon off a device enumeration this
-# image never runs, plymouth.ignore-serial-consoles keeps it from reading the
-# serial console as the display, and copper-init used to pass both itself. The
-# unit passes them too, so the splash does not depend on a command line a user
-# happens to have left behind.
-#
-# DefaultDependencies=no keeps it out of the automatic dependency edges the same
-# way copper-tty-clear.service keeps itself out of, see that unit for the
-# reasoning.
+# Started from PID 1 (splash_start) and quit before console handover; after the
+# systemd swap only the console half kept the "something else is PID 1" branch,
+# so nothing started the splash and the machine booted to plain text.
+# This unit is that owner, wanted by sysinit.target so it is up before the first
+# status line. Type=forking: plymouthd daemonises and writes the pid file the
+# console half waits on; /run/plymouth is RuntimeDirectory=.
+# ExecStartPost stamps /run/plymouth/started with the monotonic clock as it asks
+# for the first frame; copper-plymouth-quit waits out the theme's frame count.
+# Switches are Copper's, not the package's: grub.cfg asks for "splash", ignore-udev
+# skips enumeration this image never runs, ignore-serial-consoles keeps the serial
+# port out of the display, and copper-init used to pass both itself.
+# DefaultDependencies=no keeps it out of automatic edges, like copper-tty-clear.
 [Unit]
 Description=Copper Linux boot splash
 DefaultDependencies=no
-# The splash is opt-in, as the grub entry describes: without the kernel's
-# "splash" token (the verbose and debug entries) this unit is skipped, not
-# failed, and copper-plymouth-quit finds no daemon to quit. That keeps the
-# debugging entries as plain text instead of covering them with animation.
+# Opt-in: without the kernel's "splash" token (verbose/debug) this unit is skipped,
+# not failed, so those entries stay plain text.
 ConditionKernelCommandLine=splash
 After=systemd-vconsole-setup.service
 Before=copper-network.service copper-firstboot.service copper-console.service copper-tty-clear.service
-# DefaultDependencies=no is deliberate for the boot ordering above, but it
-# also opts the unit out of shutdown.target's implicit Conflicts=/Before=
-# edges. So plymouthd had no stop job: it held the DRM device and /dev/tty1
-# into systemd-shutdown, which then had to SIGTERM it from there, and the
-# splash stayed on the console over the shutdown message. These two lines put
-# it back in the shutdown transaction, ahead of anything else that needs the
-# console. In the ordinary case copper-plymouth-quit has already ended the
-# daemon at boot and the stop job is a no-op.
+# DefaultDependencies=no also drops shutdown.target's edges, so plymouthd had no
+# stop job: it held DRM and tty1 into systemd-shutdown and stayed over the shutdown
+# message. Conflicts=/Before= put it back in the stop transaction ahead of the
+# console users; by then copper-plymouth-quit has normally ended it already.
 Conflicts=shutdown.target
 Before=shutdown.target
 
@@ -58,9 +32,7 @@ RuntimeDirectory=plymouth
 PIDFile=/run/plymouth/pid
 ExecStart=/usr/sbin/plymouthd --mode=boot --pid-file=/run/plymouth/pid --ignore-serial-consoles
 ExecStartPost=-/usr/bin/copper-splash-show
-# Plymouth's own clean exit rather than a signal, so the daemon drops the
-# display and the VT in the order it expects. Bounded small: a splash that
-# will not quit is not worth waiting for.
+# Clean exit, not a signal, so the daemon drops display/VT in order; bounded small.
 ExecStop=-/usr/bin/plymouth --quit
 TimeoutStopSec=3s
 

@@ -1,32 +1,20 @@
 #!/bin/sh
-# Copper Linux -- compressed swap in RAM.
-#
-# The live image has no swap at all: /init builds the writable overlay on a
-# tmpfs capped at 50% of RAM, and the desktop (niri + kitty + a browser) is the
-# other half. On a 4 GB machine that leaves little headroom, and the moment
-# something allocates hard the kernel starts reclaiming and the session stalls
-# -- which reads as "niri froze", especially on a VM whose page cache is a
-# virtio/SVGA round trip away.
-#
-# A zram block device is RAM shaped like a disk: pages written to it are
-# compressed (lzo-rle by default, ~2-3x for the text and zero pages a desktop
-# swap mostly holds) and stored back in RAM. Swapping to it costs CPU, not I/O,
-# and it turns "out of memory at 4 GB" into "slower for a moment at 4 GB".
-#
-# Sizes: half of RAM, clamped to [256 MiB, 4 GiB]. Half is the usual live-image
-# balance -- enough to absorb a window burst, not so much that the compressed
-# store itself competes with the working set it is meant to protect.
-#
-# POSIX sh: this runs under the image's busybox ash, where `local`, arrays and
-# [[ ]] do not exist. See assert_shell_scripts_parse() in iso/build.sh.
+# Copper Linux -- compressed swap in RAM, set up before anything heavy starts.
+# The live image has no swap: /init's overlay is a tmpfs capped at half of RAM,
+# and niri + kitty + a browser want the other half. Allocation bursts made the
+# kernel reclaim and the session stall ("niri froze", blamed on too little RAM).
+# zram is RAM shaped like a disk: pages are compressed (lzo-rle, ~2-3x for the
+# text/zero pages swap mostly holds), so swapping costs CPU, not I/O.
+# Size: half of RAM clamped to [256 MiB, 4 GiB] -- enough for a burst without
+# competing with the working set. POSIX sh; busybox ash has no local/arrays
+# (see assert_shell_scripts_parse() in iso/build.sh).
 
 PATH=/sbin:/usr/sbin:/bin:/usr/bin
 export PATH
 
 Z=/sys/block/zram0
 if [ ! -e "$Z" ]; then
-    # Not fatal: a kernel without zram still boots, it just has no swap. Say so
-    # on the serial log (where a post-mortem looks) and leave the boot alone.
+# Not fatal: a kernel without zram still boots, it just has no swap; log to serial.
     echo "copper-zram: no /dev/zram0, the kernel has no zram" >&2
     exit 0
 fi
@@ -37,13 +25,10 @@ size_mb=$((mem_kb / 2 / 1024))
 [ "$size_mb" -lt 256 ] && size_mb=256
 [ "$size_mb" -gt 4096 ] && size_mb=4096
 
-# Initialise once. The unit is oneshot with RemainAfterExit=yes, so a normal
-# boot writes this once; the disksize guard also makes a manual re-run safe.
+# Initialise once; the disksize guard also makes a manual re-run safe.
 cur=$(cat "$Z/disksize" 2>/dev/null || echo 0)
 if [ "$cur" = 0 ]; then
-    # Pick a fast compressor the kernel actually carries. lzo-rle is the 6.x
-    # default and the best speed/ratio point for swap; lz4 and zstd are the
-    # fallbacks if a config ever changes the default.
+# Pick a compressor the kernel carries: lzo-rle, then lz4 or zstd as fallbacks.
     algos=$(cat "$Z/comp_algorithm" 2>/dev/null || echo "")
     comp=""
     case "$algos" in
@@ -61,11 +46,8 @@ if [ "$cur" = 0 ]; then
 fi
 
 if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
-    # A fresh zram device is a blank block device: swapon refuses it with
-    # "Unable to find swap-space signature" until somebody writes one. mkswap
-    # has to happen after disksize (there is no device to format before that)
-    # and before swapon. It is cheap -- one page of metadata -- and it is the
-    # step whose absence made this unit fail on the first real ISO.
+# A blank block device has no swap signature, so mkswap after disksize and before
+# swapon -- its absence once made this unit fail on the first real ISO.
     if command -v mkswap >/dev/null 2>&1; then
         mkswap /dev/zram0 >/dev/null || {
             echo "copper-zram: mkswap /dev/zram0 failed" >&2
@@ -96,10 +78,8 @@ if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
     fi
 fi
 
-# zram's "seek" is free, so read back single pages rather than a cluster, and
-# reclaim anonymous pages (the expensive thing to keep) before page cache (the
-# cheap thing to re-read from the ISO). These are the two tuning knobs that
-# make zram behave like swap should; both are best effort.
+# zram's "seek" is free: read single pages and reclaim anonymous pages before
+# page cache (cheap to re-read from the ISO). Both knobs are best effort.
 echo 100 > /proc/sys/vm/swappiness 2>/dev/null || true
 echo 0   > /proc/sys/vm/page-cluster 2>/dev/null || true
 

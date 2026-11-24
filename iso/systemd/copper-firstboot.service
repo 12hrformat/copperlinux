@@ -1,56 +1,31 @@
 # Copper Linux — the first-boot wizard.
-#
-# Runs once, on the console the user is looking at, before the login shell
-# service starts. ConditionPathExists=! is the whole "once" mechanism: the
-# wizard writes /etc/copper-firstboot.done as its last act, and this unit is
-# skipped on every boot after that. copper-init used `stat()` on the same file
-# for the same reason; this is that decision in the unit language.
-#
-# Type=oneshot with RemainAfterExit=yes, not Type=simple: the wizard is a
-# question-and-answer session that must finish before the console service
-# starts, and "wanted by copper.target" plus Type=oneshot gives copper.target
-# an ordering point to hang copper-console.service off.
-#
-# The wizard needs a controlling terminal. getpass() reads /dev/tty, and
-# without a session of its own it cannot open that at all -- the password
-# questions come back unusable. The C code used to do the setsid/TIOCSCTTY
-# itself (copper-init.c, the wizard fork); under --console it instead dups the
-# service's stdin, which IS the tty below. StandardInput=tty pins stdin at
-# /dev/tty1 and TTYPath= makes that the controlling tty for the unit.
+# Runs once on the console, before the login shell: ConditionPathExists=! on
+# /etc/copper-firstboot.done is the "once" mechanism (copper-init stat()ed it).
+# Type=oneshot + RemainAfterExit=yes gives copper.target an ordering point to hang
+# copper-console.service off, and the wizard must finish before the shell starts.
+# It needs a controlling terminal: getpass() reads /dev/tty, so StandardInput=tty
+# pins stdin at tty1 and TTYPath= makes it the controlling tty (the C code used to
+# setsid/TIOCSCTTY itself; under --console it dups the service's stdin).
 #
 [Unit]
 Description=Copper first-boot wizard
 ConditionPathExists=!/etc/copper-firstboot.done
-# Wants=, not Requires=: the wizard formats a disk and creates the account. It
-# does not need the seat daemon to do either, and startup ordering is already
-# pinned by After=. `Requires=` here would mean a seatd that cannot start also
-# cancels the wizard -- no account created, no persistence offered, and the
-# console with nothing to log in as.
+# Wants=, not Requires=: a seatd that cannot start must not cancel the wizard --
+# no account, no persistence offered, and a console with nobody to log in as.
 Wants=copper-seatd.service
 After=copper-seatd.service copper-network.service
 Before=copper-console.service
-# The console. The wizard draws its whole form on tty1, and systemd's own
-# getty@tty1.service wants the same tty: getty.target wants getty@tty1, and
-# getty.target is wanted by multi-user.target -- which also wants copper.target,
-# which wants this unit. Nothing orders those two branches against each other,
-# so without a conflict both start together and both write to /dev/tty1: the
-# user gets a login banner drawn across the middle of the form they are
-# filling in.
-#
-# Conflicts= alone stops it, and it stops it properly: systemd drops
-# getty@tty1's start job outright rather than starting it and stopping it
-# afterwards, so the banner is never printed at all. (That was measured, not
-# assumed: with a conflict and no ordering between the two units, the
-# conflicting unit's job is dropped; the ordering only decides which one
-# wins when both are wanted, and there is no ordering here.)
-#
-# This is the same tty conflict copper-console.service already handles, one
-# unit earlier. The wizard runs BEFORE the console service -- Before=
-# copper-console.service -- so the console's own Conflicts= never covered this
-# window: on a first boot the banner landed on the form.
+# The wizard draws its whole form on tty1, and getty@tty1.service wants the same
+# tty (getty.target wants it, multi-user.target wants both branches) with nothing
+# ordering them: the login banner lands across the form.
+# Conflicts= drops getty's start job outright, so the banner is never printed.
+# Measured, not assumed: with a conflict and no ordering the job is dropped; the
+# ordering only decides which wins when both are wanted. This is the same conflict
+# copper-console.service has, one unit later -- Before= means its own Conflicts=
+# never covered the wizard's window on a first boot.
 Conflicts=getty@tty1.service
-# The wizard formats the persistence disk, so it needs the block devices udev
-# has finished discovering, not a half-populated /dev.
+# It formats the persistence disk, so it needs udev's block devices, not a
+# half-populated /dev.
 After=systemd-udev-settle.service
 Wants=systemd-udev-settle.service
 

@@ -1,66 +1,35 @@
 #!/bin/sh
 # startniri -- start the niri session on the tty.
 #
-# The compositor and its session tools are in the image: the niri stage bakes
-# them from the praksharma PPA. The apps on top -- browsers, editors, media --
-# are ingot packages, and the missing ones are installed before anything starts
-# (manifest at /etc/copper/niri-apps). What is genuinely absent still gets its
-# own exit code and its own sentence naming the piece, instead of a bare "not
-# found" that is indistinguishable from a broken PATH or a missing library.
+# The compositor and session tools are baked in from the praksharma PPA;
+# apps on top are ingot packages installed before start from
+# /etc/copper/niri-apps. A genuine absence gets a named exit code and
+# sentence, not a bare "not found" that could mean a broken PATH or library.
 #
-# niri is a Wayland compositor, so there is no second process to hand a display
-# to the way startxfce hands one to startxfce4: the compositor IS the session.
-# What startxfce does for X -- find a display, prove it answers, export DISPLAY
-# -- has no analogue here. What it does for the seat, the runtime directory and
-# the session bus does, and this does the same, in the same order, so a reader
-# who knows one launcher can read the other.
+# niri IS the session: unlike XFCE there is no display to hand over, but the
+# seat, runtime dir and session bus are prepared in the same order as
+# startxfce. No logind/systemd: seatd (started by PID 1) gives the seat,
+# and this script starts the dbus daemon. Startup spawns live in config.kdl.
 #
-# No logind and no systemd: the seat comes from seatd (started by PID 1 before
-# the session shell) and the session bus is a dbus daemon this script starts.
-# niri's own startup spawns (wallpaper, bar, notifications, the polkit agent)
-# are in config.kdl, so the session has one startup path rather than a
-# compositor plus a separate autostart daemon.
+# POSIX sh: the image runs busybox ash and build.sh checks these as /bin/sh;
+# a bashism works on the build host and fails on the machine.
 #
-# POSIX sh, not bash: the image's shell is busybox ash, and build.sh checks these
-# scripts against /bin/sh. A bashism here is a script that works on the build
-# host and fails on the machine.
+# Exit codes (a contract): 0 ok, 20 no compositor, 21 no session config,
+# 22 runtime not prepared, 23 niri died starting, 24 usage. There is no
+# "cannot ask" code: components install by default and --no declines them.
 #
-# Exit codes, which are a contract rather than decoration:
-#
-#   0   niri ran and exited cleanly
-#   20  no niri in the image
-#   21  no session configuration for this user
-#   22  the session runtime could not be prepared
-#   23  niri exited while starting up
-#   24  usage error
-#
-# There is no "cannot ask" code any more: the components install by default and
-# --no declines them, so a machine without a terminal has nothing to stop on.
-#
-# KNOWN LIMITS, recorded rather than left to be found on a machine.
-#
-#   - The compositor runs on the console VT through the DRM backend, which needs
-#     a seat and a DRM master. Without logind that seat is seatd; if PID 1 did
-#     not start it, libseat's only remaining backend is logind, which is not
-#     here, and niri exits at start. The seat's presence is not something this
-#     script can create -- starting a daemon needs root and this runs as the
-#     session user -- so it checks, says so, and lets the compositor's own log
-#     carry the rest.
-#   - A machine whose framebuffer has a DRM node but no render node (a VM with no
-#     3D) gets software rendering forced, because GL there fails in a way that
-#     looks like a compositor bug. VMware is forced too, even with 3D enabled
-#     and a renderD node: vmwgfx's GBM/EGL path exposes a node but can hang niri
-#     in renderer init. GBM_ALWAYS_SOFTWARE (Mesa's GBM switch, not GLX's
-#     LIBGL_ALWAYS_SOFTWARE alone) plus llvmpipe keeps the session on a virtual
-#     GPU. On real hardware nothing is forced.
-#   - niri's IPC has no device listing, so this cannot ask the compositor
-#     whether it holds a keyboard. Input shown here is the input libinput is
-#     willing to accept, not proof the compositor claimed it; the udev records
-#     below are the half that can be checked.
-#   - Only the instance socket under $XDG_RUNTIME_DIR is ever examined to decide
-#     "it came up". If niri starts but writes no socket there, the wait expires
-#     and the launch proceeds anyway -- a compositor that is alive and drawing is
-#     not something to declare dead because a probe could not see it.
+# KNOWN LIMITS, recorded rather than left to be found on a machine:
+#   - The console VT needs a seat and DRM master. Without logind that is
+#     seatd; if PID 1 did not start it, niri has no other seat backend and
+#     exits. Starting a daemon needs root, so this only checks and reports.
+#   - No render node (a VM without 3D) forces software; VMware with a render
+#     node keeps the hardware renderer, since niri refuses software EGL
+#     renderers and would leave a live socket with nothing drawn.
+#   - IPC has no device list, so input shown is what libinput accepts, not
+#     proof niri claimed it; the udev records are the half that can be checked.
+#   - "Came up" means one instance socket under $XDG_RUNTIME_DIR answered;
+#     a compositor drawing without that socket proceeds anyway, not declared
+#     dead just because a probe could not see it.
 
 set -u
 
@@ -68,52 +37,36 @@ NIRI=${COPPER_NIRI:-/usr/bin/niri}
 SKEL=${COPPER_NIRI_SKEL:-/usr/share/copper/niri-skel}
 SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/niri.log}
 WAIT_TRIES=${WAIT_TRIES:-100}
-# Where the DRM devices live and where seatd listens. Both default to the real
-# paths and exist only so the gate can exercise the branches that read them
-# without a GPU or a running seatd; nothing here overrides them.
+# DRM nodes and seatd's socket default to real paths; overridable so the gate
+# can exercise GPU/seatd branches without either on the test host.
 DRM_DIR=${COPPER_DRM_DIR:-/dev/dri}
 SEATD=${COPPER_SEATD_SOCK:-/run/seatd.sock}
-# Where the input devices and the libudev records PID 1 writes live. Real paths
-# by default; overridable for the same reason as the two above -- the gate has
-# to be able to show the "a device gets dropped" branch without a machine that
-# has a keyboard it drops.
+# Input nodes and PID 1's libudev records are overridable for the same reason:
+# the gate must be able to show a dropped device without real hardware.
 INPUT_SYS=${COPPER_INPUT_SYS:-/sys/class/input}
 UDEV_DATA=${COPPER_UDEV_DATA:-/run/udev/data}
 
-# The component manifest and the installer it drives. startniri only offers
-# components; it does not hardcode which ones.
+# Components come from the manifest, not hardcoded here.
 APPS=${COPPER_NIRI_APPS:-/etc/copper/niri-apps}
 INGOT=${COPPER_INGOT:-ingot}
 SUDO=${COPPER_SUDO-sudo}
-# Root needs no sudo, and the image may not even have it. "-" (not ":-") so an
-# empty COPPER_SUDO really does disable sudo instead of reviving the default.
+# "-" not ":-": an empty COPPER_SUDO must disable sudo, not revive the default.
 if [ "$(id -u)" = 0 ]; then SUDO=; fi
 
 say() { printf 'startniri: %s\n' "$1"; }
 
-# libseat opens the input devices through seatd, and seatd only serves a client
-# whose account is in _seatd. The group is created by the niri build stage,
-# copper-init recreates it at boot, and both the first-boot wizard and
-# copper-init put the user in it. None of that can help a session that is
-# already logged in, so if this one is somehow missing the group the compositor
-# comes up with a dead cursor and no keyboard -- say so instead of leaving the
-# user to guess. A re-login (or reboot) picks up the membership.
+# libseat serves only clients in _seatd. The niri stage creates the group,
+# copper-init recreates it at boot, and both it and the wizard add the user;
+# a session already logged in without it gets a dead pointer and no keyboard.
 if ! id -nG 2>/dev/null | grep -qw _seatd; then
     say "warning: this account is not in the _seatd group, so input may not work"
     say "  fix: sudo addgroup $(id -un) _seatd   (then log out and back in)"
 fi
 
-# The other half of "input works". The group above lets the compositor reach
-# seatd and open the devices; libinput then has to accept each one, and it
-# discards every device libudev calls uninitialized. Only a record under
-# /run/udev/data clears that flag, there is no udev daemon in this image, and
-# PID 1 writes those records at boot (seed_udev_input_db in copper-init.c).
-# Clearing the flag is not enough on its own: the record also has to say what
-# the device is, because libinput reads udev's ID_INPUT_* tags and drops any
-# device whose only tag is ID_INPUT. Both mistakes end in the same place --
-# the compositor still starts, seat, config and DRM master all fine, with a
-# pointer that does not move and a keyboard that types nowhere -- so say which
-# half is missing rather than leave the user to guess.
+# seatd access alone is not enough: libinput drops devices libudev calls
+# uninitialized, and drops ones whose only tag is ID_INPUT, not ID_INPUT_*.
+# No udev daemon here, so PID 1 writes one record per input device at boot
+# (seed_udev_input_db in copper-init.c); name which device and half failed.
 if [ -d "$INPUT_SYS" ] && ! ls "$UDEV_DATA"/c* >/dev/null 2>&1; then
     say "warning: no libudev records under $UDEV_DATA, so libinput will"
     say "  take no input device and the session will have a dead pointer and no"
@@ -121,13 +74,10 @@ if [ -d "$INPUT_SYS" ] && ! ls "$UDEV_DATA"/c* >/dev/null 2>&1; then
     say "  here means it wrote none: no event node, or it could not write into"
     say "  the directory."
 elif [ -d "$INPUT_SYS" ]; then
-    # Per device, not "does any record carry a type". A pointer that moves
-    # while nothing types is one specific device being dropped, and a record
-    # with a type in it somewhere says nothing about the device that is
-    # missing one -- so the earlier form of this check stayed silent through
-    # exactly the failure it was written for. The device's own name is what
-    # makes a line actionable, and every device is listed so that "not here"
-    # can be told apart from "here, with no type".
+    # Check each device, not "does any record have a type": a pointer that
+    # moves while nothing types is one specific device being dropped, and a
+    # name makes the line actionable. List every device to tell "not here"
+    # from "here, with no type".
     listed=""
     nl='
 '
@@ -200,13 +150,11 @@ Exit codes: 0 ok, 20 no niri, 21 no session config, 22 no runtime,
 EOF
 }
 
-# What is installed. Echoed as words so --check and the launch path agree, and so
-# there is exactly one place that knows what the image contains.
+# One source of truth so --check and the launch path agree.
 have_niri=0
 [ -x "$NIRI" ] && have_niri=1
 
-# Where this user's configuration lives, and whether the shipped tree is there
-# to seed it from.
+# Locate the user's config and the shipped tree that can seed it.
 user_niri="$HOME/.config/niri"
 user_config=0
 [ -e "$user_niri/config.kdl" ] && user_config=1
@@ -243,19 +191,16 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# The boot splash, defensively and for the same reason startxfce quits it: a
-# splash still holding the console is what makes a compositor's VT takeover
-# fail, and an interactive prompt down this script would be invisible. The test
-# is a ping, not a blind quit, so a machine built without the splash says nothing
-# and does nothing; --check, which exits above, never reaches here.
+# Quit a live splash before the compositor takes the VT: it would fail the
+# takeover and hide any prompt below. Ping first, so a splashless machine
+# stays silent and does nothing; --check exits above and never gets here.
 if command -v plymouth >/dev/null 2>&1 &&
    plymouth --ping >/dev/null 2>&1; then
     say "quitting the boot splash before starting the session"
     plymouth quit >/dev/null 2>&1 || :
 fi
 
-# The compositor. Checked before anything else, and outside any branch that
-# starts a session: a machine with the config but no compositor must say so with
+# Check the compositor outside any session branch: config without niri must
 # exit 20, not die on a bare exec failure.
 if [ "$have_niri" != 1 ]; then
     report
@@ -264,32 +209,18 @@ if [ "$have_niri" != 1 ]; then
     exit 20
 fi
 
-# The configuration. The tree is shipped in the image and copied into the home
-# on first start, but a home that was made another way -- a second user, a home
-# wiped by hand, a wizard path that skipped the copy -- should still get a
-# working session rather than an empty compositor and a black screen. So when
-# the user has no config and the image has one to give, seed it. When neither is
-# true there is nothing to start: an unconfigured niri is not the session anyone
-# asked for, and 21 names that.
+# Seed a shipped config into homes made another way (second user, wiped home,
+# wizard that skipped the copy), or the compositor starts with a black screen.
+# With neither user config nor shipped tree, 21 names the real failure.
 
-# Copy everything the shipped tree has and the home does not: make the missing
-# directories, then copy the files and symlinks that are absent. A file that is
-# already there is never touched, so a user's edits survive; what is missing is
-# filled in, so a home that was seeded -- or half-seeded -- by an older image can
-# be repaired in place instead of staying broken forever.
+# Copy missing files and symlinks, making directories: user edits survive and
+# a half-seeded home can be repaired instead of staying broken.
 #
-# This is not `cp -a -n`, which is the one-liner it looks like and the thing this
-# used to do. busybox's cp reads -n as "skip an existing *anything*": given a
-# ~/.config that already exists it skips the whole directory, copies nothing
-# below it, and reports success while doing so. That is invisible on a bare home
-# and permanent on a used one -- and it is why a home seeded before bug 26 (when
-# the build's empty-file gate dropped the zero-byte stubs the old config
-# require()d) stayed broken: the config file that was there kept the seeding
-# branch from running, and the seeding branch could not have repaired it anyway.
-#
-# Walking the tree is a few hundred stat() calls and no surprises. seed_added
-# counts what was written so the caller can say whether the pass changed
-# anything.
+# This is not `cp -a -n`: busybox reads -n as "skip an existing *anything*",
+# so an existing ~/.config skips the whole subtree and reports success. That
+# left pre-bug-26 homes broken: the config file there suppressed seeding,
+# and seeding could not have repaired the zero-byte stubs the old config
+# require()d anyway. Walking the tree costs a few stat() calls and no surprises.
 seed_added=0
 seed_config() {
     seed_added=0
@@ -324,8 +255,7 @@ seed_config() {
 if [ "$user_config" != 1 ]; then
     if [ "$skel_config" = 1 ]; then
         say "seeding the session config from $SKEL into $HOME"
-        # The whole shipped home, not just .config/niri: the tree carries the
-        # waybar configuration the session starts from the same place.
+        # Seed the whole home: it also carries the waybar config the session reads.
         if ! seed_config; then
             say "the shipped config tree at $SKEL is not readable"
         fi
@@ -343,12 +273,9 @@ if [ "$user_config" != 1 ]; then
         exit 21
     fi
 else
-    # A config is already there and it may still be incomplete: a home seeded by
-    # an older image is missing exactly the files that image's build dropped, and
-    # nothing in the session will ever ask for them back. Repair it in place on
-    # every start. The pass only writes what is absent, so it costs a few hundred
-    # stat() calls once the tree is whole and it says nothing when it changes
-    # nothing.
+    # An older image's home may lack files the config refers to; repair in
+    # place on every start. Only absent files are written, so a whole tree
+    # costs a few stat() calls and says nothing when nothing changed.
     if [ "$skel_config" = 1 ]; then
         if seed_config && [ "$seed_added" -gt 0 ]; then
             say "repaired the session config: added $seed_added missing file(s) from $SKEL"
@@ -358,20 +285,12 @@ else
     fi
 fi
 
-# Components. The session is in the image; the apps on top of it are ingot
-# packages, and the missing ones are installed here, on the first start, before
-# the compositor is handed the console. The list lives in the manifest, not in
-# this script: what is offered, what marks it present, and how it is installed
-# change independently of this script. Components whose 'how' is "image" are
-# expected in the ISO already -- a missing one is a broken image, so it is
-# reported and never turned into an install attempt.
-#
-# This used to ask a Y/n question, and to exit 25 when there was no terminal to
-# ask on. Both are gone: the manifest is the session's own package list, the
-# session cannot be useful without a terminal, an editor, a browser and a
-# fetch tool, and a first boot that stops on a question nobody asked for is a
-# machine that looks broken. --no is how you say no now, once, for a machine
-# that is staying offline.
+# Only missing ingot apps are installed before the compositor takes the
+# console; the manifest owns presence and install method, so those change
+# independently. 'image' components belong to the ISO: report a missing one.
+# No Y/n question and no exit 25: the manifest is the session's own package
+# list, a session without terminal/editor/browser is useless, and stopping
+# on an unasked question looks like a broken machine. --no says no once.
 missing=
 if [ -r "$APPS" ]; then
     while read -r cname cprobe corigin; do
@@ -405,9 +324,8 @@ if [ -n "$missing" ]; then
                 failed=1
             fi
         done
-        # ingot unpacks .debs but no maintainer script runs, so nothing
-        # regenerates the databases the desktop reads. Rebuild them by hand or
-        # the new .desktop files never show up and launchers stay dead.
+        # ingot runs no maintainer scripts, so rebuild desktop and mime databases
+        # or new launchers never appear and stay dead.
         if command -v update-desktop-database >/dev/null 2>&1; then
             update-desktop-database /usr/share/applications >/dev/null 2>&1 || :
         fi
@@ -422,21 +340,17 @@ if [ -n "$missing" ]; then
     fi
 fi
 
-# The runtime directory. Wayland keeps its sockets in $XDG_RUNTIME_DIR and
-# refuses to start the compositor without one; on a normal system the login
-# stack makes it, but nothing here logs in through pam. PID 1 makes
-# /run/user/<uid> and hands ownership over before this runs -- a user cannot
-# mkdir under root-owned /run -- so this only has to confirm it and export it,
-# and fall back to a directory of the user's own when PID 1 did not get there.
+# Wayland needs $XDG_RUNTIME_DIR for its sockets. No pam login here, so PID 1
+# makes /run/user/<uid> and hands it over before this runs; just confirm and
+# export it, falling back to /tmp/copper-runtime-<uid> if PID 1 did not.
 uid=$(id -u 2>/dev/null) || uid=
 if [ -z "$uid" ]; then
     say "cannot determine this login's uid"
     exit 22
 fi
 if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ ! -d "$XDG_RUNTIME_DIR" ]; then
-    # Set to something that is not a directory -- a stale path, a regular file.
-    # Adopting it silently is how a session ends up writing its sockets into a
-    # file and failing several layers down.
+    # A stale path or regular file here would make the session write sockets
+    # into a file and fail several layers down, so refuse it now.
     say "XDG_RUNTIME_DIR is set to $XDG_RUNTIME_DIR, which is not a directory"
     exit 22
 fi
@@ -457,34 +371,24 @@ export XDG_RUNTIME_DIR
 say "runtime directory: $XDG_RUNTIME_DIR"
 mkdir -p /dev/shm 2>/dev/null || :
 
-# Who this session says it is. A compositor started from a bare tty has no
-# display manager to stamp the session, and the readers are not cosmetic:
-# xdg-desktop-portal chooses a backend by XDG_CURRENT_DESKTOP, so without it the
-# GTK fallback is started instead of the niri one, and toolkits read
-# XDG_SESSION_TYPE to pick Wayland over X11. niri --session sets both for its
-# own children; exporting them here covers everything this script starts first,
-# and the session bus below, which is where D-Bus-activated services get their
-# environment.
+# No display manager stamps a bare tty session. Export the desktop identity
+# so portals pick the niri backend instead of GTK and toolkits choose Wayland;
+# niri --session only covers its own children and the bus.
 XDG_SESSION_TYPE=wayland
 XDG_CURRENT_DESKTOP=niri
 XDG_SESSION_DESKTOP=niri
 DESKTOP_SESSION=niri
 export XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION
 
-# libxkbcommon uses these as its fallback when the config does not provide a
-# keyboard layout. Set an explicit installed rules tree and US layout so a
-# missing inherited desktop setting cannot leave an enumerated keyboard
-# without a usable keymap. A caller can still select another layout through
-# the environment or the niri configuration.
+# Give libxkbcommon an explicit installed rules tree and US layout, so an
+# inherited desktop setting cannot leave a keyboard without a usable keymap.
 XKB_CONFIG_ROOT=${XKB_CONFIG_ROOT:-/usr/share/X11/xkb}
 XKB_DEFAULT_LAYOUT=${XKB_DEFAULT_LAYOUT:-us}
 export XKB_CONFIG_ROOT XKB_DEFAULT_LAYOUT
 
-# No package manager runs maintainer scripts on this image, so the caches a
-# postinst would have built are built here, once, when absent. Without the
-# font cache every program that asks fontconfig for a glyph walks the font
-# directories again; without the pixbuf cache GTK draws holes where images
-# should be. Both are quiet: this is a session starting, not a build log.
+# No maintainer scripts run here, so build missing font/pixbuf caches once:
+# otherwise glyph lookups rescan directories and GTK shows holes for images.
+# Keep it quiet -- this is a session starting, not a build log.
 if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
     if [ -z "$(find /usr/lib -name loaders.cache -print -quit 2>/dev/null)" ]; then
         gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || :
@@ -496,13 +400,9 @@ if command -v fc-cache >/dev/null 2>&1; then
     fi
 fi
 
-# The session bus. The portals, swaync, gnome-keyring and the polkit agent all
-# want one, and there is no session manager to have started it. Prefer
-# dbus-launch, which sets both the address and the pid; fall back to
-# dbus-daemon directly, which only prints the address. Either way it is exported
-# into the compositor's environment, and a machine that turns out to have
-# neither still starts -- the compositor runs without a bus, the pieces that
-# want one say so, and that is a degraded session rather than no session.
+# Portals, swaync, keyring and polkit all want a bus, with no session manager
+# to start one. Prefer dbus-launch (address + pid), fall back to dbus-daemon
+# (address only); without either, start anyway and let the consumers complain.
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     if command -v dbus-launch >/dev/null 2>&1; then
         bus=$(dbus-launch --sh-syntax 2>/dev/null) || bus=
@@ -523,22 +423,16 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     fi
 fi
 
-# A bus started above already carries the session identity: this process had it
-# before dbus-daemon forked. A bus inherited from somewhere else may not, and
-# D-Bus-activated services (the portal frontend is the one that matters) read
-# the daemon's environment, not the caller's. Push the identity in when the tool
-# is there. No --systemd: there is no systemd to tell, and the bus is what
-# matters.
+# A bus started above inherits this process's session identity; an inherited
+# bus may not, and D-Bus-activated services read the daemon's environment.
+# Push the identity in with dbus-update-activation-environment, no --systemd.
 if command -v dbus-update-activation-environment >/dev/null 2>&1; then
     dbus-update-activation-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP \
         XDG_SESSION_DESKTOP DESKTOP_SESSION >/dev/null 2>&1 || :
 fi
 
-# The seat. Without logind, libseat talks to seatd, and seatd is PID 1's to
-# start -- a daemon needs root and this runs as the session user. Its socket
-# path is what libseat reads; make sure the variable points at the default
-# unless the machine says otherwise, so a libseat built for /run/seatd.sock and
-# a seatd started there agree.
+# Without logind, libseat reads seatd's socket path; keep the variable at
+# its default unless the machine says otherwise, so libseat and seatd agree.
 if [ -z "${SEATD_SOCK:-}" ] && [ -S "$SEATD" ]; then
     SEATD_SOCK=$SEATD
     export SEATD_SOCK
@@ -551,19 +445,14 @@ else
     say "  not start it the compositor will exit and its log will say so."
 fi
 
-# The renderer. A framebuffer with a DRM node but no render node is a VM with no
-# 3D, where GL fails in a way that reads as a compositor bug rather than a
-# missing GPU. VMware is the other VM shape: with 3D enabled it DOES advertise
-# /dev/dri/renderD*, yet vmwgfx's GBM/EGL path can wedge niri right after
-# "initializing the primary renderer" -- before the Wayland socket exists, so
-# there is no session to inspect. Mesa's GBM software switch is the one that
-# matters here: LIBGL_ALWAYS_SOFTWARE covers GLX clients but GBM reads
-# GBM_ALWAYS_SOFTWARE. llvmpipe renders the native framebuffer, so the VMware
-# window stays sharp when maximised.
-#
-# COPPER_NIRI_SOFTWARE=1 forces this on any machine and =0 opts out of the
-# automatic choices. COPPER_NIRI_VMWARE does the same for the VMware half alone;
-# by default the DMI product/vendor strings decide.
+# No render node means a VM without 3D: GL fails like a compositor bug, so
+# force Mesa's software GBM there. VMware with 3D does advertise renderD*,
+# but the old rule forced llvmpipe there too -- backwards, because niri
+# skips software EGL renderers, then has no allocator for the card and
+# leaves a live Wayland socket with nothing drawn (a frozen-looking session).
+# So a VMware render node keeps its hardware renderer; only the debug config
+# below is applied. COPPER_NIRI_SOFTWARE=1/-0 override the automatic choice;
+# COPPER_NIRI_VMWARE controls the wrapper, defaulting to DMI detection.
 vmware=0
 case "${COPPER_NIRI_VMWARE:-auto}" in
     1) vmware=1 ;;
@@ -582,8 +471,7 @@ case "${COPPER_NIRI_SOFTWARE:-auto}" in
     1) soft=1 ;;
     0) soft=0 ;;
     *)
-        if [ "$vmware" = 1 ] ||
-           { [ -e "$DRM_DIR" ] && ! ls "$DRM_DIR"/renderD* >/dev/null 2>&1; }; then
+        if [ -e "$DRM_DIR" ] && ! ls "$DRM_DIR"/renderD* >/dev/null 2>&1; then
             soft=1
         fi
         ;;
@@ -593,19 +481,15 @@ if [ "$soft" = 1 ]; then
     GBM_ALWAYS_SOFTWARE=1
     GALLIUM_DRIVER=llvmpipe
     export LIBGL_ALWAYS_SOFTWARE GBM_ALWAYS_SOFTWARE GALLIUM_DRIVER
-    if [ "$vmware" = 1 ]; then
-        say "VMware virtual GPU: forcing software GBM (llvmpipe)"
-    else
-        say "no render node; forcing software rendering"
-    fi
+    say "no render node; forcing software rendering"
+elif [ "$vmware" = 1 ]; then
+    say "VMware virtual GPU: keeping the 3D render node (niri ignores llvmpipe)"
 fi
 
-# A virtual GPU's overlay and cursor planes are the other place a compositor can
-# stall before its Wayland socket appears. niri's top-level `include` merges a
-# second file into the user's config, so a generated wrapper can add just those
-# two debug options without editing anything under ~/.config/niri. NIRI_CONFIG
-# is removed from the environment niri hands to children, so apps still see the
-# user's real config path. An explicit NIRI_CONFIG from the caller wins.
+# A virtual GPU's overlay and cursor planes can also stall before the socket
+# appears. niri's top-level `include` adds a generated wrapper with two debug
+# options under $XDG_RUNTIME_DIR; NIRI_CONFIG is stripped from children, and
+# an explicit caller value wins.
 if [ "$vmware" = 1 ] && [ -z "${NIRI_CONFIG:-}" ]; then
     vmconfig="$XDG_RUNTIME_DIR/niri-vmware-config.kdl"
     vm_include=$(printf '%s\n' "$user_niri/config.kdl" |
@@ -625,10 +509,8 @@ if [ "$vmware" = 1 ] && [ -z "${NIRI_CONFIG:-}" ]; then
     fi
 fi
 
-# Which audio server /etc/copper.conf asks for. Both are in the image; this
-# file is the switch the first-boot wizard writes and the user can edit. A
-# missing file, an unreadable line or an unknown word is PulseAudio, the server
-# this image has always started.
+# /etc/copper.conf is the wizard's audio switch, editable by the user;
+# missing, unreadable or unknown means pulseaudio, the image's default.
 copper_audio_backend() {
     _conf=${COPPER_CONF:-/etc/copper.conf}
     _word=
@@ -642,20 +524,14 @@ copper_audio_backend() {
     esac
 }
 
-# Audio. cava, mpv and firefox all speak the PulseAudio protocol, and both
-# backends serve it, but the server is a per-user daemon -- PulseAudio refuses
-# to run as root without --system, and a client on this tty connects to the
-# server belonging to this user. So the session starts it, once, here. A
-# missing binary is not fatal: the session still runs, it is just silent.
-# COPPER_AUDIO=0 skips it, which is what the gate sets so a test run does not
-# start a daemon on the machine running it.
+# Audio is a per-user daemon (PulseAudio refuses root without --system); cava,
+# mpv and firefox speak its protocol. Start it once here, COPPER_AUDIO=0 lets
+# the gate avoid a daemon on the test host; a missing binary is only silence.
 if [ "${COPPER_AUDIO:-1}" = 1 ]; then
     case "$(copper_audio_backend)" in
     pipewire)
-        # PipeWire is three processes: the graph server, the session manager
-        # that gives it devices, and the PulseAudio-protocol front end every
-        # client here speaks to. pipewire-pulse does not pull wireplumber in,
-        # so all three are named. The graph socket is the "it came up" signal.
+# Start the graph server, session manager and Pulse front end: pipewire-pulse
+# does not pull in wireplumber; the graph socket is the readiness signal.
         _rt=${XDG_RUNTIME_DIR:-/tmp}
         if command -v pipewire >/dev/null 2>&1; then
             if [ ! -S "$_rt/pipewire-0" ]; then
@@ -695,36 +571,27 @@ if [ "${COPPER_AUDIO:-1}" = 1 ]; then
         ;;
     esac
 
-    # A server on a muted card is a silent machine that reports itself healthy:
-    # the codec can come out of reset with its outputs down, and a live image
-    # keeps no mixer state between boots. Raise the controls here, once, after
-    # the server has the device. See iso/rootfs-overlay/usr/bin/copper-audio.
+# A codec can come out of reset muted and a live image keeps no mixer state,
+# so raise the controls once after the server starts (see copper-audio).
     if command -v copper-audio >/dev/null 2>&1; then
         copper-audio init >/dev/null 2>&1 || :
     fi
 fi
 
-# Hand the session over. Background first so the launch can be watched: a
-# compositor that dies in the first second -- no seat, no DRM master, a broken
-# config -- prints its reason and exits, and a launcher that only waited on the
-# process would hand back a bare nonzero status with the reason already gone
-# from the screen. The wait is bounded and checks whether the process is still
-# alive, because "still starting" and "already died" look identical if all you
-# do is count to a limit.
+# Launch in the background so a compositor that dies in the first second
+# (no seat, no DRM master, bad config) prints its reason before we read the
+# log. The bounded wait also checks liveness: "starting" and "died" look
+# identical if you only count to a limit.
 #
-# --session is what makes this the main instance: niri sets
-# XDG_CURRENT_DESKTOP/XDG_SESSION_TYPE, imports them into the bus, and starts
-# the D-Bus services the session needs. It is passed directly rather than
-# through niri-session, which wants a systemd --user or dinit to talk to.
+# Pass --session directly: niri needs it to be the main instance (desktop
+# identity, bus imports, D-Bus services); niri-session wants systemd/dinit.
 say "starting niri, log in $SESSIONLOG"
 "$NIRI" --session > "$SESSIONLOG" 2>&1 &
 niripid=$!
 
-# niri's IPC socket is `$XDG_RUNTIME_DIR/niri.<wayland socket name>.<pid>.sock`
-# and NIRI_SOCKET is set for its children, not for us. The pid makes the path
-# ours to find; the wayland half is whichever number was free. Wait for that
-# socket, then prove it answers: a socket file left by an earlier instance would
-# otherwise read as a live compositor.
+# The IPC socket is $XDG_RUNTIME_DIR/niri.<wayland socket>.<pid>.sock; NIRI_SOCKET
+# is only set for children, so find it by pid and prove it answers with
+# `niri msg`, since a stale socket from an earlier instance could read live.
 up=0
 i=0
 nirisock=
@@ -749,9 +616,8 @@ done
 if [ "$up" = 1 ]; then
     say "niri is up"
 else
-    # Alive but no answering socket. A compositor that is running and drawing is
-    # not something to declare dead, so say what was not found and keep waiting
-    # rather than fail a session that may be perfectly well on screen.
+    # Alive but no answering socket: a compositor that is drawing is not dead.
+    # Say what was missing and keep waiting rather than fail a working session.
     say "no answering IPC socket appeared under $XDG_RUNTIME_DIR; waiting for niri anyway"
 fi
 

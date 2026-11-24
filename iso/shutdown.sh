@@ -1,15 +1,8 @@
 #!/bin/sh
 # shutdown -- Copper Linux's `shutdown`.
-#
-# busybox ships halt, poweroff and reboot but no `shutdown` applet, so
-# `sudo shutdown now` was "shutdown: not found" and there was no clean way off
-# the machine (bug 18). The three applets it does ship do not call
-# reboot(2) themselves -- they signal PID 1 and let it do the orderly
-# shutdown -- and copper-init now answers those signals (see
-# on_power_signal() in copper-init.c). So this only maps the usual flags onto
-# an applet.
-#
-# Root only, because signalling PID 1 needs it. The exact interface:
+# busybox ships halt, poweroff and reboot but no `shutdown` applet, so this maps
+# the usual flags onto them; those applets signal PID 1, which does the orderly
+# shutdown. Root only, since signalling PID 1 needs it.
 #
 #     shutdown                    power off now (the default)
 #     shutdown now                power off now
@@ -18,21 +11,9 @@
 #     shutdown -H now             halt            (--halt the same)
 #     shutdown --help             print this usage and exit 0
 #
-# It is also installed under the other power-command names (power_links links
-# /sbin/reboot, /sbin/poweroff and /sbin/halt to this file), and then the name
-# picks the default: `reboot` reboots, `poweroff` powers off, `halt` halts.
-# Flags still win over the name, so `poweroff -r` reboots.
-#
-# Everything else exits 1 WITHOUT running an applet. That validation is the
-# point: the flag loop used to ignore anything it did not recognise, so
-# `shutdown +10` -- a real util-linux idiom -- powered the machine off
-# immediately instead of in ten minutes, and `shutdown --bogus` powered it off
-# too. There is no scheduler in this image, so a time other than "now" is
-# refused rather than silently dropped, and a second, conflicting mode flag is
-# refused rather than guessed at (last one used to win). On a live ISO,
-# refusing loudly beats powering off someone's machine for a typo
-# (bug 33).
-#
+# Also installed under the other power-command names: the name picks the default
+# but flags still win. Everything else exits 1 -- a time other than "now", or a
+# second conflicting mode, is refused rather than guessed (bugs 18 and 33).
 # POSIX sh: the image's /bin/sh is busybox ash.
 
 usage() {
@@ -55,9 +36,7 @@ die() {
 mode=                           # the mode flag seen, empty until one is
 time=                           # the time operand seen, empty until "now"
 
-# Invoked through one of the power-command names (power_links makes /sbin/reboot
-# and friends symlinks to this file), the name itself picks the mode. Without
-# this, `sudo reboot` would run the wrapper and power the machine OFF.
+# Invoked as reboot/poweroff/halt, the name picks the mode; without this, `sudo reboot` would power OFF.
 case "${0##*/}" in
     reboot)   name_mode=reboot ;;
     halt)     name_mode=halt ;;
@@ -85,32 +64,15 @@ done
 
 mode=${mode:-$name_mode}
 
-# Sync here, before the request is handed over, so the persisted overlay is on
-# disk even if the applet is ever swapped for a `-n` (no-sync) path later.
+# Sync before handing over, so a persisted overlay is on disk even if an applet later skips it.
 sync
 
 # ---- systemd or busybox? ----------------------------------------------------
-#
-# One image can boot either init (the GRUB menu's "systemd init" entry, or the
-# wizard's saved /etc/copper-init), so /sbin/init's target is NOT the question
-# any more: on the unified image both inits are present and /sbin/init points at
-# copper-init by default. Ask the running system instead.
-#
-# The running PID 1 is the only authority here. This image ships both inits and
-# can boot either one: /sbin/init is copper-init's link on the default boot even
-# when the GRUB systemd entry actually handovers to /lib/systemd/systemd, so
-# readlink /sbin/init says nothing about what is running. /run/systemd/system is
-# almost as unreliable: the systemd build stage bakes that directory into the
-# tree, and a boot whose /run was not remounted fresh can still see it while
-# copper-init is PID 1 -- which is exactly when `shutdown` was printing
-# systemctl's "System has not been booted with systemd" error.
-#
-# /proc/1/comm is the kernel's own name for PID 1: "systemd" on a systemd boot,
-# "copper-init" here. Read it with the shell's `read`, so this works before any
-# external command is needed. The two older tests stay as a fallback for a
-# kernel without /proc/1/comm. COPPER_INIT lets the gate force either answer
-# without rebooting (tests/shutdown-gate.sh sets it; nothing on a real boot
-# does).
+# Both inits ship in one image and /sbin/init points at copper-init, so ask the
+# running system: /proc/1/comm is the kernel's own name for PID 1 ("systemd" or
+# "copper-init"), read with the shell's `read`. /run/systemd/system can be baked
+# into the tree and readlink /sbin/init says nothing about what is running.
+# Older tests stay as a fallback; COPPER_INIT lets the gate force either answer.
 init_kind=${COPPER_INIT:-}
 if [ -z "$init_kind" ] && [ -r /proc/1/comm ]; then
     initcomm=
@@ -139,16 +101,9 @@ if [ "$init_kind" = systemd ]; then
 fi
 
 # ---- busybox image ---------------------------------------------------------
-#
-# The applets do not call reboot(2) themselves; they signal PID 1, and
-# copper-init's on_power_signal() does the orderly shutdown. Nothing here waits,
-# so there is no transaction to cancel.
-#
-# If /sbin/$mode is this same wrapper (the unified image installs the wrapper
-# under all four names), exec busybox directly: going back through /sbin/$mode
-# would re-enter this script. If it is an applet link, hand over to it as
-# before. The COPPER_POWER_WRAPPER guard still turns any other re-entry into an
-# error rather than a loop.
+# The applets signal PID 1; copper-init's on_power_signal() does the orderly
+# shutdown. If /sbin/$mode is this wrapper, exec busybox directly to avoid
+# re-entry; COPPER_POWER_WRAPPER turns any other loop into an error.
 if [ "${COPPER_POWER_WRAPPER:-}" = 1 ]; then
     echo "shutdown: power wrapper re-entered; refusing to loop" >&2
     exit 1

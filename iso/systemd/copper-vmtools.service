@@ -1,21 +1,10 @@
 # Copper Linux -- VMware guest tools.
-#
-# The under-systemd home for what copper-init's start_vmtools() does: run
-# vmtoolsd as root so its plugins can talk to the host. Only the resolution
-# plugin matters to a desktop, and it is the reason this unit exists at all:
-# resolutionKMS listens for the host's SetResolution hint and programs the KMS
-# connector, which is what makes the guest console follow the VMware window.
-# Without it the kernel driver stays at whatever mode the firmware picked and
-# the desktop is stretched into a larger window -- still the old number of
-# pixels, so it looks soft after a zoom.
-#
-# ConditionVirtualization=vmware keeps this off a bare-metal install and off
-# the other hypervisors; open-vm-tools on a machine that is not VMware would
-# just sit there talking to no host.
-#
-# Restart is bounded for the reason copper-seatd.service gives: a failed unit
-# prints [FAILED] on the tty the first-boot wizard is drawing its form on.
-#
+# Under systemd, what copper-init's start_vmtools() did: run vmtoolsd as root so
+# its plugins can talk to the host. The resolution plugin is the point:
+# resolutionKMS follows the host's SetResolution hint, so the guest console tracks
+# the VMware window; without it the desktop stays at the firmware's pixel count.
+# ConditionVirtualization=vmware keeps this off bare metal and other hypervisors.
+# Restart is bounded, as in copper-seatd.service: [FAILED] over the wizard's form.
 [Unit]
 Description=Copper VMware guest tools (display autofit)
 ConditionVirtualization=vmware
@@ -29,8 +18,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-# The package has used both directories over its life; search both rather than
-# betting on one. exec, so vmtoolsd is the process systemd manages.
+# Both paths have been used by the package; exec keeps vmtoolsd as the unit's process.
 ExecStart=/bin/sh -c 'for p in /usr/bin/vmtoolsd /usr/sbin/vmtoolsd; do \
     [ -x "$p" ] && exec "$p"; done; \
     echo "copper-vmtools: no vmtoolsd binary at /usr/bin/vmtoolsd or /usr/sbin/vmtoolsd" >&2; \

@@ -63,23 +63,13 @@ static void apply_hostname(void) {
     sethostname(host, strlen(host));
 }
 
-/* Set by --console: something else is PID 1 (systemd), and the units own the
-   daemons; this file owns only the console. Declared up here because say()
-   reads it: under systemd the console is about to draw the wizard's form and
-   then a clean shell prompt, and diagnostic chatter would land on both. The
-   serial log still gets every line, which is where a log is worth having. */
+/* --console means systemd owns the daemons; this file owns only the console.
+   Declared before say(), which keeps those lines serial-only. */
 static int g_console_only;
 
-/* Boot chatter. Goes to the console everyone is already looking at, and to
-   the serial port when the machine has one. Both, not either: /dev/console
-   only ever points at one of them — whichever console= was last on the kernel
-   command line — so writing to stdout alone means a quiet boot leaves a serial
-   log completely empty, which is precisely when a log is most wanted.
-
-   Under --console (the systemd image) the console half is deliberately silent:
-   the boot report is systemd's [ OK ] screen, the wizard draws a table on the
-   same tty, and a stray "copper:" line either corrupts the table or pushes the
-   shell prompt down. The serial log is unchanged. */
+/* Boot chatter goes to both the console and the serial port: /dev/console names
+   just one of them. Under --console the console half is silent so it cannot
+   corrupt the wizard's table or push the shell prompt down. */
 static void say(const char *fmt, ...) {
     char line[512];
     va_list ap;
@@ -102,13 +92,10 @@ static void say(const char *fmt, ...) {
     }
 }
 
-/* ARPHRD_ETHER, from linux/if_arp.h. Spelled out rather than included: this
-   builds against musl, which does not ship the kernel UAPI headers, and one
-   number is not worth a build dependency. */
+/* ARPHRD_ETHER: musl lacks the kernel UAPI headers; one number is not a dependency. */
 #define ARPHRD_ETHER             1
 
-/* Link-layer type of an interface, or -1 if it cannot be read.
-   /sys/class/net/<if>/type is the ARPHRD_* value in decimal. */
+/* /sys/class/net/<if>/type is the ARPHRD_* value in decimal, or -1 on error. */
 static int iface_type(const char *ifname) {
     char path[64];
     char buf[32];
@@ -130,13 +117,8 @@ static int iface_type(const char *ifname) {
     return (int)v;
 }
 
-/* First interface worth handing to DHCP, or NULL.
-   Not simply the first non-loopback name in the directory: with MODULES=n
-   every driver is built in, and several of them invent an interface at boot
-   before the real NIC has finished probing. The sit module's sit0 is one,
-   and handing DHCP a tunnel means broadcasting discover into nowhere. So ask
-   sysfs what the interface actually is, and only take something with a real
-   link layer -- and a wired one, because this image ships no wireless stack. */
+/* Pick an interface by link type, not by name: built-in drivers invent sit0
+   before the real NIC probes. Only a wired ARPHRD_ETHER will do. */
 static const char *first_nonloop_iface(void) {
     static const int prefs[] = { ARPHRD_ETHER };
     static char name[IFNAMSIZ];
@@ -150,8 +132,6 @@ static const char *first_nonloop_iface(void) {
             return NULL;
         while ((ent = readdir(dir)) != NULL) {
             size_t len = strlen(ent->d_name);
-            /* d_name is far wider than an interface name, so anything that
-               long is not one. */
             if (len == 0 || len >= sizeof name || ent->d_name[0] == '.')
                 continue;
             if (iface_type(ent->d_name) != prefs[pass])
@@ -165,8 +145,7 @@ static const char *first_nonloop_iface(void) {
     return NULL;
 }
 
-/* IFF_UP through ioctl: no subprocess, and no guessing where the build
-   happened to install busybox's applet links. */
+/* IFF_UP via ioctl: no subprocess and no guessing busybox's applet paths. */
 static int link_up(const char *ifname) {
     struct ifreq ifr;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -193,29 +172,22 @@ static void start_dhcp(const char *ifname) {
 
     if (pid != 0)
         return;
-    /* udhcpc passes its own environment to the lease script and never sets
-       PATH itself, so the script needs one to find ip(8). */
+/* udhcpc's lease script needs PATH; udhcpc never sets it. */
     setenv("PATH", "/sbin:/usr/sbin:/bin:/usr/bin", 1);
     snprintf(pidfile, sizeof pidfile, "/run/udhcpc.%s.pid", ifname);
-    /* god please kill me: fork, then hope the lease script finds its own way
-       to ip(8). If it does not, the machine boots offline and says nothing. */
     execl("/sbin/udhcpc", "udhcpc", "-i", ifname,
           "-s", "/usr/share/udhcpc/default.script", "-b", "-p", pidfile,
           (char *)NULL);
     _exit(127);
 }
 
-/* Nobody has logged in yet, but the box should already be online: raise the
-   interface and let DHCP sort out the address, the default route and the
-   resolver. Runs in the background, so a slow or absent DHCP server never
-   holds up the first-boot wizard. */
+/* Bring the link up and start DHCP in the background so a slow server never
+   holds up the wizard. */
 static void bring_up_network(void) {
     char ifname[IFNAMSIZ] = "";
     int tries;
 
-    /* The kernel is done probing before it runs us, but a freshly attached
-       VMware NIC can land a moment later. Give the bus a couple of seconds
-       before deciding this machine has no network. */
+/* A VMware NIC can appear just after boot; give the bus a moment. */
     for (tries = 0; tries < 20 && !ifname[0]; tries++) {
         const char *found = first_nonloop_iface();
         if (found)
@@ -235,21 +207,8 @@ static void bring_up_network(void) {
     start_dhcp(ifname);
 }
 
-/* The session user.
-
-   The wizard creates a named account and writes the login name on the first
-   line of /etc/copper-firstboot.done. Until this existed the shell on tty1 ran
-   as uid 0 -- spawn_tty() forked and exec'd with no setgid/setuid anywhere --
-   while the environment said HOME=/home/<user>. That mismatch is exactly what
-   Firefox refuses to start on:
-
-       Running Firefox as root in a regular user's session is not supported.
-
-   So the shell, and everything it starts (the desktop included), now runs as
-   the wizard's user, and PID 1 keeps root with sudo as the way back up. When
-   there is no marker user -- a first boot before the wizard has run, or an
-   account that no longer resolves -- the session stays root, which is what the
-   image did before. */
+/* The shell runs as the wizard's user, not uid 0 with HOME=/home/<user> --
+   Firefox refuses that mismatch. Without a marker user it stays root. */
 struct session {
     char name[64];
     char home[160];
@@ -260,8 +219,6 @@ struct session {
 
 static struct session g_session;
 
-/* Fill `s` from the done-marker's first line, resolved through getpwnam.
-   Returns 1 when there is a usable account, 0 otherwise. */
 static int session_from_marker(const char *path, struct session *s) {
     memset(s, 0, sizeof *s);
     FILE *m = fopen(path, "r");
@@ -283,14 +240,8 @@ static int session_from_marker(const char *path, struct session *s) {
     return 1;
 }
 
-/* The login shell the machine asked for.
-
-   /etc/copper.conf is the first-boot wizard's settings file and its `shell=`
-   line is the user's answer. A key that names a shell that is not in the tree
-   is ignored rather than exec'd and found missing; the account's own passwd
-   field is the fallback, and bash the last resort. Returns a static path (the
-   caller only ever execs or exports it) or NULL when the config says nothing
-   usable. */
+/* A configured shell must exist in the tree before use; fall back to the
+   passwd entry, then bash. Returns a static path or NULL. */
 static const char *configured_shell(void) {
     static char path[64];
     FILE *f = fopen("/etc/copper.conf", "r");
@@ -313,10 +264,7 @@ static const char *configured_shell(void) {
     return NULL;
 }
 
-/* Drop the forked child to the session user. Runs only in the spawn_tty
-   child, never in PID 1. If a step fails the child would rather be a root
-   shell -- the state this image shipped in for months -- than a session that
-   cannot start at all, so it says what went wrong and carries on as it is. */
+/* Fail open: a failed drop leaves a root shell rather than no session at all. */
 static void drop_to_session(const struct session *s) {
     if (!s->ok) return;
     if (initgroups(s->name, s->gid) != 0) {
@@ -337,13 +285,8 @@ static void drop_to_session(const struct session *s) {
     setenv("HOME", s->home, 1);
     setenv("USER", s->name, 1);
     setenv("LOGNAME", s->name, 1);
-    /* Installers ask the environment which shell to edit. Nothing ever set
-       SHELL, so the OpenCode installer's "set -u" killed the process on the
-       next line and took the install with it -- the binary was written, then
-       the script died before telling anyone where it was. The wizard's
-       /etc/copper.conf answer wins, so editing one line changes the console
-       shell, every login shell started from it and what kitty execs; the
-       passwd entry is what a getty/login uses, and bash is the last resort. */
+/* Installers read $SHELL; an unset one killed an installer under `set -u`.
+   The wizard's answer wins, then passwd, then bash. */
     const char *sh = configured_shell();
     if (!sh) {
         struct passwd *pw = getpwuid(s->uid);
@@ -352,14 +295,8 @@ static void drop_to_session(const struct session *s) {
     setenv("SHELL", sh ? sh : "/usr/bin/bash", 1);
 }
 
-/* Hand the X server's device nodes to the session user.
-
-   Xorg now runs as that user too. There is no udev on this image, so devtmpfs
-   leaves /dev/input/event* (evdev), /dev/dri/card* (the KMS/modesetting driver)
-   and the framebuffer and console VTs owned by root with modes a plain user
-   cannot open -- Xorg would then start with a dead pointer and no keyboard.
-   Give the session user ownership of exactly those nodes. Best effort: a node
-   that is not present is not an error, and there is only ever one session. */
+/* Xorg runs as the session user but no udev exists, so hand that user the
+   input, DRM, framebuffer and VT nodes; missing nodes are not an error. */
 static void grant_devices(const struct session *s) {
     if (!s->ok) return;
     static const char *subdirs[] = { "/dev/input", "/dev/dri", NULL };
@@ -390,58 +327,13 @@ static void grant_devices(const struct session *s) {
     closedir(d);
 }
 
-/* Make the input devices visible to libinput -- and say what each one is.
+/* Write libudev records by hand: with no udev daemon, libinput discards every
+   device whose 'not initialized' flag is unset, and needs ID_INPUT_* tags
+   beyond bare ID_INPUT or it drops the device anyway. Paths are arguments
+   so tests can use a fixture; the return count is records written. */
 
-   niri gets its keyboard and pointer from libinput, and libinput discards
-   every device that libudev calls "not initialized". That flag does not mean
-   the device is broken: it means udevd has written a record for it under
-   /run/udev/data. This image runs no udev daemon -- the note under "the
-   desktop as a real user" in HANDOFF.md explains why -- so nothing ever writes
-   those records, libinput enumerates /sys/class/input/event*, discards every
-   one, and the compositor comes up with a pointer that does not move and a
-   keyboard that types nowhere. XFCE never noticed because startxfce writes an
-   xorg.conf naming the evdev nodes directly, and Xorg does not consult libudev
-   for them.
-
-   The record is small: one file per device, named for its device number
-   ("c13:64"), whose I: line carries the initialise stamp. Write them by hand,
-   as root and before the shell starts. This is not a udev replacement -- it
-   does not follow hotplug -- but it is exactly what libudev reads, and the
-   devices in a VM are present from boot anyway.
-
-   Clearing that flag is only half of being seen. libinput does not work out a
-   device's type from its kernel capabilities: it reads udev's ID_INPUT_* tags,
-   and a device whose only tag is ID_INPUT is dropped by the gate near the top
-   of evdev_device_create():
-
-       if ((udev_tags & EVDEV_UDEV_TAG_INPUT) == 0 ||
-           (udev_tags & ~EVDEV_UDEV_TAG_INPUT) == 0)
-               goto err;
-
-   So a record that says only "ID_INPUT=1" is worth what no record at all is
-   worth: the device is enumerated, then it is dropped, and the session still
-   has no keyboard -- while the boot log says the records were written and
-   everything looks right. On a real machine those tags come from udev's
-   input_id builtin, which reads the device's sysfs capabilities and writes
-   down what it found. There is no udev here to do that, so the same verdicts
-   are reached here, from the same attributes and by the same rules (systemd's
-   udev-builtin-input_id.c). The rules are worth following rather than
-   approximating, because the two ways to be wrong are not symmetrical: an
-   extra tag costs a setting, a missing one costs the device.
-
-   Takes the sysfs directory and the database directory as arguments rather
-   than naming the real ones, so tests/init-session.c can point it at a fake
-   tree, and reports how many records carried a type -- which is the difference
-   between input working and input being enumerated and dropped. Returns how
-   many records it wrote. */
-
-/* Input event codes, button ranges and property bits, from linux/input.h and
-   linux/input-event-codes.h. Spelled out rather than included, for the same
-   reason the ARPHRD_* above are: this builds against musl, whose gcc wrapper
-   has only musl's own headers on the include path (build.sh, build_musl), so
-   <linux/input.h> is not reachable from here. These are kernel ABI -- assigned
-   once and never moved -- and they are the numbers udev's input_id builtin
-   compares against. */
+/* Kernel input ABI numbers, spelled out because musl's wrapper cannot include
+   <linux/input.h>. These are the values udev's input_id builtin compares. */
 #define EV_KEY                  0x01
 #define EV_REL                  0x02
 #define EV_SW                   0x05
@@ -495,23 +387,17 @@ static void grant_devices(const struct session *s) {
 
 #define BUS_I2C                 0x18
 
-/* The capability attributes are hex bitmaps, most significant word first
-   ("120013", or "0 0 1f"), and a word the kernel left out is zero. KEY_MAX,
-   the largest bit any of them carries, is 0x2ff: sixteen 64-bit words. */
 #define CAP_WORDS 16
 
 struct capset {
     unsigned long long word[CAP_WORDS];
 };
 
-/* Read one capability attribute into `c`. A missing or empty attribute is not
-   an error: it means the device has none of those bits. */
 static void cap_read(struct capset *c, const char *dir, const char *attr) {
     memset(c, 0, sizeof *c);
 
-    /* 384 rather than 320: dir is itself a 320-byte buffer, and a truncated
-       path only looks like an unreadable attribute -- a device silently
-       becomes unclassifiable and libinput drops it. */
+/* 384 not 320: a truncated path looks like an unreadable attribute and a
+   device silently becomes unclassifiable. */
     char path[384];
     snprintf(path, sizeof path, "%s/%s", dir, attr);
     FILE *f = fopen(path, "r");
@@ -522,8 +408,6 @@ static void cap_read(struct capset *c, const char *dir, const char *attr) {
     fclose(f);
     buf[n] = '\0';
 
-    /* Split into words, then take them from the end: the last word printed
-       holds bits 0-63, the one before it 64-127, and so on. */
     const char *word[CAP_WORDS];
     size_t words = 0;
     for (char *p = buf; *p != '\0' && words < CAP_WORDS; ) {
@@ -537,13 +421,11 @@ static void cap_read(struct capset *c, const char *dir, const char *attr) {
         c->word[i] = strtoull(word[words - 1 - i], NULL, 16);
 }
 
-/* Is that bit set? */
 static int cap_test(const struct capset *c, unsigned bit) {
     return (bit >> 6) < CAP_WORDS
         && (int)((c->word[bit >> 6] >> (bit & 63)) & 1ULL);
 }
 
-/* Is any bit below `limit` set? udev asks this of whole blocks of keys. */
 static int cap_any(const struct capset *c, unsigned limit) {
     for (unsigned i = 0; i < CAP_WORDS && i * 64 < limit; i++) {
         unsigned long long v = c->word[i];
@@ -554,8 +436,6 @@ static int cap_any(const struct capset *c, unsigned limit) {
     return 0;
 }
 
-/* One bit per ID_INPUT_* property the classifier can decide on, and the name
-   each is written under. The order is udev's. */
 enum {
     TAG_POINTINGSTICK = 1u << 0,
     TAG_MOUSE         = 1u << 1,
@@ -587,9 +467,6 @@ static const struct {
     { TAG_SWITCH,        "ID_INPUT_SWITCH" }
 };
 
-/* The decided tags as short names, for the boot log: "KEY KEYBOARD", or
-   "none" when a device got only ID_INPUT -- the one outcome that makes
-   libinput drop it. Written into buf; always NUL-terminated. */
 static void tag_names(unsigned tags, char *buf, size_t bufsz)
 {
     size_t used = 0;
@@ -602,7 +479,6 @@ static void tag_names(unsigned tags, char *buf, size_t bufsz)
 
         if (!(tags & input_tags[i].flag))
             continue;
-        /* "ID_INPUT_" is a fixed 9-byte prefix on every property. */
         name = input_tags[i].property + 9;
         if (used && used + 1 < bufsz)
             buf[used++] = ' ';
@@ -614,8 +490,6 @@ static void tag_names(unsigned tags, char *buf, size_t bufsz)
         memcpy(buf, "none", 5);
 }
 
-/* A sysfs attribute holding a newline-trimmed string. Returns 0 when it is
-   not there or empty. */
 static int read_attr(const char *dir, const char *attr, char *out, size_t outsz) {
     char path[384];
     snprintf(path, sizeof path, "%s/%s", dir, attr);
@@ -629,7 +503,6 @@ static int read_attr(const char *dir, const char *attr, char *out, size_t outsz)
     return n > 0;
 }
 
-/* A sysfs attribute holding one hex number, or 0 when it is not there. */
 static unsigned hex_attr(const char *dir, const char *attr) {
     char path[384], buf[32];
     snprintf(path, sizeof path, "%s/%s", dir, attr);
@@ -643,9 +516,8 @@ static unsigned hex_attr(const char *dir, const char *attr) {
     return (unsigned)strtoul(buf, NULL, 16);
 }
 
-/* The tags this device earns. The rules are udev's: test_pointers() decides
-   what kind of pointer it is, test_key() whether it is a keyboard, and the
-   builtin around them adds the two smaller cases at the end. */
+/* Classify pointers and keyboards by udev's rules, not by approximations:
+   an extra tag costs a setting, a missing one costs the device. */
 static unsigned input_device_tags(const char *dir) {
     struct capset ev, key, rel, abs, props;
     cap_read(&ev, dir, "capabilities/ev");
@@ -657,7 +529,6 @@ static unsigned input_device_tags(const char *dir) {
     unsigned tags = 0;
     int is_pointer = 0;
 
-    /* --------------------------------------------- pointers (test_pointers) */
     int has_keys = cap_test(&ev, EV_KEY);
     int has_abs_coordinates = cap_test(&abs, ABS_X) && cap_test(&abs, ABS_Y);
     int has_3d = has_abs_coordinates && cap_test(&abs, ABS_Z);
@@ -666,8 +537,6 @@ static unsigned input_device_tags(const char *dir) {
         is_accelerometer = 1;
 
     if (is_accelerometer) {
-        /* An accelerometer is its own kind, and udev stops here rather than
-           also asking what kind of pointer it is. */
         tags |= TAG_ACCELEROMETER;
         is_pointer = 1;
     } else {
@@ -682,8 +551,6 @@ static unsigned input_device_tags(const char *dir) {
                    && cap_test(&rel, REL_Y);
         int has_mt = cap_test(&abs, ABS_MT_POSITION_X)
                   && cap_test(&abs, ABS_MT_POSITION_Y);
-        /* A device claiming every absolute axis there is, both multi-touch
-           ones included, is not really multi-touch. */
         if (has_mt && cap_test(&abs, ABS_MT_SLOT) && cap_test(&abs, ABS_MT_SLOT - 1))
             has_mt = 0;
         int is_direct = cap_test(&props, INPUT_PROP_DIRECT);
@@ -693,8 +560,6 @@ static unsigned input_device_tags(const char *dir) {
         int has_wheel = cap_test(&ev, EV_REL)
                      && (cap_test(&rel, REL_WHEEL) || cap_test(&rel, REL_HWHEEL));
 
-        /* Buttons in the joystick range -- unless the mouse range runs into
-           it, which is what a mouse with more than sixteen buttons does. */
         int stick_buttons = 0, stick_axes = 0;
         if (!cap_test(&key, BTN_JOYSTICK - 1)) {
             for (unsigned b = BTN_JOYSTICK; b < BTN_DIGI; b++)
@@ -737,7 +602,6 @@ static unsigned input_device_tags(const char *dir) {
         if (is_tablet && has_pad_buttons)
             is_tablet_pad = 1;
 
-        /* Two pad buttons and a wheel, with no relative axes: a tablet pad. */
         if (has_pad_buttons && has_wheel && !has_rel) {
             is_tablet = 1;
             is_tablet_pad = 1;
@@ -747,13 +611,9 @@ static unsigned input_device_tags(const char *dir) {
             && (has_rel || !has_abs_coordinates))
             is_mouse = 1;
 
-        /* There is no such thing as an i2c mouse: that is a trackpoint. */
         if (is_mouse && hex_attr(dir, "id/bustype") == BUS_I2C)
             is_pointing_stick = 1;
 
-        /* Un-detecting joysticks: keyboards carry the odd joystick button, so
-           a device with several of the keys below is a keyboard, and one with
-           fewer than two buttons or axes is not a joystick either. */
         if (is_joystick) {
             static const unsigned keyboard_keys[] = {
                 KEY_LEFTCTRL, KEY_CAPSLOCK, KEY_NUMLOCK, KEY_INSERT, KEY_MUTE,
@@ -781,17 +641,13 @@ static unsigned input_device_tags(const char *dir) {
                   || is_touchscreen || is_joystick || is_pointing_stick;
     }
 
-    /* ------------------------------------------------------ keys (test_key) */
     int is_key = 0;
     if (cap_test(&ev, EV_KEY)) {
-        /* Any KEY_* below the mouse and joystick buttons, or one of the two
-           high blocks that hold the few keys above them. */
         int found = cap_any(&key, BTN_MISC);
         for (unsigned b = KEY_OK; b < BTN_DPAD_UP && !found; b++)
             if (cap_test(&key, b)) found = 1;
         for (unsigned b = KEY_ALS_TOGGLE; b < BTN_TRIGGER_HAPPY && !found; b++)
             if (cap_test(&key, b)) found = 1;
-        /* Also treat common letter/symbol ranges as a keyboard signal */
         if (!found) {
             for (unsigned b = 16; b < 40 && !found; b++)
                 if (cap_test(&key, b)) found = 1; /* 'q' starts around 16 */
@@ -809,15 +665,10 @@ static unsigned input_device_tags(const char *dir) {
             is_key = 1;
         }
 
-        /* The first 32 bits are ESC, the numbers and Q to D: a device with all
-           of them is a full keyboard, whatever else it also looks like. The
-           reserved key 0 is not asked for. */
         if ((key.word[0] & 0xFFFFFFFEULL) == 0xFFFFFFFEULL) {
             tags |= TAG_KEYBOARD;
             is_key = 1;
         } else if (tags & TAG_KEY) {
-            /* If it has any key below BTN_MISC and isn't clearly a pointer-only
-               device, treat it as a keyboard for libinput's sake. */
             if (!is_pointer || (tags & TAG_POINTINGSTICK)) {
                 tags |= TAG_KEYBOARD;
                 is_key = 1;
@@ -825,14 +676,12 @@ static unsigned input_device_tags(const char *dir) {
         }
     }
 
-    /* Some evdev nodes are a scroll wheel and nothing else. */
     if (!is_pointer && !is_key && cap_test(&ev, EV_REL)
         && (cap_test(&rel, REL_WHEEL) || cap_test(&rel, REL_HWHEEL)))
         tags |= TAG_KEY;
 
-    /* If we still haven't tagged a device that has keyboard keys and no
-       pointer role, be permissive: tag it as KEY+KEYBOARD so libinput accepts it.
-       This helps on some VM/PS2/USB keyboard layouts where capability bits differ. */
+/* Be permissive for VMs with odd capability bits: a keyboard with keys but no
+   pointer role gets KEY+KEYBOARD so libinput accepts it. */
     if (!is_key && !is_pointer && cap_test(&ev, EV_KEY)) {
         int has_any_key = 0;
         for (unsigned b = 1; b < 255; b++) {
@@ -855,8 +704,6 @@ static unsigned input_device_tags(const char *dir) {
     return tags;
 }
 
-/* Does this directory look like an input device? Its capability attributes
-   say so. */
 static int is_input_device(const char *dir) {
     char probe[384];
     snprintf(probe, sizeof probe, "%s/capabilities/ev", dir);
@@ -867,13 +714,8 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir, int *typed)
     DIR *d = opendir(sysdir);
     if (!d) return 0;
 
-    /* The database directory is ours to make: there is no udev daemon here to
-       have made it. The caller creates the parent (/run/udev), but a record
-       cannot be written until the leaf directory itself exists, and mkdir's
-       failure is deliberately ignored -- EEXIST is the normal case on every
-       pass after the first. Without this, every fopen() below fails with
-       ENOENT and the function reports zero records while looking, to the boot
-       log, exactly like a machine with no input devices at all. */
+/* Make the database leaf ourselves: no udev daemon will, and without it every
+   fopen below fails and the boot log claims there are no input devices. */
     (void)mkdir(dbdir, 0755);
 
     unsigned long long usec = 0;
@@ -882,42 +724,23 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir, int *typed)
         usec = (unsigned long long)ts.tv_sec * 1000000ULL
              + (unsigned long long)ts.tv_nsec / 1000ULL;
 
-    /* `src` carries a whole event path, and the compiler can see that the two
-       names inside it make 580 bytes possible: give it the room, because a
-       truncated path skips a device with nothing said. */
+/* `src` can need 580 bytes; a truncated path silently skips a device. */
     char src[640], dst[320], num[64], devdir[320];
     int written = 0, named = 0;
     struct dirent *e;
 
-    /* idk how ts works: a device is a mouse if its capability bits say EV_REL
-       and EV_KEY and EV_SW are not enough to tell a mouse from a keyboard with
-       a trackball, so every one of these tags is a guess the kernel could have
-       made for us. */
 
-    /* Walk the devices rather than the event nodes. The inputN entries are the
-       input devices themselves -- the directory udev's input_id builtin reaches
-       by walking up from an event node -- so the capability attributes it reads
-       are right there, and no guess that the two numbers are equal: event12 is
-       a child of input19, and they are not the same number. The event node is
-       what carries the device number, and that number is the record's name,
-       because event nodes are what libinput enumerates. A class entry with no
-       event node (js0, mouse0) writes nothing. */
+/* Walk inputN, not eventN: the capabilities live on the input device, while
+   the event node supplies the number used in the record's filename. */
     while ((e = readdir(d)) != NULL) {
         if (strncmp(e->d_name, "input", 5) != 0) continue;
         snprintf(devdir, sizeof devdir, "%s/%s", sysdir, e->d_name);
         if (!is_input_device(devdir)) continue;
 
-        /* What the device is, once per device. It is answered before any
-           record is written: the record is the only place the answer can go,
-           and libinput ignores a device whose record names no type. */
         unsigned tags = input_device_tags(devdir);
 
-        /* Name every device and its verdict, every pass. The compositor's
-           silence when it drops a device is total -- libinput logs at a
-           debug level Aquamarine turns into nothing -- so this line is the
-           only place a bad classification can ever be seen. The sysfs
-           name is what makes it actionable: it says which physical
-           device the verdict belongs to. */
+/* Say every verdict: libinput's drop is silent at the log level Aquamarine
+   uses, and the sysfs name is what makes a bad classification actionable. */
         char names[128], devname[64];
         tag_names(tags, names, sizeof names);
         if (!read_attr(devdir, "name", devname, sizeof devname))
@@ -958,14 +781,8 @@ static int seed_udev_input_db(const char *sysdir, const char *dbdir, int *typed)
     return written;
 }
 
-/* Directories the session expects that nothing else has made.
-
-   /dev/shm is where glibc's shm_open() keeps its files; devtmpfs does not
-   create it on its own. /run/user/<uid> is the XDG runtime directory, and
-   nothing here logs in through pam so nothing makes it. startxfce used to
-   create both itself, but it runs as the session user now and a user cannot
-   mkdir under root-owned /dev or /run -- so PID 1 makes them first. Best
-   effort, exactly like the device nodes. */
+/* PID 1 makes /dev/shm and /run/user/<uid>: the session user cannot mkdir
+   under root-owned /dev or /run, and no PAM login creates them. */
 static void prepare_session_dirs(const struct session *s) {
     if (!s->ok) return;
     mkdir("/dev/shm", 01777);
@@ -979,15 +796,8 @@ static void prepare_session_dirs(const struct session *s) {
     }
 }
 
-/* Which desktop the first-boot wizard recorded.
-
-   `path` holds one word on its first line. Anything unreadable or unrecognised
-   means XFCE, which is the desktop that has always been here, so a missing or
-   half-written marker is never a machine with no desktop -- it is the default
-   one. Takes a path rather than hardcoding one so tests/init-session.c can
-   exercise it without touching /etc. */
-/* The first line of /etc/copper-desktop holds the desktop the first-boot
-   wizard chose. Returns one of: XFCE (0), NIRI (1), HYPERRAND (2). */
+/* First line of /etc/copper-desktop names the desktop; anything unreadable
+   or unknown means XFCE, the one always present. */
 enum {
     XFCE = 0,
     NIRI,
@@ -1005,29 +815,14 @@ static int chose_desktop(const char *path) {
     return XFCE;
 }
 
-/* The two-state view of the same marker: does this machine run niri or not?
-   The boot hint and tests/init-session.c both ask that question, while the
-   hint itself now uses chose_desktop() so it can name Hyprland too. Kept as
-   its own function so the contract tests/init-session.c pins -- only the exact
-   word "niri" selects niri; a missing marker, a stray word or a half-written
-   line all mean XFCE, the desktop that is always present -- stays tested
-   exactly where it has always been tested. */
+/* Kept separate so the contract stays tested: only the exact word "niri"
+   selects niri; a missing or half-written marker means XFCE. */
 static int chose_niri(const char *path) {
     return chose_desktop(path) == NIRI;
 }
 
-/* The seat.
-
-   niri is a Wayland compositor: through libseat it opens /dev/dri and
-   /dev/input. With no logind and no systemd, the seat comes from seatd, a small
-   daemon that hands out device access over a unix socket. Start it once, as
-   root, with the _seatd group the niri stage created; the socket lands at
-   /run/seatd.sock and the session user reaches it because the first-boot wizard
-   put them in _seatd.
-
-   XFCE does not need it -- Xorg is given its devices by copper-init directly --
-   so a machine without seatd is still a working XFCE machine. Report it and
-   carry on rather than refusing to boot for the other desktop's sake. */
+/* niri gets devices from seatd, which needs the _seatd group; XFCE does not
+   need it. A missing seatd is reported, not fatal. */
 static void start_seatd(void) {
     static const char *paths[] = { "/usr/bin/seatd", "/usr/sbin/seatd", NULL };
     const char *exe = NULL;
@@ -1036,11 +831,8 @@ static void start_seatd(void) {
     }
     if (!exe) return;                 /* no niri in this image */
 
-    /* On images where the _seatd group did not arrive from the build stage
-       (a reset /etc/group on a live init), recreating it here is cheaper than
-       refusing to boot niri. seatd looks the group up by name before doing
-       any useful work, so without this line on such systems it exits early
-       with "Could not find group by name '_seatd'." and there is no seat. */
+/* Recreate _seatd here if the build stage missed it: seatd looks the group
+   up by name and exits early without it. */
     if (!getgrnam("_seatd")) {
         int _seatd_gid = 999;
         while (_seatd_gid > 100 && getgrgid(_seatd_gid)) _seatd_gid--;
@@ -1052,12 +844,6 @@ static void start_seatd(void) {
         }
     }
 
-    /* Firstboot may have run before the _seatd group existed, so the account
-       never got added to it. Put it there now, before the login shell starts,
-       so libseat can open the input devices (cursor/keyboard in niri).
-       Only when the group actually exists and the user is really not in it --
-       addgroup's "already a member" complaint on every boot would be noise on
-       the console. */
     {
         FILE *dm = fopen("/etc/copper-firstboot.done", "r");
         if (dm) {
@@ -1095,30 +881,11 @@ static void start_seatd(void) {
         execl(exe, "seatd", "-g", "_seatd", (char *)NULL);
         _exit(127);
     }
-    /* Best effort: a moment for the socket to bind so the first startniri
-       finds a seat. Not a wait on the socket itself -- the user types slowly,
-       and a busy wait here would only delay the shell. seatd is PID 1's child
-       and is reaped only if it exits, which it should not. */
     usleep(200 * 1000);
 }
 
-/* VMware's guest tools.
-
-   A VMware guest is the one hypervisor where the console mode does not follow
-   the window by itself. vmwgfx programs whatever mode the firmware handed it,
-   and when the VMware window is maximised the host offers a new resolution
-   through the guest tools channel; open-vm-tools' resolutionKMS plugin is what
-   receives that hint and programs the KMS connector. Without the daemon the
-   window shows the old framebuffer scaled up, which is exactly what "loses its
-   quality in fullscreen" looks like.
-
-   The systemd flavour has copper-vmtools.service for this. Here PID 1 starts
-   it beside seatd, and only on VMware: the DMI vendor is the same fact
-   ConditionVirtualization=vmware reads, and on any other machine vmtoolsd has
-   nothing to talk to. Best effort -- a machine with no open-vm-tools just says
-   nothing and boots as before. /etc/vmware-tools/tools.conf turns the plugin
-   on; upstream leaves it off when it finds no Xorg vmware driver, and this
-   image has none. */
+/* On VMware, start vmtoolsd so resolutionKMS tracks the window size; the DMI
+   vendor check keeps it off elsewhere, and a missing package is harmless. */
 static void start_vmtools(void) {
     static const char *paths[] = { "/usr/bin/vmtoolsd", "/usr/sbin/vmtoolsd", NULL };
     const char *exe = NULL;
@@ -1145,8 +912,6 @@ static void start_vmtools(void) {
     }
     if (pid == 0) {
         setsid();
-        /* --background daemonises; the short-lived parent exits and PID 1
-           reaps it, and the daemon keeps the plugins loaded. */
         execl(exe, "vmtoolsd", "--background", (char *)NULL);
         _exit(127);
     }
@@ -1155,26 +920,15 @@ static void start_vmtools(void) {
 }
 
 
-/* Make fd's terminal this session's controlling terminal.
-
-   TIOCSCTTY(0) refuses when the tty is already the controlling terminal of a
-   different session, and that is the console on the systemd flavour:
-   copper-console.service carries StandardInput=tty and TTYPath=/dev/tty1, so
-   systemd has made tty1 the service's controlling terminal before copper-init
-   --console forks anything. The child's setsid() starts a session with no tty,
-   the zero-flag ioctl answers EPERM, and the shell ends up with working
-   stdin/stdout and no /dev/tty at all -- so `sudo` cannot open it to ask for a
-   password ("a terminal is required to read the password"), while anything
-   that reads stdin, the wizard included, looks fine. Steal the tty instead:
-   we are still root here, and this shell is the only thing that should own the
-   console. Under PID 1 the first ioctl succeeds and the second is not tried. */
+/* Steal the tty with TIOCSCTTY(1) when it belongs to another session: under
+   systemd the service already owns tty1, and without /dev/tty sudo cannot
+   prompt for a password even though stdin and stdout work. */
 static void acquire_ctty(int fd) {
     if (fd < 0) return;
     if (ioctl(fd, TIOCSCTTY, 0) == 0) return;
     (void)ioctl(fd, TIOCSCTTY, 1);
 }
 
-/* Returns the child's pid (the caller reaps it), or -1 if the fork failed. */
 static pid_t spawn_tty(int tty) {
     pid_t pid = fork();
     if (pid != 0) return pid;
@@ -1199,10 +953,6 @@ static pid_t spawn_tty(int tty) {
     _exit(1);
 }
 
-/* A getty on a spare virtual terminal.
-
-   Let BusyBox getty own the terminal setup and login cycle. Invoking login
-   directly can leave a VT without getty's line setup and respawn behavior. */
 static pid_t spawn_getty(int tty) {
     pid_t pid = fork();
     if (pid != 0) return pid;
@@ -1217,48 +967,18 @@ static pid_t spawn_getty(int tty) {
     _exit(127);
 }
 
-/* Which reboot(2) action an incoming signal means.
-
-   These are busybox init's signal names, chosen so the busybox halt /
-   poweroff / reboot applets and our /sbin/shutdown all agree on one
-   convention:
-
-       SIGTERM -> reboot      SIGUSR2 -> poweroff      SIGUSR1 -> halt
-
-   SIGINT is not one of those: the kernel turns Ctrl-Alt-Del into SIGINT for
-   PID 1, and every other Linux init reboots on it. It is listed here rather
-   than left to the halt fallback because a keyboard trap that halts the
-   machine instead of restarting it would be worse than the trap.
-
-   Kept as its own function so the mapping is unit-testable without actually
-   rebooting the machine that runs the test -- see tests/init-session.c. */
+/* busybox's halt/poweroff/reboot applets signal PID 1: SIGTERM and SIGINT
+   reboot, SIGUSR2 powers off, the rest halt. Kept separate so the mapping
+   is unit-testable without rebooting the test host. */
 static int power_how(int sig) {
-    /* kill me: three signals and three meanings, and the only way to find out
-       which one the user meant is to guess. SIGTERM says reboot, SIGUSR2 says
-       power off, everything else says halt. */
     if (sig == SIGTERM || sig == SIGINT) return RB_AUTOBOOT;
     if (sig == SIGUSR2) return RB_POWER_OFF;
     return RB_HALT_SYSTEM;              /* SIGUSR1, SIGPWR */
 }
 
-/* The power request handler.
-
-   busybox's halt/poweroff/reboot applets do NOT call reboot(2) unless given
-   -f; by default they signal PID 1 and expect it to do the orderly shutdown
-   ("go through init"). Copper's PID 1 used to ignore SIGUSR1/SIGUSR2/SIGTERM,
-   so `sudo reboot` and `sudo poweroff` silently did nothing (bug 18).
-   sync() twice -- the second pass is the usual belt and braces for the
-   persisted overlay upper -- then hand the machine to the kernel.
-
-   If reboot(2) refuses, this used to _exit(0), which kills PID 1: the kernel
-   panics "Attempted to kill init" and takes the reason down with it. The
-   handler now reports on the console (write(2), because printf is not
-   async-signal-safe; fd 2 is /dev/console, main() dup2s it there) and
-   returns instead -- the session below keeps running and the machine stays
-   up, which is the better failure for a live image. Returning makes the
-   interrupted waitpid in the main loop come back with EINTR, so that loop
-   retries rather than reading it as "the session ended" (two shells, one
-   tty -- the bug described at spawn_tty).
+/* Applets signal PID 1 instead of calling reboot(2) directly; sync twice, then
+   hand the machine to the kernel. A refused reboot must not _exit(0): that
+   kills PID 1 and panics the kernel. Return so the waitpid loop retries.
    updated by farcrowx, bug 33, iso/src-init/copper-init.c:on_power_signal */
 static void on_power_signal(int sig) {
     sync();
@@ -1270,36 +990,11 @@ static void on_power_signal(int sig) {
     }
 }
 
-/* ---- the boot splash ------------------------------------------------------
-
-   Plymouth draws the Copper boot animation and then hands the console back.
-   It is started here, from PID 1, rather than by a service manager, because
-   there is no service manager: copper-init is the init.
-
-   Three things have to line up, and each is checked rather than assumed:
-
-     - the kernel command line asks for it. grub.cfg passes "splash", and
-       "plymouth.ignore-udev" and "plymouth.ignore-serial-consoles" beside it.
-       The second is not optional: this image runs no udev, and without that
-       switch plymouthd enumerates its devices through udev, finds nothing, and
-       never draws a frame. With it, plymouthd takes its own fallback path and
-       drives DRM or the framebuffer directly. The third is not optional
-       either: the command line carries a serial console as well as the screen,
-       and plymouthd reads any console= that is not the default VT as a serial
-       console -- serial_consoles_detected is set and no renderer is ever
-       created, so nothing is drawn at all (bug 25). splash_spawn() passes that
-       one as an argument too, so it does not depend on the command line alone.
-
-     - the pieces are in the image. Both the daemon and the control client are
-       checked for, because a splash that cannot be quit is worse than none:
-       it would sit on the console the login shell needs.
-
-     - the daemon answers. The splash is only shown once the client can reach
-       it, so a broken plymouth costs a short bounded pause, not a hang. */
+/* Plymouth needs the cmdline switches (no udev, no serial consoles), both
+   binaries present, and a daemon that answers before showing the splash;
+   each is checked so a broken splash costs a pause, not a hung boot. */
 static pid_t g_splash_pid = -1;
 
-/* Exact-token match against /proc/cmdline, so "splash" does not also match
-   "nosplash" and a "word=value" switch has to match whole. */
 static int cmdline_has(const char *want) {
     FILE *f = fopen("/proc/cmdline", "r");
     char line[1024];
@@ -1326,8 +1021,6 @@ static int cmdline_has(const char *want) {
     return 0;
 }
 
-/* Run the plymouth client once and wait for it. Returns its exit status, or
-   -1 if it could not be run at all. */
 static int plymouth_cmd(const char *cmd) {
     pid_t pid = fork();
     int st;
@@ -1343,22 +1036,8 @@ static int plymouth_cmd(const char *cmd) {
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
-/* Fork the daemon. attach selects the console-redirecting form.
-
-   --ignore-serial-consoles is the switch grub.cfg passes, passed again here:
-   this image gives the kernel a serial console for the log beside the screen,
-   and plymouthd reads a second active console as "the display is not here" --
-   it forces its built-in text splash and creates no renderer at all (bug 25).
-   Passing it as an argument too keeps the fix from depending on a command line
-   a booting user can edit.
-
-   It is worth passing because it is an option this plymouthd really has, not
-   one assumed from plymouth's git tree: `plymouthd --help` from the packaged
-   build (plymouth 24.004.60-1, the one this image stages) lists
-   `--ignore-serial-consoles`, and a bogus option makes the same daemon print
-   that whole list instead of starting. An option it did not know would leave
-   the console on a usage dump and kill the splash outright, which is why this
-   was checked against the .deb before being written here. */
+/* Pass --ignore-serial-consoles explicitly: it is a real option of the staged
+   plymouthd (checked against --help), and without it the daemon draws nothing. */
 static pid_t splash_spawn(int attach) {
     pid_t pid = fork();
 
@@ -1376,8 +1055,7 @@ static pid_t splash_spawn(int attach) {
     _exit(127);
 }
 
-/* Is the daemon still running? Reaps it and clears the pid once it has gone: a
-   zombie still answers kill(pid, 0), so this waits rather than probing. */
+/* Reap the daemon here: a zombie still answers kill(pid, 0). */
 static int splash_alive(void) {
     int st;
     pid_t r;
@@ -1392,8 +1070,6 @@ static int splash_alive(void) {
     return 1;
 }
 
-/* Wait for the daemon to start answering. 0 once it does, -1 if it died or
-   never answered within the bound. */
 static int splash_ready(void) {
     int i;
 
@@ -1421,9 +1097,7 @@ static void splash_start(void) {
     if (splash_ready() == 0 && plymouth_cmd("--show-splash") == 0)
         return;
 
-    /* Either it never answered, or it exited: the console-session attach is
-       the step that can fail. Restart it without that step so the animation
-       still plays, rather than dropping the whole idea for one failure. */
+/* The console attach can fail; retry without it rather than lose the splash. */
     if (g_splash_pid > 0) {
         int i;
         plymouth_cmd("--quit");
@@ -1441,49 +1115,17 @@ static void splash_stop(void) {
     if (g_splash_pid <= 0)
         return;
     plymouth_cmd("--quit");
-    /* Wait for it to exit, so the console is back in text mode before the
-       login shell is spawned onto it -- and so the daemon is reaped. */
     for (i = 0; i < 50 && splash_alive(); i++)
         usleep(20 * 1000);
     g_splash_pid = -1;
 }
 
-/* Set by --console: something else is PID 1 (systemd, once Copper makes that
-   swap), and the half of this file that starts daemons is then somebody
-   else's job -- the units own the daemons, this file owns only the console.
-   see console_main(). The definition is above say(), which reads it to keep
-   the console quiet. */
 
-/* ---- the system bus -------------------------------------------------------
+/* No systemd means nothing starts the system D-Bus, so polkit, udisks2 and
+   power-profiles-daemon are unreachable. Start dbus-daemon here and repair
+   the messagebus/polkitd accounts the unpacked .debs would have created;
+   the paths are arguments so tests can use a fixture. */
 
-   polkit, udisks2 and power-profiles-daemon are D-Bus services: each owns a
-   name on the *system* bus and the bus starts it on first use. There is no
-   systemd here to start that bus, so nothing did. The polkit agent still came
-   up (the session config starts it), tried to reach
-   org.freedesktop.PolicyKit1, and got nothing; udisks and the power daemon
-   were equally unreachable. The
-   visible result is that every privileged action -- mount a stick, change the
-   power profile -- has no agent to ask, so the desktop silently refuses.
-
-   This starts the daemon systemd's dbus.service would have started. Two
-   things the package postinsts would normally arrange have to be arranged
-   here, because build.sh unpacks the .debs without running those scripts:
-
-     - the messagebus account. dbus-daemon --system reads
-       /usr/share/dbus-1/system.conf, which names <user>messagebus</user>,
-       and refuses to start when that account is missing.
-
-     - the polkitd account. polkitd is D-Bus-activated and drops to this
-       account; without it, the activation itself fails.
-
-   Both accounts are shipped in the rootfs overlay as well. The creation here
-   is the repair path for a tree that lost them -- the same reason start_seatd
-   can recreate _seatd -- and the file paths are arguments so
-   tests/init-session.c can prove the grammar against a fixture instead of the
-   host's /etc. */
-
-/* Does the account database at `path` already have `name`? A prefix match is
-   not enough: "polkitd-old" starts with "polkitd". */
 static int file_has_name(const char *path, const char *name) {
     char line[512];
     size_t n = strlen(name);
@@ -1501,8 +1143,6 @@ static int file_has_name(const char *path, const char *name) {
     return 0;
 }
 
-/* Is `id` the uid or gid of any record in `path`? The third colon-separated
-   field of both /etc/passwd and /etc/group is the one that matters. */
 static int file_has_id(const char *path, int id) {
     char line[512];
     FILE *f = fopen(path, "r");
@@ -1523,7 +1163,6 @@ static int file_has_id(const char *path, int id) {
     return 0;
 }
 
-/* The gid of `name` in `path`, if it is there. */
 static int file_group_id(const char *path, const char *name, int *gid) {
     char line[512];
     size_t n = strlen(name);
@@ -1546,7 +1185,6 @@ static int file_group_id(const char *path, const char *name, int *gid) {
     return 0;
 }
 
-/* The lowest free system id from 999 down, checking both files when given. */
 static int next_free_id(const char *a, const char *b) {
     int id = 999;
 
@@ -1558,11 +1196,6 @@ static int next_free_id(const char *a, const char *b) {
     return -1;
 }
 
-/* Make a system account and its own group.
-
-   Returns 1 when it wrote the records, 0 when the account was already there,
-   -1 when it could not write. Callers treat -1 as a reason to skip the
-   service, not a reason to abort the boot. */
 static int ensure_system_user(const char *passwd_path, const char *group_path,
                               const char *name, const char *home,
                               const char *shell) {
@@ -1639,8 +1272,6 @@ static void start_system_bus(void) {
     rc = ensure_system_user("/etc/passwd", "/etc/group", "polkitd",
                             "/nonexistent", "/bin/false");
     if (rc < 0) {
-        /* The bus runs without this one; only the polkit daemon needs it,
-           and a bus with no authority is still better than no bus at all. */
         say("polkit: could not add the polkitd account: %s", strerror(errno));
     } else {
         made |= rc > 0;
@@ -1662,8 +1293,6 @@ static void start_system_bus(void) {
     }
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR)
         ;
-    /* A beat for the socket to bind. The user still has to type a desktop
-       name, so a slower bus is not a reason to block the boot on it. */
     usleep(200 * 1000);
 
     if (access(sock, F_OK) == 0) {
@@ -1675,27 +1304,9 @@ static void start_system_bus(void) {
 }
 
 
-/* Give the console a font that can draw what the tools print.
-
-   The kernel console is one bitmap font and zero fallback: a codepoint whose
-   glyph is missing from the font's unicode table is rendered as a literal
-   question mark. Until a font is loaded it also has a default unicode map
-   that only knows U+0000-U+00FF -- the built-in VGA face is drawn from those
-   bytes and nothing maps the rest -- so on tty1 every fastfetch separator
-   (U+2500) came out as "?" while its Latin text was perfect. In
-   xfce4-terminal the same bytes looked fine, because VTE falls back through
-   fontconfig and the console cannot. That is the whole bug.
-
-   Uni2-VGA16 is the 512-glyph console font in the image (see
-   /usr/share/doc/copper-console-font/README): box drawing, blocks, arrows,
-   Greek and Cyrillic. It cannot also carry braille -- 256 of the 512 slots --
-   and does not need to: btop looks at its controlling tty, sees /dev/tty1 and
-   switches itself to its ASCII "tty" graphs before it draws anything.
-
-   setfont is a busybox applet (build.sh asserts CONFIG_SETFONT), so this
-   works on the console-only boot that has no glibc and no X. Best effort:
-   no font file, no /dev/tty1 or a serial console just leaves the default
-   face alone. */
+/* The Linux VT has one bitmap font and no per-glyph fallback, so box-drawing
+   codepoints became '?' until Uni2-VGA16 was loaded. setfont is a busybox
+   applet, so this works on the console-only boot too. */
 static void load_console_font(void) {
     static const char font[] = "/usr/share/consolefonts/Uni2-VGA16.psf";
     static const char tty[] = "/dev/tty1";
@@ -1716,22 +1327,8 @@ static void load_console_font(void) {
         ;
 }
 
-/* The wizard, the session user, and the shell that waits for them.
-
-   Everything from "is the wizard done?" down to the loop that respawns the
-   session. Shared by both entry points: PID 1 (main), and a service under
-   another init (--console). Nothing in here mounts anything, installs a
-   signal handler or waits on a global child, so it is safe to reach from
-   either. */
-/* One field out of an os-release file, quotes stripped, into `out`. An empty
-   string when the file or the field is absent. os-release is the image's
-   identity -- `copper version` reads it too -- and a second copy of the
-   version string here is how v0.1.0-dev shipped against VERSION_ID=0.1.
-
-   The path is an argument, not the constant /etc/os-release, for the same
-   reason ensure_system_user takes its database paths: the gate runs this
-   against a fixture, and the machine the gate runs on is not Copper and
-   must not be mistaken for it. */
+/* Read one os-release field, quotes stripped. The path is an argument because
+   the gate runs this against a fixture, not the build host's /etc. */
 static void os_release_field(const char *path, const char *want,
                              char *out, size_t cap) {
     out[0] = '\0';
@@ -1760,31 +1357,9 @@ static void os_release_field(const char *path, const char *want,
     fclose(f);
 }
 
-/* The welcome banner on the session tty: clear the screen, then say what
-   this machine is and how to start a desktop on it.
-
-   Written to stdout directly, not through say(). say() under --console is
-   deliberately serial-only diagnostic chatter, because the console is about
-   to draw the wizard's form and stray "copper:" lines corrupt it -- which is
-   also why the "type startniri" hint in run_session() never reached the
-   screen and only ever landed in the serial log. This is the opposite case:
-   intentional UI, on the tty the user is looking at, printed just before the
-   shell takes it over.
-
-   The clear is the escape sequence `clear` itself sends (cursor home, erase
-   in display, erase scrollback) rather than a run of the command: by this
-   point nothing guarantees /usr/bin/clear or a terminfo database exists,
-   and the Linux VT answers these codes by definition. It wipes what came
-   before -- the kernel's boot text, systemd's [ OK ] lines, and whatever
-   the wizard left drawn -- so the shell starts on a clean screen.
-
-   Called inside run_session()'s respawn loop, not once before it: every
-   terminal start gets it, from the first shell after the wizard to every
-   login after a logout.
-
-   The os-release path is an argument for the same reason os_release_field
-   takes one: the gate proves this against a fixture, not the build host's
-   own /etc/os-release. */
+/* This is UI, not say() chatter: it must reach the tty the user is looking at.
+   Use the escape sequence `clear` sends, not the binary, and print it on
+   every respawn. The os-release path is an argument for fixture tests. */
 static void print_welcome(const char *os_release) {
     char id[32], version[64];
     os_release_field(os_release, "ID", id, sizeof id);
@@ -1794,11 +1369,8 @@ static void print_welcome(const char *os_release) {
     printf("welcome to copper linux!\n");
     printf("\n");
     printf("type 'startniri' for niri and 'startxfce' for xfce\n");
-    /* The version line is gated on ID the same way `copper version` gates:
-       a copper-init running somewhere that is not Copper (a chroot on a
-       build host with the source mounted) must not report that machine's
-       os-release as ours. VERSION_ID, with the "v" the user types; when it
-       is absent the banner simply omits the line rather than guessing. */
+/* Only report VERSION_ID when ID is copper, so a chroot cannot pass its own
+   os-release off as ours; omit the line when it is absent. */
     if (strcmp(id, "copper") == 0 && version[0])
         printf("\nv%s\n", version);
     printf("\n");
@@ -1806,43 +1378,25 @@ static void print_welcome(const char *os_release) {
 }
 
 static void run_session(void) {
-    /* UTF-8, before anything draws. Nothing else in the image set a locale,
-       so every program that calls setlocale("") got "C" -- one byte per
-       character -- and the terminal tools painted a replacement box for each
-       piece of their own art. C.UTF-8 needs no locale-gen and musl maps it to
-       UTF-8 too; the glibc half of it is in libc-bin, which build_gui now
-       stages. Overwrite 0: a LANG inherited from the caller wins. */
+/* Set LANG=C.UTF-8 before anything draws: otherwise setlocale("") gave C
+   and tools painted a box per byte of their own art. C.UTF-8 needs no
+   locale-gen; overwrite an inherited LANG. */
     setenv("LANG", "C.UTF-8", 0);
 
-    /* The console is a Linux VT, and nothing in the image set TERM. Bash
-       invents "dumb" when it finds none, and a dumb terminal is what makes
-       readline lose the character at the right margin and leaves `clear`
-       unable to repaint the prompt until another Enter. `linux` is the
-       terminfo name for the VT. A real inherited TERM keeps its own answer
-       (a terminal emulator started from this shell); "dumb" does not, because
-       that is the placeholder bash made up. /etc/profile carries the same
-       fallback for shells that do not come through copper-init. */
+/* TERM=linux on the VT: bash invents "dumb" when none is set, which breaks
+   readline's right margin and `clear`. Keep a real inherited TERM. */
     const char *term = getenv("TERM");
     if (!term || !*term || strcmp(term, "dumb") == 0)
         setenv("TERM", "linux", 1);
 
-    /* Also before anything draws: the console has no per-glyph fallback, so
-       whatever face is loaded now is the one the tools will be judged on. */
     load_console_font();
 
     struct stat st_done;
     if (stat("/etc/copper-firstboot.done", &st_done) != 0) {
         pid_t wiz = fork();
         if (wiz == 0) {
-            /* The wizard needs a controlling terminal of its own. getpass()
-               reads from /dev/tty rather than stdin, so without a session and
-               an acquired tty it cannot open /dev/tty at all and the password
-               questions come back unusable. Same treatment spawn_tty() gives
-               the shell, pointed at /dev/console because that is where the
-               wizard's stdout already goes -- except under --console, where
-               the service's stdin already IS the console the user is looking
-               at (the unit pins TTYPath=/dev/tty1) and /dev/console may well
-               be a serial port instead. */
+/* The wizard needs its own session and tty for getpass()/dev/tty; under
+   --console the unit's tty1 is already the service's controlling terminal. */
             setsid();
             int cfd = g_console_only ? dup(0) : open("/dev/console", O_RDWR);
             if (cfd >= 0) {
@@ -1857,25 +1411,11 @@ static void run_session(void) {
         waitpid(wiz, &wst, 0);
     }
 
-/* The session user, and where the shell starts.
-
-       This has to happen after the wizard, not before: on a first boot the
-       done-marker does not exist yet, so reading it any earlier finds nothing.
-       /etc/copper-firstboot.done holds the username on its first line, written
-       by the wizard as it finishes. Resolving it here means one read, used
-       both to pick the working directory and to drop the shell's privileges
-       in spawn_tty() below.
-
-       Dropping someone at / is worth avoiding: that is the session account
-       sitting next to /boot, /etc and the block devices. The account is no
-       longer root, so this is smaller than it once was, but the working
-       directory still should not be the root of the filesystem. */
+/* Resolve the marker after the wizard wrote it; one read drives both cwd and
+   the privilege drop. Root's cwd would otherwise be /, next to /boot and
+   the block devices. */
     session_from_marker("/etc/copper-firstboot.done", &g_session);
     if (g_session.ok) {
-        /* Only adopt the home if it is a real, enterable directory: a stale
-           marker left by a half-finished wizard must not put us somewhere
-           that does not exist. The drop does not depend on this -- the
-           account is real either way, and cwd is not the shell's identity. */
         if (access(g_session.home, X_OK) == 0 && chdir(g_session.home) == 0) {
             setenv("HOME", g_session.home, 1);
             setenv("USER", g_session.name, 1);
@@ -1886,21 +1426,9 @@ static void run_session(void) {
         }
     }
 
-    /* The shell.
-
-       There is no automatic desktop. The desktop is XFCE, and XFCE is something
-       the user starts with `startxfce` at the prompt below rather than something
-       boot hands them: the X stack is not in this image yet, so an automatic
-       start either works or leaves a blank screen, and neither is worth it to
-       someone who is about to type startxfce anyway. A shell in front of it also
-       means a failure in the X stack costs a shell rather than the machine.
-
-       This also removes the whole reason the desktop used to have a kernel
-       command line switch. Driving the VGA into a graphics mode is irreversible
-       from the text console: on a machine whose framebuffer it cannot drive there
-       is no way back, because the shell exists but there is no longer a screen to
-       show it on. Xorg takes the display through KMS and leaves a working console
-       behind, so there is nothing to switch away from. */
+/* The shell comes first: the X stack is not in the image yet, so auto-start
+   would mean a blank screen with no way back. A shell also contains an X
+   failure instead of losing the machine. */
 
     const char *hint;
     switch (chose_desktop("/etc/copper-desktop")) {
@@ -1908,9 +1436,8 @@ static void run_session(void) {
         hint = "startniri for niri (or startxfce for XFCE)";
         break;
     case HYPERRAND:
-        /* Hyprland is an ingot payload, not part of the image. Say the install
-           command first: a hint that only names starthyprland sends someone to
-           a command that is not there until the payload has been installed. */
+/* Name the install command too: starthyprland does not exist until the
+   Hyprland payload is installed. */
         hint = "sudo ingot install hyprland, then starthyprland (or startxfce for XFCE)";
         break;
     default:
@@ -1921,29 +1448,16 @@ static void run_session(void) {
     if (!g_console_only)
         say("Ctrl-Alt-F3 opens a password-protected login shell");
 
-    /* The seat and the system bus, before the shell: niri needs the seat
-       the moment startniri runs, and the polkit agent that starts with the
-       compositor needs the bus. Starting them here means the user never waits
-       on either. Under --console there are units for both
-       (copper-seatd.service and systemd's own dbus.service) ordered before
-       this service, so starting a second copy here would only be a second
-       process failing to bind the same socket. */
+/* Start the seat and bus before the shell so niri and the polkit agent never
+   wait on them; under --console units already own both. */
     if (!g_console_only) {
         start_system_bus();
         start_seatd();
         start_vmtools();
     }
 
-    /* Exactly one session at a time. Keep the pid so the reaper below can wait
-       on this specific child instead of on any child: udhcpc is our child too,
-       and `udhcpc -b` leaves a short-lived parent behind when it daemonises.
-
-       waitpid(-1) would return on that exit and start a second Bash shell on the
-       same tty, so two shells fought over stdin -- typing came out garbled and
-       the banner printed twice. */
-    /* tty3 is the recovery login for the busybox-init image. The systemd
-       image already owns tty3 through getty@tty3.service, so do not compete
-       with it when copper-init runs as that service. */
+/* Wait on this specific child: waitpid(-1) also catches udhcpc's short-lived
+   parent and would start a second shell fighting over the same tty. */
     pid_t rescue = g_console_only ? -1 : spawn_getty(3);
     if (rescue > 0)
         say("getty running on tty3 (Ctrl-Alt-F3 for a login prompt)");
@@ -1951,17 +1465,8 @@ static void run_session(void) {
         say("could not start the tty3 login; the main shell remains on tty1");
 
     for (;;) {
-        /* The libudev records, before the shell for the same reason the seat
-           is: the compositor needs them the moment startniri runs. Every
-           pass, not just the first, so a session that logs out and back in --
-           or a keyboard that only showed up later -- still gets its records.
-           /run/udev is ours to make; there is no daemon to have made it, and
-           the seeder makes the data/ directory under it.
-
-           Skipped under --console, where systemd-udevd owns /run/udev and
-           writes real records into it. Seeding here would put our guesses on
-           top of the daemon's own answer, and a stale hand-written record is
-           worse for libinput than no record at all. */
+/* Seed libudev records on every pass so a logout or late keyboard still gets
+   them; skip under --console where systemd-udevd owns /run/udev. */
         if (!g_console_only) {
             mkdir("/run/udev", 0755);
             int typed = 0;
@@ -1970,10 +1475,6 @@ static void run_session(void) {
             if (seeded > 0) {
                 say("input: wrote %d libudev record(s), %d naming a device type",
                     seeded, typed);
-                /* A record with no type in it is a record libinput will not use,
-                   and the session that follows looks like a working one: seat,
-                   config and DRM all fine, with a pointer that does not move. Say
-                   so here, where the only evidence is. */
                 if (typed == 0)
                     say("input: none names a type, so libinput will ignore every device");
             } else {
@@ -1995,8 +1496,6 @@ static void run_session(void) {
             if (got < 0 && errno == ECHILD)
                 break;
 
-            /* Keep a login prompt on tty3 after logout, just as a getty
-               respawns after a user exits their shell. */
             if (rescue > 0) {
                 do {
                     got = waitpid(rescue, &rescue_status, WNOHANG);
@@ -2012,22 +1511,8 @@ static void run_session(void) {
     }
 }
 
-/* --console: the tty1 half of this file, run as a service under another init.
-
-   This is the systemd entry point, and it is deliberately almost empty.
-   Everything a real PID 1 does is left to the init that is actually PID 1:
-
-     - mounting /proc, /sys, /dev and /run   -> already done before switch_root
-     - the power signal handlers             -> systemd's job; SIGTERM on a
-                                                service must mean "stop", not
-                                                "reboot the machine from under
-                                                the shutdown that asked"
-     - hostname, DHCP, seatd, dbus, polkit    -> units (copper-*.service)
-     - reaping orphans                        -> systemd reaps
-
-   What is left is exactly what the console needs: a PATH, the wizard, the
-   session user and the shell. The unit orders this after udevd and seatd and
-   pins TTYPath=/dev/tty1, which is the tty spawn_tty() below opens. */
+/* --console is almost empty: another init already did the mounts, signals and
+   daemons. Only PATH, the wizard, the session and its shell remain. */
 static int console_main(void) {
     g_console_only = 1;
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -2042,46 +1527,15 @@ int main(int argc, char **argv) {
 
     console_stdio();
 
-    /* PATH, set once, here, before anything is forked.
-
-       This was the cause of "ip: command not found" and "ifconfig: command
-       not found" on a booted system, and it is worth writing down properly
-       because the commands were never missing.
-
-       PID 1 starts with an environment the kernel builds, and it has no PATH
-       in it. When a program has no PATH, execvp() falls back to
-       confstr(_CS_PATH), which is the kernel's compiled-in default:
-
-           /bin:/usr/bin
-
-       Copper's networking applets are in sbin. So `ip`, `ifconfig`, `route`,
-       `arp` and everything else installed under /sbin and /usr/sbin were
-       unreachable by name, while `ping`, `grep`, `touch` and the rest worked
-       because they are in /bin and /usr/bin. The commands were present,
-       compiled in, and correctly linked the whole time -- the shell was
-       simply never told to look in sbin.
-
-       Setting it in start_dhcp() did not help, because that runs in a forked
-       child: the child got a PATH and the shell, which is what people
-       actually type at, did not. Anything that wants a PATH has to inherit
-       it from here. */
+/* PID 1 gets no PATH from the kernel; execvp()'s default omits /sbin and
+   /usr/sbin, so ip and ifconfig were 'not found' though installed. Setting
+   it in a forked child was too late -- the shell never inherited it. */
     setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            1);
 
-    /* Power signals get real handlers (see on_power_signal), and Ctrl-Alt-Del
-       is one of them.
-
-       The kernel turns Ctrl-Alt-Del into SIGINT for PID 1, and this init used
-       to throw it away: SIGINT was SIG_IGN. That is invisible until a session
-       stops responding -- dead input, a wedged compositor -- and then the one
-       escape the kernel still offers, the one that works without a working
-       session at all, is the one being ignored. A stuck screen had no way out
-       but a power cycle. Every other Linux init reboots on Ctrl-Alt-Del, and
-       so does this one now.
-
-       SIGHUP stays ignored: a terminal hangup is not a reason to take the
-       machine down. SIGCHLD is left at its default, because the reaper below
-       relies on waitpid. */
+/* Handle the power signals, including SIGINT from Ctrl-Alt-Del: ignoring it
+   left a wedged compositor with no keyboard escape but a power cycle.
+   SIGHUP stays ignored and SIGCHLD at its default for waitpid. */
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_power_signal;
@@ -2102,39 +1556,22 @@ int main(int argc, char **argv) {
     mount_if_needed("devtmpfs", "/dev", "devtmpfs");
     mount_if_needed("tmpfs", "/run", "tmpfs");
 
-    /* The splash comes up as soon as there is a /proc to read the kernel
-       command line from and a /run for the daemon's pid file, and before
-       anything prints: with the console redirected, it covers the boot rather
-       than scrolling past underneath it. */
     splash_start();
 
     apply_hostname();
 
-    /* Started before the wizard on purpose: DHCP gets to negotiate while
-       the user is still typing their name. */
+/* DHCP starts before the wizard so negotiation overlaps typing. */
     bring_up_network();
 
-    /* ...but udhcpc prints its progress to the same console the wizard is
-       prompting on, and a lease landing mid-question lands in the middle of
-       the prompt. Give it a beat to finish talking before the first question,
-       which costs a second on a normal DHCP server and keeps the questions
-       readable. A slow server is still not blocking: this is a fixed pause,
-       not a wait on the lease. */
+/* udhcpc prints to the wizard's console; a fixed beat after the lease keeps
+   questions readable without waiting on a slow server. */
     usleep(1500 * 1000);
     printf("\n");
     fflush(stdout);
 
-    /* Hand the console back before anything interactive. The first-boot wizard
-       prompts on this console and the login shell reads from it; a splash left
-       up would hide what the machine is asking, and the quit is what puts the
-       VT back into text mode. */
+/* Quit the splash before anything interactive so the VT is back in text mode. */
     splash_stop();
 
-    /* Everything from here down is shared with the --console entry point:
-       the wizard, the session user, and the loop that keeps a shell on tty1.
-       It was split out when systemd became a possible PID 1 -- see
-       run_session() above -- because both entry points want exactly this and
-       neither wants the mounts, the signal handlers or the daemons. */
     run_session();
     return 0;                        /* never reached */
 }

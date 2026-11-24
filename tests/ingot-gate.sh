@@ -1,36 +1,9 @@
 #!/usr/bin/env bash
 # ingot gate test.
-#
-# Serves a fake GitHub Pages repo over localhost, points ingot at it via
-# INGOT_REPO, and drives the REAL client (iso/rootfs-overlay/usr/bin/ingot,
-# the same file that ships in the ISO) with INGOT_ROOT pointing at a scratch
-# tree so nothing outside it is touched. Proves the whole design:
-#
-#   - the payload files land exactly where the tar said
-#   - dependencies install first (cog before pinwheel)
-#   - a sha256 mismatch refuses the payload and unpacks nothing
-#   - the /tmp/<name> JSON is gone after every path
-#   - an already-installed package is refused
-#   - remove deletes exactly what the manifest recorded
-#   - unknown names fail with a name, not a stack trace
-#   - info prints the package JSON and cleans /tmp
-#   - search greps the index
-#   - list names the installed packages
-#   - inspect shows the installed record (version + files)
-#   - reinstall removes then installs again
-#   - update reinstalls a package whose page sha256 moved, and reports
-#     "up to date" when nothing changed, and update (all) keeps going when one
-#     package's page cannot be fetched
-#   - a failed update (payload 404) leaves the installed package and its record
-#     untouched, and a later good payload still updates it (bug 27)
-#   - search is literal and option-safe: a regex metacharacter cannot abort it
-#     and a leading dash is a term, not a flag
-#   - install/remove/update/reinstall on the real / refuse for a non-root
-#     user with a sudo hint (INGOT_ROOT is the rootless test path)
-#
-# Needs: python3 (to serve), wget, tar, sha256sum. No root: it never writes
-# outside its own temp tree. CI runs it via tests/branch-gate.sh alongside
-# the other root-using gates.
+# Serves a fake Pages repo on localhost and drives the REAL shipped client with
+# a scratch INGOT_ROOT, covering install/deps/sha256/remove/info/search/update,
+# reinstall, the pty progress bar and the non-root refusal contract.
+# Needs python3, wget, tar and sha256sum; no root, no writes outside $WORK.
 
 set -u
 
@@ -89,8 +62,7 @@ printf 'forged binary\n' > "$WORK/stage3/usr/bin/forged"
 SHA_FORGED_WRONG=$(sha256sum "$REPO_ROOT/payloads/pinwheel-1.0.tar.gz" | awk '{print $1}')
 SIZE_FORGED=$(wc -c < "$REPO_ROOT/payloads/forged-2.0.tar.gz")
 
-# bigwheel-1.0: a payload > 1MiB (urandom so the tarball won't shrink) so the
-# tty progress bar's >= 1048576 gate actually triggers under the pty test.
+# bigwheel's >1MiB payload triggers the pty progress bar's threshold.
 mkdir -p "$WORK/stage4b/usr/lib"
 dd if=/dev/urandom of="$WORK/stage4b/usr/lib/big.dat" bs=1M count=2 status=none 2>/dev/null
 ( cd "$WORK/stage4b" && tar -czf "$REPO_ROOT/payloads/bigwheel-1.0.tar.gz" usr )
@@ -243,8 +215,7 @@ else
 fi
 
 # ---- search is literal and option-safe -------------------------------------
-# A package name is neither a regex nor a flag: 'c.g' must not match cog, a bare
-# '[' must not make grep abort, and a leading '-' must be a term, not an option.
+# A name is neither regex nor flag: 'c.g', '[' and '-x' must all be terms.
 if out=$( sh "$INGOT" search 'c.g' 2>&1 ); then
   printf '%s' "$out" | grep -qw cog \
     && note_bad "search matched a regex: $out" \
@@ -296,9 +267,7 @@ else
   note_bad "update cog (unchanged) failed: $out"
 fi
 
-# ---- update with a newer payload on the page: reinstalls fresh ---------------
-# Bump cog's page to 1.1 with a *new* payload tarball that has the same paths
-# but different bytes. update must notice the sha256 moved and reinstall.
+# Bump cog's page to a new payload and sha; update must reinstall it.
 mkdir -p "$WORK/stage4/usr/lib"
 printf 'cog lib 1.1\n' > "$WORK/stage4/usr/lib/libcog.so"
 ( cd "$WORK/stage4" && tar -czf "$REPO_ROOT/payloads/cog-1.1.tar.gz" usr )
@@ -325,11 +294,8 @@ else
   note_bad "update cog (newer) failed: $out"
 fi
 
-# ---- bug 27: a failed update must not delete the installed package ----------
-# update used to remove the old install and only then fetch the new payload, so
-# a 404 turned an update into a silent uninstall. Install keystone 1.0 (two
-# files), point its page at a payload that is not there, and update: it must
-# fail, and 1.0 must still be on disk, still recorded, still version 1.0.
+# bug 27: update used to remove the old install before fetching, so a 404
+# silently uninstalled it; the old 1.0 must survive, then update cleanly.
 mkdir -p "$WORK/stage5/usr/bin" "$WORK/stage5/usr/share/keystone"
 printf 'keystone 1.0\n' > "$WORK/stage5/usr/bin/keystone"
 printf 'old extra file\n' > "$WORK/stage5/usr/share/keystone/old.txt"
@@ -349,8 +315,7 @@ EOF
 sh "$INGOT" install keystone >/dev/null 2>&1
 [ -f "$ROOT/usr/bin/keystone" ] && note_ok "keystone 1.0 installed" || note_bad "keystone 1.0 did not install"
 
-# 2.0's page claims a payload the server does not have -- the shape of a dropped
-# transfer or a CDN 404. The sha256 is new on purpose so update tries it.
+# 2.0's page claims a missing payload: the shape of a dropped transfer.
 cat > "$REPO_ROOT/iso/copper/pkg/fun/keystone" <<EOF
 {
   "name": "keystone",
@@ -377,8 +342,7 @@ grep -q '^keystone|1.0|' "$ROOT/var/lib/ingot/keystone.installed" 2>/dev/null \
   && note_ok "the record still names version 1.0" \
   || note_bad "a failed update rewrote the record"
 
-# The payload exists now, and 2.0 no longer ships old.txt. The same update must
-# succeed, swap 1.0 -> 2.0, and prune the file the new version dropped.
+# The good 2.0 payload must swap versions and prune the dropped file.
 printf 'keystone 2.0\n' > "$WORK/stage5/usr/bin/keystone"
 rm -f "$WORK/stage5/usr/share/keystone/old.txt"
 rmdir "$WORK/stage5/usr/share/keystone" 2>/dev/null
@@ -421,10 +385,8 @@ else
 fi
 
 # ---- update (all) survives one broken package --------------------------------
-# Put pinwheel back (cog is already installed), then drop it from index.json so
-# its page can no longer be fetched -- the shape of a package pulled from the
-# repo. update (all) must still reach the healthy packages and exit nonzero;
-# before, the first failure ended the whole run.
+# Pinwheel is pulled from the index while installed; update (all) must keep
+# processing healthy packages and still exit nonzero.
 sh "$INGOT" install pinwheel >/dev/null 2>&1
 cat > "$REPO_ROOT/iso/copper/pkg/index.json" <<EOF
 {
@@ -442,9 +404,7 @@ printf '%s' "$out" | grep -q "up to date" \
   && note_ok "update (all) still processed the healthy packages" \
   || note_bad "update (all) skipped the healthy packages: $out"
 
-# ---- the pretty bar: on a real tty, big downloads animate ----------------
-# Non-tty runs must stay plain (asserted above); this one forces a pty and a
-# >1MiB payload so the bar path triggers for real and we can see the frames.
+# Force a pty and a >1MiB payload so the bar path really runs.
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import pty, fcntl' >/dev/null 2>&1; then
   bar_out=$( python3 "$REPO/tests/pty-run.py" sh "$INGOT" install bigwheel 2>&1 )
   printf '%s' "$bar_out" | grep -q '%' \
@@ -461,13 +421,9 @@ else
   note_ok "python3/pty unavailable: pty bar test skipped"
 fi
 
-# ---- the root contract: mutating commands on the real / need root ----------
-# On the live image the target root is the real / and the user is not root, so
-# install/remove/update/reinstall must refuse with a sudo hint instead of
-# half-writing. INGOT_ROOT is the sanctioned rootless path (which is exactly
-# how the rest of this test runs), so the refusal itself can only be produced
-# from an unprivileged gate run. A root gate run (CI executes branch-gate.sh
-# through sudo) cannot fairly exercise it, and says so rather than faking it.
+# On the live image INGOT_ROOT is absent and the user is not root, so mutating
+# commands must refuse with a sudo hint. CI runs this gate as root, which cannot
+# produce a non-root refusal, so the case drops to nobody instead of faking it.
 if [ "$(id -u)" -ne 0 ]; then
   if out=$( env -u INGOT_ROOT sh "$INGOT" install pinwheel 2>&1 ); then
     note_bad "install succeeded on real / without root!"
@@ -480,11 +436,8 @@ if [ "$(id -u)" -ne 0 ]; then
     && note_ok "refused real-/ install wrote nothing" \
     || note_bad "refused install still touched /var/lib/ingot!"
 else
-  # branch-gate.sh runs this gate through sudo in CI, and root cannot produce
-  # the thing under test: the refusal is what a *non-root* user is told. Two
-  # `ok` lines for root states would mean the contract was never exercised on
-  # the one machine that always runs the suite. Drop to an unprivileged
-  # account for this case instead.
+# Two `ok` lines for root states would mean the refusal was never exercised;
+# drop to an unprivileged account for this case instead.
   drop=
   if command -v setpriv >/dev/null 2>&1; then
     nuid=$(id -u nobody 2>/dev/null)
@@ -497,9 +450,7 @@ else
   if [ -z "$drop" ]; then
     note_bad "cannot drop to an unprivileged account (no setpriv/runuser, or no 'nobody'): the real-/ refusal was not exercised"
   else
-    # CI checks out under /home/runner, which nobody cannot traverse, so the
-    # script is copied to a 0755 scratch directory first. Same bytes, same
-    # contract; the path is the only thing that changes.
+# CI checks out under /home, so copy the script to a 0755 scratch dir.
     probe=$(mktemp -d "${TMPDIR:-/tmp}/ingot-gate.XXXXXX" 2>/dev/null) || probe=
     if [ -z "$probe" ] || ! cp "$INGOT" "$probe/ingot" \
        || ! chmod 0755 "$probe" "$probe/ingot"; then
@@ -523,9 +474,7 @@ else
   fi
 fi
 
-# ---- mirrors: where a release asset is fetched from ----------------------
-# The speed fix is a URL-prefix rewrite, so it needs no network to test: pull
-# the two functions out of the shipped client and ask where it would fetch.
+# Test mirror prefixes as pure string rewrites; no network needed.
 extract_src() { sed -n "/^$1()/,/^}/p" "$INGOT"; }
 eval "$(extract_src mirror_prefixes)"
 eval "$(extract_src dl_sources)"
@@ -543,9 +492,7 @@ esac
   && note_ok "the direct GitHub URL is still the last resort" \
   || note_bad "the direct GitHub URL is not last: $last"
 
-# A mirror must never become the package's recorded home: cmd_inspect prints
-# the manifest URL, so the page's canonical URL is what has to survive, and a
-# Pages URL must not be rewritten at all (Pages is not the throttled host).
+# A mirror must not become the recorded URL; Pages URLs are not rewritten.
 PAGES=https://12hrformat.github.io/copper-ingot-repo/iso/copper/pkg/tools/wine
 [ "$(dl_sources "$PAGES")" = "$PAGES" ] \
   && note_ok "a GitHub Pages URL is not rewritten to a mirror" \
@@ -569,8 +516,7 @@ ARCHIVE=https://github.com/12hrformat/copperlinux/archive/refs/heads/main.tar.gz
   && note_ok "a non-release GitHub URL is not rewritten" \
   || note_bad "a non-release GitHub URL got a mirror prefix"
 
-# The sha256 is checked per source, inside the loop, so one bad mirror falls
-# through to the next instead of failing the install after the last source.
+# sha256 is checked per source so one bad mirror falls through.
 if sed -n '/^dl()/,/^}/p' "$INGOT" | grep -q 'dl_attempt'; then
   note_ok "a bad source falls through instead of ending the download"
 else

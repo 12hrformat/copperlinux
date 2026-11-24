@@ -1,65 +1,41 @@
 # Copper Linux — the seat daemon.
-#
-# The under-systemd home for what copper-init's start_seatd() does: run
-# `seatd -g _seatd`, which is what startniri then finds on
-# /run/seatd.sock. The migration document's eventual answer is logind, but
-# retiring seatd is a separate step: niri's seat path is tested as-is and
-# a seat swap and a PID-1 swap in the same boot would be two suspects for one
-# dark screen.
-#
-# seatd must not run as root with a root group: -g _seatd creates the socket
-# with that group, and the wizard puts the session user into _seatd so the
-# user's own compositor can open it without root. copper-init.c did this with
-# addgroup when the marker existed; under systemd the wizard still does it
-# (copper-firstboot), and this unit only has to start the daemon.
-#
-# The binary's PATH is not fixed, and a boot proved it: Copper's seatd package
-# installs it at /usr/sbin/seatd, while this unit said /usr/bin/seatd. systemd
-# ran a command that did not exist, the unit failed, Restart=on-failure started
-# it again, and every attempt printed [FAILED] onto the same tty the first-boot
-# wizard was drawing its form on -- the form glitched and the seat was never up.
-# copper-init.c always searched both directories; the unit now does too, and
-# names the real path in the failure message instead of a plausible one.
-#
+# Under systemd, what copper-init's start_seatd() did: `seatd -g _seatd`, which
+# startniri finds on /run/seatd.sock. logind is the migration's eventual answer,
+# but swapping seats and PID 1 together would give one dark screen two suspects.
+# -g _seatd makes the socket group-owned so the wizard's session user (added to
+# _seatd by firstboot) can open it without root.
+# A boot proved PATH is not fixed: the package installs /usr/sbin/seatd while the
+# unit said /usr/bin/seatd, so systemd ran a missing file, Restart=on-failure
+# stormed [FAILED] over the wizard's form, and the seat never came up. Search both.
 [Unit]
 Description=Copper seat daemon (seatd)
-# No Documentation= here, for the same reason copper-network.service has none:
-# this image ships no man and no man pages, so a Documentation=man:seatd(1)
-# points at something nothing can open.
+# No Documentation=, as in copper-network.service: this image has no man or man
+# pages, so man:seatd(1) points at nothing anyone can open.
 ConditionPathExists=|/usr/bin/seatd
 ConditionPathExists=|/usr/sbin/seatd
 After=systemd-udev-settle.service
 Before=copper-console.service
-# A seatd that exits immediately must not become a restart storm on the console
-# -- the first-boot wizard owns that tty, and systemd's status lines over it
-# corrupt the form the user is typing into. Five fast attempts then give up; the
-# unit is still wanted, so a later `systemctl restart copper-seatd` works, and a
-# machine that cannot run seatd (no niri) is not a machine that cannot boot.
-# Both keys live in [Unit], which is where systemd reads them from -- in
-# [Service] they are "Unknown key ... ignoring", a silent no-op AND a line the
-# stage's verify filter rejects, so this was a build failure waiting on a runner.
+# An immediate exit must not become a restart storm over the wizard's tty: five
+# fast tries then stop (it is still wanted, so a later restart works). Both keys
+# are in [Unit] where systemd reads them -- in [Service] they are silently
+# ignored "Unknown key" lines that the stage's verify filter rejects.
 StartLimitIntervalSec=30
 StartLimitBurst=5
 
 [Service]
 Type=simple
-# Search the two directories the package has used, exactly as copper-init did,
-# rather than hard-coding one. exec replaces the shell, so seatd is still the
-# process systemd manages and its exit status is still the unit's.
+# Search both directories; exec replaces the shell so seatd stays the unit's
+# process and its exit status is the unit's.
 ExecStart=/bin/sh -c 'for p in /usr/bin/seatd /usr/sbin/seatd; do \
     [ -x "$p" ] && exec "$p" -g _seatd; done; \
     echo "copper-seatd: no seatd binary at /usr/bin/seatd or /usr/sbin/seatd" >&2; \
     exit 127'
-# A daemon, not a job: it runs for the life of the machine. The restart policy
-# is bounded by the StartLimit* keys in [Unit].
+# A daemon for the life of the machine; StartLimit* in [Unit] bounds restarts.
 Restart=on-failure
 RestartSec=5
 RuntimeDirectory=seatd
-# seatd creates /run/seatd.sock itself with the _seatd group. There is no
-# socket unit here on purpose: socket activation would mean systemd binds the
-# socket and hands it over, and seatd's own bind is the path startniri
-# already tests. A socket unit would also make "seatd is not running" look
-# like "the seat is up", because the socket file would still exist.
+# seatd binds /run/seatd.sock with the _seatd group itself -- no socket unit:
+# activation would make "seatd is down" look like "the seat is up".
 
 [Install]
 WantedBy=copper.target

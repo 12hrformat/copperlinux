@@ -1,35 +1,14 @@
 #!/bin/sh
 # Gate for the boot splash's plymouthd invocation (bug 25).
-#
-# The splash is started by the copper-plymouth unit and quit by its helper,
-# and the one part of that a test on this box can really hold still is the
-# argv copper-init hands plymouthd. It matters
-# because the failure mode is silent in one direction and fatal in the other:
-# plymouthd returns before creating a renderer when it decides a serial console
-# owns the display (so no frame is ever drawn), and it refuses to start at all
-# for an option it does not know (so the splash is worse than absent).
-#
-# So this gate answers the question the real daemon would: is every option in
-# that argv one plymouthd accepts? It cannot promise a frame gets drawn -- that
-# needs a boot -- but it does promise none of the options can stop the daemon.
-#
-# Two checks, both on the tree rather than on a copied string:
-#
-#   1. the plymouthd calls in copper-init.c parse, by the same getopts(1) long
-#      option grammar the daemon's own parser uses, and the result is compared
-#      to an expected list. If copper-init grows an option, this fails until
-#      the expectation says so.
-#   2. every option used is checked against `plymouthd --help` WHEN a real
-#      daemon is available (an unpacked .deb, or a staged tree), because the
-#      list of legal options belongs to the daemon, not to this file. No daemon
-#      on the host is a skip, not a failure: the repository still has to build
-#      and test on a box that has never seen plymouth.
-#
-# See bug 25: --ignore-serial-consoles and plymouth.ignore-serial-consoles
-# were both checked against the packaged plymouth 24.004.60 this
-# image stages, and a bogus option makes that daemon print its whole usage list
-# instead of starting, which is how an accepted option is told from a rejected
-# one. Run: tests/plymouth-gate.sh
+# The only stable part here is the argv copper-init hands plymouthd: an option
+# it does not know makes the daemon print usage instead of starting, while a
+# serial console it thinks owns the display yields no frame at all.
+# The gate parses argv with getopts(1) grammar and compares it to an expected
+# list, then checks each option against a real daemon's --help when available
+# (a skip, not a failure, when none is installed).
+# See bug 25: --ignore-serial-consoles and plymouth.ignore-serial-consoles were
+# checked against the staged plymouth 24.004.60.
+# Run: tests/plymouth-gate.sh
 
 set -u
 
@@ -48,14 +27,10 @@ if [ ! -f "$SRC" ]; then
     exit 1
 fi
 
-# ---- 1. the kernel switch, and tty0 still owning /dev/console -------------
-# The boot-entry half: the default (splash) entry must ask for the splash, must
-# tell plymouthd the serial console is not the display, must keep the kernel
-# quiet (quiet loglevel=3), must force systemd's [ OK ] status block back on
-# (systemd.show_status=1), and must still leave tty0 last (the last console=
-# is the one that owns /dev/console -- bug 7). Read the shared entry list, not
-# one provider's rendered menu: GRUB is just the default renderer of these
-# arguments, and the same list drives any replacement provider.
+# 1. the shared entry list, not one provider's menu, must ask for the splash,
+# ignore serial consoles, keep the kernel quiet with systemd status on, and
+# leave tty0 last (last console= owns /dev/console -- bug 7). GRUB is only the
+# default renderer of these arguments.
 cl=$(awk -F'|' '$1 == "default" && $3 ~ /splash/ { print $3 }' "$ENTRIES" | head -n1)
 if [ -z "$cl" ]; then
     echo "FAIL $ENTRIES has no splash default entry"
@@ -67,18 +42,14 @@ else
             *) echo "FAIL default boot entry is missing $sw"; fail=1 ;;
         esac
     done
-    # The screen belongs to the animation and then to systemd's status lines.
-    # `quiet loglevel=3` keeps kernel chatter off it, and
-    # systemd.show_status=1 is what keeps the [ OK ] block from disappearing:
-    # systemd's default "auto" suppresses status while a splash is up.
+# The screen belongs to the animation then systemd's [ OK ] status.
     for sw in quiet loglevel=3 systemd.show_status=1; do
         case " $cl " in
             *" $sw "*) echo "ok   default boot entry passes $sw" ;;
             *) echo "FAIL default boot entry is missing $sw"; fail=1 ;;
         esac
     done
-    # And the opposite: a splash entry with no quiet would put kernel text
-    # back over the animation, which is the bug this switch exists to close.
+# Without quiet, kernel text would print over the animation.
     if printf '%s\n' "$cl" | grep -q ' quiet '; then
         echo "ok   default boot entry keeps the kernel quiet"
     else
@@ -94,9 +65,7 @@ else
     fi
 fi
 
-# ---- 2. the argv copper-init hands the daemon ----------------------------
-# Pull the two execl("/usr/sbin/plymouthd", ...) argument lists out of the
-# source, join each onto one line, and keep the quoted "--flag" tokens.
+# Pull the two execl argument lists out of the real source and keep --flags.
 args=$(awk '
     /execl\("\/usr\/sbin\/plymouthd"/ { in_call = 1 }
     in_call {
@@ -115,8 +84,7 @@ if [ -z "$args" ]; then
     fail=1
 fi
 
-# Expected options, sorted the same way. --mode=boot is the option AND its
-# value; the rest are switches. Update this list when copper-init changes.
+# --mode=boot includes its value; update this list when copper-init changes.
 want=$(printf '%s\n' --attach-to-session --ignore-serial-consoles \
     --mode=boot --no-daemon --pid-file=/run/plymouth/pid | sort -u)
 if [ "$args" = "$want" ]; then
@@ -128,9 +96,7 @@ else
     fail=1
 fi
 
-# The serial-console switch has to be on BOTH call forms. The attach form is
-# the fallback path when the console handoff fails, and if only the other one
-# carries the option, that fallback is the silent no-frame case again.
+# The serial switch must be on both call forms, including the fallback path.
 calls=$(grep -c 'execl("/usr/sbin/plymouthd"' "$SRC")
 withsw=$(grep -A3 'execl("/usr/sbin/plymouthd"' "$SRC" | grep -c -- '--ignore-serial-consoles')
 if [ "$calls" -ge 2 ] && [ "$withsw" -ge "$calls" ]; then
@@ -140,12 +106,9 @@ else
     fail=1
 fi
 
-# ---- 2b. the two helpers that own show and quit ---------------------------
-# The splash used to be cut off around frame 20 because the quit unit ran
-# `plymouth --quit` the moment the network came up. These helpers are the fix,
-# so the things that made the fix work are what is checked here: the units
-# exec them, the show side stamps the clock before the first frame, and the
-# quit side waits on a length it reads out of the theme.
+# The splash used to stop at frame 20 when the quit unit ran immediately. These
+# helpers are the fix: the units exec them, show stamps before frames, quit
+# waits on a length read from the theme.
 for f in "$SHOW" "$QUIT"; do
     if [ ! -f "$f" ]; then
         echo "FAIL $(basename "$f") is missing"
@@ -199,8 +162,7 @@ else
     fail=1
 fi
 
-# And the arithmetic has to agree with the theme that is actually shipped:
-# every declared frame is on disk and the wait rounds the division up.
+# Every declared frame must exist on disk and the wait rounds up.
 if [ -r "$THEME" ]; then
     frames=$(sed -n 's/^[[:space:]]*frame_count[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$THEME" | head -n 1)
     rate=$(sed -n 's/^[[:space:]]*Plymouth\.SetRefreshRate[[:space:]]*(\([0-9][0-9]*\)).*/\1/p' "$THEME" | head -n 1)
@@ -219,9 +181,7 @@ else
     fail=1
 fi
 
-# Skipping the splash must not fail the boot: the service is conditional on
-# the kernel token, and the quit helper exits before it waits when no daemon
-# answers.
+# No splash token or no daemon must not fail the boot.
 if grep -q '^ConditionKernelCommandLine=splash' "$SHOWUNIT"; then
     echo "ok   copper-plymouth.service is skipped without the splash token"
 else
@@ -263,7 +223,7 @@ else
         for a in $(purge_args); do
             case "$a" in
                 --attach-to-session)
-                    # Not printed by --help on every build, but accepted.
+# Not in every --help build, but accepted.
                     if printf '%s' "$help" | grep -q -- "$a"; then
                         echo "ok   $daemon accepts $a"
                     else
@@ -281,9 +241,7 @@ else
     fi
 fi
 
-# ---- 4. the kernel switch is one plymouthd reads -------------------------
-# Only checkable with a daemon present: the switch has to appear in its own
-# string table, or the kernel argument is ignored and nothing is fixed.
+# Only a real daemon's string table proves the kernel switch is read.
 if [ -n "$daemon" ] && command -v strings >/dev/null 2>&1; then
     for sw in plymouth.ignore-udev plymouth.ignore-serial-consoles; do
         if strings "$daemon" | grep -qx -- "$sw"; then
