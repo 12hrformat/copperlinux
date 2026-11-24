@@ -242,6 +242,10 @@ has iso/build.sh 'bin/fusermount' \
     "the gui stage asserts fusermount landed in the tree"
 has iso/build.sh 'ln -s ../../bin/fusermount' \
     "the /usr/bin spelling reaches the same helper"
+has iso/build.sh 'ln -s ../usr/bin/bash "$TGT/bin/bash"' \
+    "the gui stage links /bin/bash for AppRun shebangs"
+has iso/build.sh 'usr/bin/bash bin/bash' \
+    "the gui stage asserts the /bin/bash link landed"
 
 echo
 echo "config: the build ships both sides of every switch"

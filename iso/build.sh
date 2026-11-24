@@ -1399,10 +1399,18 @@ build_gui() {
     fi
   fi
 
+  # AppImages' bundled AppRun scripts commonly start with #!/bin/bash. Copper is not
+  # merged-usr, so the deb lands only /usr/bin/bash; without this link the runtime mounts
+  # the image and then execve fails with ENOENT, printed as "execv error".
+  if [ ! -e "$TGT/bin/bash" ] && [ ! -L "$TGT/bin/bash" ]; then
+    ln -s ../usr/bin/bash "$TGT/bin/bash"
+    echo "  AppImage: /bin/bash -> ../usr/bin/bash"
+  fi
+
   # The Wayland session's fallback keymap and XFCE's pointer both depend on data files,
   # not just their shared libraries. Catch a missing package payload here so
   # the booted desktop cannot silently have no keymap or an invisible cursor.
-  for f in usr/bin/bash \
+  for f in usr/bin/bash bin/bash \
            usr/share/X11/xkb/rules/evdev \
            usr/share/icons/DMZ-White/cursors/left_ptr; do
     if [ ! -r "$TGT/$f" ]; then
