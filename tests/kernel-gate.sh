@@ -101,7 +101,8 @@ for cls in DEVTMPFS OVERLAY_FS EXT4_FS \
            SCSI BLK_DEV_SD BLK_DEV_NVME ATA_PIIX \
            SCSI_MPT3SAS VMWARE_PVSCSI SCSI_VIRTIO \
            SWAP ZRAM ZSMALLOC \
-           NET INET E1000 VIRTIO_NET ; do
+           NET INET E1000 VIRTIO_NET \
+           SOUND SND SND_ENS1370 SND_ENS1371 SND_AC97_CODEC SND_USB_AUDIO ; do
     if symbols | grep -qx "$cls"; then
         ok "asserts $cls"
     else

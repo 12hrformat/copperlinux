@@ -254,7 +254,11 @@ require_kernel_config() {
   # intel-hda present, and the codecs are what the driver needs to find a PCM
   # on it -- SND_HDA_GENERIC is the parser for a codec nobody wrote a driver
   # for, which is exactly what an emulated card looks like.
-  for sym in SOUND SND SND_PCM SND_TIMER SND_HDA SND_HDA_INTEL SND_HDA_GENERIC ; do
+  # VMware's default guest card is the Ensoniq AudioPCI ES1371, not HDA, so
+  # the AudioPCI driver and its AC97 codec have to be built in too. USB audio
+  # covers headsets and docks that never appear on a PCI bus.
+  for sym in SOUND SND SND_PCM SND_TIMER SND_HDA SND_HDA_INTEL SND_HDA_GENERIC \
+             SND_ENS1370 SND_ENS1371 SND_AC97_CODEC SND_USB_AUDIO ; do
     grep -qx "CONFIG_$sym=y" "$cfg" || missing="$missing $sym"
   done
   if [ -n "$missing" ]; then
@@ -381,7 +385,9 @@ build_kernel() {
       --enable SND_HWDEP --enable SND_HDA --enable SND_HDA_INTEL \
       --enable SND_HDA_GENERIC --enable SND_HDA_CODEC_SIGMATEL \
       --enable SND_HDA_CODEC_REALTEK --enable SND_HDA_CODEC_ANALOG \
-      --enable SND_HDA_CODEC_HDMI
+      --enable SND_HDA_CODEC_HDMI \
+      --enable SND_ENS1370 --enable SND_ENS1371 --enable SND_AC97_CODEC \
+      --enable SND_USB_AUDIO
     # vmxnet3 was renamed at some point around 6.12; asking for both names
     # costs nothing, since kconfig drops whichever one doesn't exist.
     #
