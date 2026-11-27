@@ -3030,6 +3030,33 @@ build_iso() {
   chown 0:0 "$TGT/usr/share/icons/default/index.theme"
   chmod 0644 "$TGT/usr/share/icons/default/index.theme"
 
+# GTK reads /etc/gtk-3.0/settings.ini before an XSETTINGS manager answers. The
+# deb stage drops Yaru defaults there, but no Yaru theme or icon set is staged;
+# Electron then starts with a theme it cannot resolve (one of the renderer
+# SIGSEGV paths). Copper's overlay names themes that are actually on the disc.
+# Check the names against the tree, not against a hardcoded list, so a theme
+# replacement only has to change the settings file and the package list.
+  local gtk_theme gtk_icons gtk_cursor
+  gtk_theme=$(sed -n 's/^gtk-theme-name[[:space:]]*=[[:space:]]*//p' \
+      "$TGT/etc/gtk-3.0/settings.ini" 2>/dev/null | head -n1)
+  gtk_icons=$(sed -n 's/^gtk-icon-theme-name[[:space:]]*=[[:space:]]*//p' \
+      "$TGT/etc/gtk-3.0/settings.ini" 2>/dev/null | head -n1)
+  gtk_cursor=$(sed -n 's/^gtk-cursor-theme-name[[:space:]]*=[[:space:]]*//p' \
+      "$TGT/etc/gtk-3.0/settings.ini" 2>/dev/null | head -n1)
+  if [ -z "$gtk_theme" ] || [ -z "$gtk_icons" ] || [ -z "$gtk_cursor" ]; then
+    echo "iso: /etc/gtk-3.0/settings.ini has no theme/icon/cursor fallback" >&2
+    echo "iso: Electron can segfault before XFCE's xsettings answer" >&2
+    exit 1
+  fi
+  for pair in "themes:$gtk_theme" "icons:$gtk_icons" "icons:$gtk_cursor"; do
+    local kind=${pair%%:*} name=${pair#*:}
+    if [ ! -d "$TGT/usr/share/$kind/$name" ]; then
+      echo "iso: GTK fallback names /usr/share/$kind/$name, which is not staged" >&2
+      exit 1
+    fi
+  done
+  echo "  iso: GTK fallback uses $gtk_theme / $gtk_icons / $gtk_cursor"
+
   # Whose distribution is about to be written to the disc. build_gui repairs
   # this after it copies base-files in (see copper_identity), and this is the
   # last look before the ISO is produced, so a stage that runs after gui and
@@ -3201,7 +3228,28 @@ build_iso() {
     echo "iso: GTK would fall back to a cursor theme that does not exist" >&2
     exit 1
   fi
-  echo "  iso: gschemas.compiled and the default cursor theme are on the disc"
+  # Same witness for GTK's fallback settings: the values were checked against
+  # the staged tree above, now read them back from the image that ships.
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /etc/gtk-3.0/settings.ini "$ex/gtk-settings.ini" \
+      >/dev/null 2>&1 || true
+  if [ ! -s "$ex/gtk-settings.ini" ]; then
+    echo "iso: the ISO has no /etc/gtk-3.0/settings.ini GTK fallback" >&2
+    exit 1
+  fi
+  local disc_theme disc_icons disc_cursor
+  disc_theme=$(sed -n 's/^gtk-theme-name[[:space:]]*=[[:space:]]*//p' \
+      "$ex/gtk-settings.ini" 2>/dev/null | head -n1)
+  disc_icons=$(sed -n 's/^gtk-icon-theme-name[[:space:]]*=[[:space:]]*//p' \
+      "$ex/gtk-settings.ini" 2>/dev/null | head -n1)
+  disc_cursor=$(sed -n 's/^gtk-cursor-theme-name[[:space:]]*=[[:space:]]*//p' \
+      "$ex/gtk-settings.ini" 2>/dev/null | head -n1)
+  if [ "$disc_theme" != "$gtk_theme" ] || [ "$disc_icons" != "$gtk_icons" ] ||
+     [ "$disc_cursor" != "$gtk_cursor" ]; then
+    echo "iso: the disc's GTK fallback differs from the validated tree" >&2
+    exit 1
+  fi
+  echo "  iso: gschemas.compiled, the default cursor and GTK fallback are on the disc"
 
 # Read power links off the disc: /usr/sbin is searched first, so a leftover ../bin/systemctl there beats
 # /sbin's busybox link and `sudo reboot` answers "System has not been booted with systemd" (bug 29).

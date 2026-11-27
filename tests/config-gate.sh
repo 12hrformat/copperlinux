@@ -248,6 +248,21 @@ has iso/build.sh 'usr/bin/bash bin/bash' \
     "the gui stage asserts the /bin/bash link landed"
 
 echo
+echo "config: GTK's fallback names themes that exist"
+has iso/rootfs-overlay/etc/gtk-3.0/settings.ini 'gtk-theme-name = ' \
+    "the overlay supplies a GTK theme fallback"
+has iso/rootfs-overlay/etc/gtk-3.0/settings.ini 'gtk-icon-theme-name = ' \
+    "the overlay supplies an icon theme fallback"
+has iso/rootfs-overlay/etc/gtk-3.0/settings.ini 'gtk-cursor-theme-name = ' \
+    "the overlay supplies a cursor theme fallback"
+hasnt iso/rootfs-overlay/etc/gtk-3.0/settings.ini 'Yaru' \
+    "the fallback does not name a theme Copper does not ship"
+has iso/build.sh 'usr/share/$kind/$name' \
+    "the build checks each GTK fallback name against the staged tree"
+has iso/build.sh '-extract /etc/gtk-3.0/settings.ini' \
+    "the build reads the GTK fallback back off the disc"
+
+echo
 echo "config: the build ships both sides of every switch"
 has iso/build.sh 'for p in zsh; do' "the gui stage requires an installable zsh"
 has iso/build.sh 'for p in pipewire; do' "the gui stage requires pipewire"
