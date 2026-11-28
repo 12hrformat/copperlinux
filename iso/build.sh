@@ -2966,9 +2966,13 @@ build_iso() {
   find "$TGT" \( ! -uid 0 -o ! -gid 0 \) -exec chown -h 0:0 {} +
   # The live image had /usr and friends owned by uid 1000: a directory the
   # desktop user can write is a directory that user can replace with a root-run
-  # binary. Assert the whole system tree is root-owned and not group/world
-  # writable, not just sudo and shadow. Group ownership of polkit's state dirs
+  # binary. Pin the whole system tree, then assert it, not just sudo and shadow.
+  # cp -a of the host's zoneinfo carries its compatibility-directory modes in,
+  # so this has to be an enforce-then-check pass, not a check alone. Setuid and
+  # setgid bits survive a go-w chmod. Group ownership of polkit's state dirs
   # (etc/polkit-1, var/lib/polkit-1) is intentional and outside these trees.
+  find "$TGT/usr" "$TGT/bin" "$TGT/sbin" "$TGT/lib" \
+      -type d -exec chmod go-w {} + 2>/dev/null || true
   for d in usr usr/bin usr/lib usr/share usr/local usr/local/bin usr/local/sbin \
            bin sbin lib lib64; do
     [ -e "$TGT/$d" ] || continue

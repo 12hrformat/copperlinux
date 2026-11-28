@@ -34,6 +34,8 @@ hasnt_any() { # hasnt_any <literal> <description> <file>...
 # the top level and across every system directory.
 has iso/build.sh 'find "$TGT" \( ! -uid 0 -o ! -gid 0 \) -exec chown -h 0:0 {} +' \
     "the cached tree is chowned before the ISO is stamped"
+has iso/build.sh '-type d -exec chmod go-w {} +' \
+    "group/other write is removed from every system directory"
 has iso/build.sh '-type d \( ! -uid 0 -o -perm /022 \)' \
     "every system directory is checked for non-root ownership and group/other write"
 has iso/build.sh '$TGT/usr/local/bin' \
