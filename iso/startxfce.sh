@@ -11,7 +11,7 @@
 #
 # Exit codes (a contract): 0 ok, 20 no X, 21 no XFCE, 22 no display socket,
 # 23 X died starting, 24 usage, 25 no way to ask about components.
-# Xorg's log is $COPPER_XLOG or /tmp/xorg.log: with no screen it is the
+# Xorg's log is $COPPER_XLOG or a private mktemp file: with no screen it is the
 # only evidence when startup fails.
 # Known limits: only DISPLAY_NUM is checked; a slow probe stretches the
 # bounded wait; the timeout is 10s with fractional sleep, 100s without.
@@ -20,8 +20,10 @@ set -u
 
 XORG=${COPPER_XORG:-/usr/bin/Xorg}
 STARTXFCE4=${COPPER_STARTXFCE4:-/usr/bin/startxfce4}
-XLOG=${COPPER_XLOG:-/tmp/xorg.log}
-SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/session.log}
+# Private mktemp files: fixed /tmp names are symlink targets for any other
+# local user. The gates pass their own private paths, so they see what boots.
+XLOG=${COPPER_XLOG:-$(mktemp "${TMPDIR:-/tmp}/copper-xorg-log.XXXXXX")} || exit 1
+SESSIONLOG=${COPPER_SESSIONLOG:-$(mktemp "${TMPDIR:-/tmp}/copper-session-log.XXXXXX")} || exit 1
 XSOCKDIR=${XSOCKDIR:-/tmp/.X11-unix}
 DISPLAY_NUM=${DISPLAY_NUM:-0}
 WAIT_TRIES=${WAIT_TRIES:-100}
@@ -126,8 +128,8 @@ startxfce -- start the X server, then XFCE on it
 Environment, all optional:
   COPPER_XORG        path to the X server        (default /usr/bin/Xorg)
   COPPER_STARTXFCE4  path to the XFCE session    (default /usr/bin/startxfce4)
-  COPPER_XLOG        where the X server logs     (default /tmp/xorg.log)
-  COPPER_SESSIONLOG  where XFCE's output goes    (default /tmp/session.log)
+  COPPER_XLOG        where the X server logs     (default: private mktemp file)
+  COPPER_SESSIONLOG  where XFCE's output goes    (default: private mktemp file)
   COPPER_XPROBE      X client used to check whether a display really
                      answers     (default: the first of /usr/bin/xprobe and
                      /usr/bin/xdpyinfo; the kernel's socket table if neither)
@@ -136,7 +138,7 @@ Environment, all optional:
   COPPER_XORGCONF    where the generated input config is written
                      (default /etc/X11/xorg.conf)
   COPPER_XORGCONF_FALLBACK  the second path tried when the first cannot be
-                     written        (default /tmp/xorg.conf; X is always handed
+                     written        (default: a private mktemp file; X is handed
                      whichever one won, with -config)
   COPPER_XFCE_APPS   where the component manifest lives
                      (default /etc/copper/xfce-apps; absence disables the
@@ -465,7 +467,16 @@ else
     # because the builtin's own redirects are set up in order -- `>` first,
     # and it fails before `2>/dev/null` is ever applied, which is why the
     # error was leaking to the console too.
-    xorgconf2=${COPPER_XORGCONF_FALLBACK:-/tmp/xorg.conf}
+    # A private mktemp file is safe to hand to Xorg: a fixed /tmp/xorg.conf
+    # could be a symlink planted by another user. When an explicit fallback is
+    # supplied (the gates do), honour it exactly as before.
+    fallback_made=
+    if [ -n "${COPPER_XORGCONF_FALLBACK:-}" ]; then
+        xorgconf2=$COPPER_XORGCONF_FALLBACK
+    else
+        xorgconf2=$(mktemp "${TMPDIR:-/tmp}/copper-xorg-conf.XXXXXX") || exit 1
+        fallback_made=1
+    fi
     cfg=
     for cand in "$xorgconf" "$xorgconf2"; do
         if mkdir -p "${cand%/*}" 2>/dev/null && ( : > "$cand" ) 2>/dev/null; then
@@ -473,6 +484,9 @@ else
             break
         fi
     done
+    if [ "$cfg" != "$xorgconf2" ] && [ -n "$fallback_made" ]; then
+        rm -f "$xorgconf2"
+    fi
     if [ -n "$cfg" ]; then
         {
             echo 'Section "ServerFlags"'

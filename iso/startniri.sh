@@ -35,7 +35,10 @@ set -u
 
 NIRI=${COPPER_NIRI:-/usr/bin/niri}
 SKEL=${COPPER_NIRI_SKEL:-/usr/share/copper/niri-skel}
-SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/niri.log}
+# mktemp makes a private 0600 file: a predictable /tmp/niri.log can be a
+# symlink planted by another local user, and a shared name turns a log into a
+# write primitive. Tests set COPPER_SESSIONLOG to their own private path.
+SESSIONLOG=${COPPER_SESSIONLOG:-$(mktemp "${TMPDIR:-/tmp}/copper-niri-log.XXXXXX")} || exit 1
 WAIT_TRIES=${WAIT_TRIES:-100}
 # DRM nodes and seatd's socket default to real paths; overridable so the gate
 # can exercise GPU/seatd branches without either on the test host.
@@ -129,7 +132,8 @@ Environment, all optional:
   COPPER_NIRI        path to the compositor       (default /usr/bin/niri)
   COPPER_NIRI_SKEL   the shipped config tree that seeds a user's home
                      (default /usr/share/copper/niri-skel)
-  COPPER_SESSIONLOG  where the compositor logs    (default /tmp/niri.log)
+  COPPER_SESSIONLOG  where the compositor logs    (default: a private
+                     /tmp/copper-niri-log.XXXXXX made with mktemp)
   COPPER_NIRI_APPS   where the component manifest lives
                      (default /etc/copper/niri-apps; absence disables the
                      install entirely)
@@ -224,12 +228,14 @@ fi
 seed_added=0
 seed_config() {
     seed_added=0
-    seed_list=${TMPDIR:-/tmp}/startniri-seed.$$
+    seed_dir=$(mktemp -d "${TMPDIR:-/tmp}/startniri-seed.XXXXXX") || return 1
+    seed_list=$seed_dir/list
     if [ ! -d "$SKEL" ]; then
+        rm -rf "$seed_dir"
         return 1
     fi
     if ! ( cd "$SKEL" && find . \( -type f -o -type l \) ) > "$seed_list" 2>/dev/null; then
-        rm -f "$seed_list"
+        rm -rf "$seed_dir"
         return 1
     fi
     while IFS= read -r seed_f; do
@@ -248,7 +254,7 @@ seed_config() {
             say "  could not copy $seed_rel into $HOME"
         fi
     done < "$seed_list"
-    rm -f "$seed_list"
+    rm -rf "$seed_dir"
     return 0
 }
 
@@ -401,12 +407,17 @@ if command -v fc-cache >/dev/null 2>&1; then
 fi
 
 # Portals, swaync, keyring and polkit all want a bus, with no session manager
-# to start one. Prefer dbus-launch (address + pid), fall back to dbus-daemon
-# (address only); without either, start anyway and let the consumers complain.
+# to start one. Prefer dbus-launch, fall back to dbus-daemon; without either,
+# start anyway and let the consumers complain. --print-address gives the one
+# value we need: --sh-syntax plus eval executes a command's output, which is a
+# needless injection surface even when that output is generated locally.
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     if command -v dbus-launch >/dev/null 2>&1; then
-        bus=$(dbus-launch --sh-syntax 2>/dev/null) || bus=
-        [ -n "$bus" ] && eval "$bus"
+        addr=$(dbus-launch --print-address=1 2>/dev/null) || addr=
+        if [ -n "$addr" ]; then
+            DBUS_SESSION_BUS_ADDRESS=$addr
+            export DBUS_SESSION_BUS_ADDRESS
+        fi
     fi
     if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] &&
        command -v dbus-daemon >/dev/null 2>&1; then

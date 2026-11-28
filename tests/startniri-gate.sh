@@ -534,7 +534,7 @@ eq "  session type/desktop reach the compositor" \
 
 # Session identity must precede dbus-launch so activated services inherit it.
 ident_line=$(grep -n '^XDG_SESSION_TYPE=wayland' "$SUT" | head -n1 | cut -d: -f1)
-bus_line=$(grep -n 'dbus-launch --sh-syntax' "$SUT" | head -n1 | cut -d: -f1)
+bus_line=$(grep -n 'dbus-launch --print-address=1' "$SUT" | head -n1 | cut -d: -f1)
 if [ -n "$ident_line" ] && [ -n "$bus_line" ] && [ "$ident_line" -lt "$bus_line" ]; then
     ok "  the session identity is set before the bus starts"
 else

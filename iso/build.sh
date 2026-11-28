@@ -862,7 +862,9 @@ local SRC="$ROOT/../src"
 build_rootfs() {
   echo "==> rootfs config"
   cp -a "$ROOT/rootfs-overlay/." "$TGT/"
-  mkdir -p "$TGT/usr/share/zoneinfo" "$TGT/etc/skel"
+  mkdir -p "$TGT/usr/share/zoneinfo" "$TGT/etc/skel" \
+           "$TGT/usr/local/bin" "$TGT/usr/local/sbin"
+  chmod 0755 "$TGT/usr/local" "$TGT/usr/local/bin" "$TGT/usr/local/sbin"
   cp -a /usr/share/zoneinfo/. "$TGT/usr/share/zoneinfo/" 2>/dev/null \
     || echo "  (no host zoneinfo to copy — timezone data will be missing)"
   # udhcpc execs this the moment a lease lands, and git does not reliably
@@ -1150,7 +1152,7 @@ assert_shell_scripts_parse() {
 # a cached gui skip.
 copper_identity() {
   local rel id pkg_manager pkg_home
-  for rel in etc/os-release etc/lsb-release etc/issue etc/issue.net etc/legal; do
+  for rel in etc/os-release etc/legal; do
     if [ ! -f "$ROOT/rootfs-overlay/$rel" ]; then
       echo "gui: iso/rootfs-overlay/$rel is missing; without it the image" >&2
       echo "     identifies itself as something else to every tool that asks" >&2
@@ -1160,6 +1162,10 @@ copper_identity() {
   done
   # ensure /usr/lib/os-release exists as a copy for tools that look there
   install -D -m 0644 "$ROOT/rootfs-overlay/etc/os-release" "$TGT/usr/lib/os-release"
+  # lsb-release, issue, issue.net and motd are generated from that one file.
+  # Ubuntu's update-motd.d and /etc/debian_version are removed here too, on
+  # cached gui skips as well as fresh copies.
+  bash "$ROOT/identity.sh" "$ROOT/rootfs-overlay/etc" "$TGT"
 
   # The pulseaudio package owns /etc/pulse/default.pa and its copy loads the
   # udev-only detector. The default Copper init has no udev, so that config
@@ -1189,7 +1195,26 @@ copper_identity() {
     echo "gui: /etc/os-release and /usr/lib/os-release disagree" >&2
     exit 1
   fi
-  echo "  identity: $(sed -n 's/^PRETTY_NAME=//p' "$TGT/etc/os-release" | head -n1)"
+  local ver pretty relfile
+  ver=$(sed -n 's/^VERSION_ID="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$TGT/etc/os-release" | head -n1)
+  pretty=$(sed -n 's/^PRETTY_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$TGT/etc/os-release" | head -n1)
+  for relfile in etc/lsb-release etc/issue etc/issue.net etc/motd; do
+    if [ ! -s "$TGT/$relfile" ]; then
+      echo "gui: /$relfile is empty or missing; identity is generated from os-release" >&2
+      exit 1
+    fi
+  done
+  if ! grep -qx "DISTRIB_RELEASE=$ver" "$TGT/etc/lsb-release" ||
+     ! grep -qF "$pretty" "$TGT/etc/issue" ||
+     ! grep -qF "$pretty" "$TGT/etc/motd"; then
+    echo "gui: the generated identity files disagree with os-release" >&2
+    exit 1
+  fi
+  if [ -e "$TGT/etc/update-motd.d" ] || [ -e "$TGT/etc/debian_version" ]; then
+    echo "gui: Ubuntu MOTD scripts or /etc/debian_version survived the identity pass" >&2
+    exit 1
+  fi
+  echo "  identity: $pretty ($ver), generated everywhere"
 }
 
 # "Already staged" is not the same question as "the packages are there": XFCE sits on GTK/glibc and dozens
@@ -2939,6 +2964,39 @@ build_iso() {
 # actions/cache restores iso/work as uid 1000; use chown -h so links are not followed off the tree, and
 # touch only non-root entries so setuid bits survive.
   find "$TGT" \( ! -uid 0 -o ! -gid 0 \) -exec chown -h 0:0 {} +
+  # The live image had /usr and friends owned by uid 1000: a directory the
+  # desktop user can write is a directory that user can replace with a root-run
+  # binary. Assert the whole system tree is root-owned and not group/world
+  # writable, not just sudo and shadow. Group ownership of polkit's state dirs
+  # (etc/polkit-1, var/lib/polkit-1) is intentional and outside these trees.
+  for d in usr usr/bin usr/lib usr/share usr/local usr/local/bin usr/local/sbin \
+           bin sbin lib lib64; do
+    [ -e "$TGT/$d" ] || continue
+    own=$(stat -c '%u:%g' "$TGT/$d" 2>/dev/null || echo missing)
+    mode=$(stat -c '%a' "$TGT/$d" 2>/dev/null || echo missing)
+    if [ "$own" != 0:0 ]; then
+      echo "iso: /$d is owned by $own, not 0:0" >&2
+      exit 1
+    fi
+    case "$mode" in
+      *[!0-7]*)
+        echo "iso: /$d has an unreadable mode '$mode'" >&2
+        exit 1
+        ;;
+    esac
+    if [ $(( 8#$mode & 022 )) -ne 0 ]; then
+      echo "iso: /$d is $own mode $mode; system directories must be root:root without group/other write" >&2
+      exit 1
+    fi
+  done
+  local bad_dirs own mode gshadow_gid gsgid gm go
+  bad_dirs=$(find "$TGT/usr" "$TGT/bin" "$TGT/sbin" "$TGT/lib" \
+      -type d \( ! -uid 0 -o -perm /022 \) -print 2>/dev/null | head -n 20)
+  if [ -n "$bad_dirs" ]; then
+    echo "iso: system directories are writable or not root-owned:" >&2
+    printf '%s\n' "$bad_dirs" | sed 's|.*/iso/work/rootfs|/|' >&2
+    exit 1
+  fi
   # chown clears setuid/setgid on regular files even when the owner does not
   # change (measured). The find above only touches non-root entries, so sudo is
   # not among them -- but re-assert it anyway: build_sudo set this bit earlier
@@ -2974,10 +3032,23 @@ build_iso() {
   #
   # /etc/shadow ships 0644 in git and is copied with cp -a, so it was readable
   # by everyone even before this change. Root reads it directly (setuid sudo
-  # and its PAM stack run as root), there is no shadow group on this image, and
-  # nothing else here authenticates, so root-only is right.
+  # and its PAM stack run as root), nothing else here authenticates, so
+  # root-only is right. /etc/gshadow is different: root:shadow at 0640, using
+  # the shadow group declared in our staged /etc/group.
   chmod 0600 "$TGT/etc/shadow"
-  if [ -e "$TGT/etc/gshadow" ]; then chmod 0600 "$TGT/etc/gshadow"; fi
+  if [ -e "$TGT/etc/gshadow" ]; then
+    # Root:shadow, 0640: the packaging error reported against the live image
+    # was 0000 root:root. Use the staged group's numeric gid: chown on the
+    # build host resolves names from the host, not from the staged /etc/group.
+    gshadow_gid=$(awk -F: '$1 == "shadow" { print $3; exit }' "$TGT/etc/group" 2>/dev/null)
+    if [ -n "$gshadow_gid" ]; then
+      chown "0:$gshadow_gid" "$TGT/etc/gshadow"
+      chmod 0640 "$TGT/etc/gshadow"
+    else
+      chown 0:0 "$TGT/etc/gshadow"
+      chmod 0600 "$TGT/etc/gshadow"
+    fi
+  fi
   #
   # /tmp: a live session writes there -- Xorg's lock file and socket
   # (/tmp/.X0-lock, /tmp/.X11-unix) and startxfce's log among them -- and a
@@ -3109,7 +3180,8 @@ build_iso() {
   # stamp as well as the tree. Without them a change to any of the three
   # against an unchanged tree would skip the rebuild and ship the previous ISO.
   local want
-  want=$( { cat "$SELF" "$ROOT/boot/entries" "$BOOTLOADER_DIR/provider.sh"; tree_hash "$TGT"; } \
+  want=$( { cat "$SELF" "$ROOT/boot/entries" "$BOOTLOADER_DIR/provider.sh" \
+                 "$ROOT/identity.sh"; tree_hash "$TGT"; } \
           | sha256sum | cut -d' ' -f1 )
   if [ -s "$OUT/copper.iso" ] && [ -s "$WORK/iso.stamp" ] \
      && [ "$(cat "$WORK/iso.stamp")" = "$want" ]; then
@@ -3143,6 +3215,20 @@ build_iso() {
     echo "iso: /etc/shadow in the ISO is mode $sm, not 600" >&2
     exit 1
   fi
+  xorriso -osirrox on -indev "$OUT/copper.iso" \
+      -extract /etc/gshadow "$ex/gshadow" >/dev/null 2>&1 || true
+  gm=$(stat -c '%a' "$ex/gshadow" 2>/dev/null || echo missing)
+  go=$(stat -c '%u:%g' "$ex/gshadow" 2>/dev/null || echo missing)
+  gsgid=$(awk -F: '$1 == "shadow" { print $3; exit }' "$TGT/etc/group" 2>/dev/null)
+  if [ -n "$gsgid" ]; then
+    if [ "$gm" != "640" ] || [ "$go" != "0:$gsgid" ]; then
+      echo "iso: /etc/gshadow in the ISO is $go mode $gm, not 0:$gsgid mode 640" >&2
+      exit 1
+    fi
+  elif [ "$gm" != "600" ] || [ "$go" != "0:0" ]; then
+    echo "iso: /etc/gshadow in the ISO is $go mode $gm, not 0:0 mode 600" >&2
+    exit 1
+  fi
   # Ownership too: the other half of what -R exposed. osirrox restores the
   # stored uid/gid, and that is what caught the stale 1000:1000 files.
   if [ "$(stat -c '%u:%g' "$ex/sudo" 2>/dev/null)" != "0:0" ]; then
@@ -3153,7 +3239,7 @@ build_iso() {
   # it. That is on purpose. The tree can be right and the disc wrong (the
   # packaging drops a mode, a link resolves elsewhere), and the only witness
   # that cannot be wrong about what ships is the thing that ships.
-  echo "  iso: /usr/bin/sudo is 4755 root:root and /etc/shadow is 0600, on the disc"
+  echo "  iso: /usr/bin/sudo is 4755 root:root; shadow 0600 and gshadow 0640, on the disc"
 
   # su, read back off the disc for the same reason: it needs 4755 root:root to
   # change uid, and the common-* includes its PAM config names have to be there

@@ -39,7 +39,7 @@ usage: copper <command> [args...]
 EOF
 }
 
-[ $# -ge 1 ] || { cmd_help; exit 0; }
+[ $# -ge 1 ] || { cmd_help; exit 1; }
 
 case "$1" in
     version|--version|-v) cmd_version ;;

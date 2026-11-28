@@ -254,6 +254,8 @@ static int valid_host(const char *h) {
     if (!h[0]) return 0;
     size_t n = strlen(h);
     if (n > 63) return 0;
+/* `hostname %s` has no `--`: a leading dash would be read as an option. */
+    if (*h == '-') return 0;
     for (const char *p = h; *p; p++)
         if (!(isalnum((unsigned char)*p) || *p == '-' || *p == '.'))
             return 0;
@@ -262,6 +264,8 @@ static int valid_host(const char *h) {
 
 static int valid_tz(const char *z) {
     if (!z[0] || strlen(z) > 100) return 0;
+/* Same reason: this value reaches `ln -sf` and `echo > /etc/timezone`. */
+    if (*z == '-') return 0;
     for (const char *p = z; *p; p++)
         if (!(isalnum((unsigned char)*p) || *p == '_' || *p == '-' ||
               *p == '+' || *p == '/'))
@@ -370,6 +374,9 @@ static int create_user_direct(const char *user, const char *shell) {
         printf("(note: couldn't create %s)\n", home);
     }
     chown(home, uid, uid);
+/* A setgid /home (seen as drwxr-sr-x on the live image) makes every later
+   file inherit the group. Nothing here needs it; clear it on both paths. */
+    chmod(home, 0755);
 
     const char *skel = "/etc/skel";
     if (access(skel, R_OK) == 0) {
@@ -1101,6 +1108,9 @@ int main(void) {
     run_quiet("/bin/busybox chown %s:%s /home/%s/.bashrc", user, user, user);
     run_quiet("/bin/busybox cp -a /etc/skel/.zshrc /home/%s/.zshrc", user);
     run_quiet("/bin/busybox chown %s:%s /home/%s/.zshrc", user, user, user);
+/* adduser's home inherited the setgid bit on the reviewed image. 0755 is the
+   documented mode and matches the direct-account fallback above. */
+    run_quiet("/bin/busybox chmod 0755 /home/%s", user);
 
 /* _seatd lets the session user reach root-run seatd; an absent group is a no-op. */
     const char *supp[] = {"wheel", "users", "audio", "video", "dialout", "cdrom",

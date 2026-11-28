@@ -385,6 +385,46 @@ fi
 
 # ---------------------------------------------------------------------------
 echo
+echo "--- tests/hardening-gate.sh: ownership, /tmp, launchers, gshadow, home ---"
+# Reads the shipped scripts and runs `copper` with no arguments. Rootless.
+if out=$(sh tests/hardening-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record hardening-gate.sh ok "$n checks"
+else
+    record hardening-gate.sh bad "a live-image hardening check regressed"
+    printf '%s\n' "$out" | grep -E '^  FAIL' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/identity-gate.sh: all version files come from os-release ---"
+if out=$(sh tests/identity-gate.sh 2>&1); then
+    n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+    record identity-gate.sh ok "$n checks"
+else
+    record identity-gate.sh bad "a generated identity file drifted"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
+echo "--- tests/firstboot-validators.sh: wizard input cannot reach a shell ---"
+# Compiles the shipped validators, including the leading-dash rejection.
+if out=$(sh tests/firstboot-validators.sh 2>&1); then
+    case "$out" in
+        *SKIPPED*)
+            record firstboot-validators.sh skipped "no C compiler on this host" ;;
+        *)
+            n=$(printf '%s' "$out" | grep -c '^  ok' || true)
+            record firstboot-validators.sh ok "$n checks" ;;
+    esac
+else
+    record firstboot-validators.sh bad "a wizard validator accepted unsafe input"
+    printf '%s\n' "$out" | grep -E '^  FAIL|^       ' | sed 's/^/    /'
+fi
+
+# ---------------------------------------------------------------------------
+echo
 echo "=== summary ==="
 echo "  passed    $pass"
 echo "  skipped   $skip"

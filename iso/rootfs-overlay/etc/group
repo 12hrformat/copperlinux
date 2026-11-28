@@ -8,3 +8,4 @@ audio:x:29:
 video:x:44:
 messagebus:x:101:
 polkitd:x:997:
+shadow:x:42:

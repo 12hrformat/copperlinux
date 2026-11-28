@@ -45,7 +45,9 @@ if [ "$cur" = 0 ]; then
     fi
 fi
 
+swapped_on=0
 if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
+    swapped_on=1
 # A blank block device has no swap signature, so mkswap after disksize and before
 # swapon -- its absence once made this unit fail on the first real ISO.
     if command -v mkswap >/dev/null 2>&1; then
@@ -79,8 +81,19 @@ if ! grep -q '^/dev/zram0 ' /proc/swaps 2>/dev/null; then
 fi
 
 # zram's "seek" is free: read single pages and reclaim anonymous pages before
-# page cache (cheap to re-read from the ISO). Both knobs are best effort.
-echo 100 > /proc/sys/vm/swappiness 2>/dev/null || true
-echo 0   > /proc/sys/vm/page-cluster 2>/dev/null || true
+# page cache (cheap to re-read from the ISO). Only root can write these; an
+# unprivileged re-run must not print busybox's own redirection error and then
+# claim it did something. A failed tuning write on a real root run earns a line.
+if [ "$(id -u)" = 0 ]; then
+    if ! echo 100 > /proc/sys/vm/swappiness 2>/dev/null; then
+        echo "copper-zram: could not tune /proc/sys/vm/swappiness" >&2
+    fi
+    if ! echo 0 > /proc/sys/vm/page-cluster 2>/dev/null; then
+        echo "copper-zram: could not tune /proc/sys/vm/page-cluster" >&2
+    fi
+fi
 
-echo "copper-zram: ${size_mb}M compressed swap on /dev/zram0"
+# This run set swap up; a later re-run found it already on and changed nothing.
+if [ "$swapped_on" = 1 ]; then
+    echo "copper-zram: ${size_mb}M compressed swap on /dev/zram0"
+fi

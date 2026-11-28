@@ -1,7 +1,7 @@
 # Copper Linux
 # Copper live session. The rootfs is a read-only ISO with a tmpfs overlay,
-# so only /tmp (and the overlay) are writable. Real disk persistence is a
-# later phase. /tmp shares the overlay upper by default; this entry only
-# matters if something runs `mount -a`, so keep its cap in step with the
-# overlay's (an ingot payload download plus its unpacked tree need the room).
-tmpfs        /tmp     tmpfs   defaults,size=50%   0 0
+# so only /tmp (and the overlay) are writable. live/init mounts /tmp with these
+# flags before PID 1 starts; this line only matters if something runs `mount -a`,
+# so keep its cap in step with the overlay's (an ingot payload download plus its
+# unpacked tree need the room).
+tmpfs        /tmp     tmpfs   nosuid,nodev,noexec,size=50%   0 0

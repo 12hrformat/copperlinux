@@ -159,6 +159,17 @@ fi
 [ -e /mnt/merged/dev/ptmx ] || /bin/busybox ln -s pts/ptmx /mnt/merged/dev/ptmx 2>/dev/null
 /bin/busybox mkdir -p /mnt/merged/run
 /bin/busybox mount -t tmpfs tmpfs /mnt/merged/run 2>/dev/null
+# /tmp is shared and world-writable: logins, Xorg and ingot all use it. Give it
+# its own tmpfs with no setuid devices or executable files, so a planted symlink
+# or drop-in binary cannot be executed from there. The overlay upper stays a
+# separate, executable tmpfs for ingot's installed binaries.
+/bin/busybox mkdir -p /mnt/merged/tmp /mnt/merged/tmp/.X11-unix 2>/dev/null
+if ! /bin/busybox mount -t tmpfs -o nosuid,nodev,noexec,size=50% tmpfs /mnt/merged/tmp 2>/dev/null; then
+    notice "could not mount /tmp with nosuid,nodev,noexec; continuing on the overlay"
+else
+    /bin/busybox chmod 1777 /mnt/merged/tmp 2>/dev/null
+    /bin/busybox chmod 1777 /mnt/merged/tmp/.X11-unix 2>/dev/null
+fi
 
 # Tell the wizard which disc we booted from and where the writable layer landed.
 # The file goes on the overlay, not /run, because copper-init mounts a fresh

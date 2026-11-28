@@ -29,7 +29,9 @@ set -u
 HYPRLAND=${COPPER_HYPRLAND:-/usr/bin/Hyprland}
 WAYBAR=${COPPER_WAYBAR:-/usr/bin/waybar}
 SKEL=${COPPER_HYPRLAND_SKEL:-/usr/share/copper/hyprland-skel}
-SESSIONLOG=${COPPER_SESSIONLOG:-/tmp/hyprland.log}
+# mktemp makes a private 0600 file: a predictable /tmp/hyprland.log can be a
+# symlink planted by another local user. Tests set COPPER_SESSIONLOG themselves.
+SESSIONLOG=${COPPER_SESSIONLOG:-$(mktemp "${TMPDIR:-/tmp}/copper-hyprland-log.XXXXXX")} || exit 1
 WAIT_TRIES=${WAIT_TRIES:-100}
 # DRM nodes and seatd's socket default to the real paths; overridable so the
 # gate can exercise GPU/seatd branches without either on the test host.
@@ -73,7 +75,7 @@ Environment, all optional:
   COPPER_WAYBAR            path to the waybar binary    (default /usr/bin/waybar)
   COPPER_HYPRLAND_SKEL     the shipped config tree that seeds a user's home
                            (default /usr/share/copper/hyprland-skel)
-  COPPER_SESSIONLOG        where the compositor logs    (default /tmp/hyprland.log)
+  COPPER_SESSIONLOG        where the compositor logs    (default: a private /tmp/copper-hyprland-log.XXXXXX made with mktemp)
   COPPER_HYPRLAND_APPS     component manifest           (default /usr/share/copper/hyprland-apps)
   COPPER_INGOT             installer for the components (default ingot)
   COPPER_SUDO              how to gain root for the install (default sudo; empty means already root or never use it)
@@ -320,12 +322,14 @@ fi
 seed_added=0
 seed_config() {
     seed_added=0
-    seed_list=${TMPDIR:-/tmp}/starthyprland-seed.$$
+    seed_dir=$(mktemp -d "${TMPDIR:-/tmp}/starthyprland-seed.XXXXXX") || return 1
+    seed_list=$seed_dir/list
     if [ ! -d "$SKEL" ]; then
+        rm -rf "$seed_dir"
         return 1
     fi
     if ! ( cd "$SKEL" && find . \( -type f -o -type l \) ) > "$seed_list" 2>/dev/null; then
-        rm -f "$seed_list"
+        rm -rf "$seed_dir"
         return 1
     fi
     while IFS= read -r seed_f; do
@@ -344,7 +348,7 @@ seed_config() {
             say "  could not copy $seed_rel into $HOME"
         fi
     done < "$seed_list"
-    rm -f "$seed_list"
+    rm -rf "$seed_dir"
     return 0
 }
 
@@ -535,12 +539,16 @@ if command -v fc-cache >/dev/null 2>&1; then
 fi
 
 # Portals, dunst, keyring and polkit all want a bus, with no session manager
-# to start one. Prefer dbus-launch (address + pid), fall back to dbus-daemon
-# (address only); without either, start anyway and let the consumers complain.
+# to start one. Prefer dbus-launch, fall back to dbus-daemon; without either,
+# start anyway and let the consumers complain. --print-address yields a value
+# we can export; --sh-syntax would need eval, which executes command output.
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     if command -v dbus-launch >/dev/null 2>&1; then
-        bus=$(dbus-launch --sh-syntax 2>/dev/null) || bus=
-        [ -n "$bus" ] && eval "$bus"
+        addr=$(dbus-launch --print-address=1 2>/dev/null) || addr=
+        if [ -n "$addr" ]; then
+            DBUS_SESSION_BUS_ADDRESS=$addr
+            export DBUS_SESSION_BUS_ADDRESS
+        fi
     fi
     if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] &&
        command -v dbus-daemon >/dev/null 2>&1; then
